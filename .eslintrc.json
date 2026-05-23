@@ -1,0 +1,36 @@
+{
+  "root": false,
+  "env": {
+    "browser": true,
+    "es2021": true
+  },
+  "extends": ["airbnb"],
+  "parserOptions": {
+    "ecmaVersion": 2021,
+    "sourceType": "module"
+  },
+  "rules": {},
+  "overrides": [
+    {
+      "files": ["web/**/*.js", "web/**/*.jsx"],
+      "plugins": ["react-hooks"],
+      "rules": {
+        "quotes": [2, "single"],
+        "react/jsx-props-no-spreading": "off",
+        "react/jsx-no-useless-fragment": "off",
+        "react/require-default-props": "off",
+        "consistent-return": "off",
+        "react/forbid-prop-types": "off",
+        "react/no-array-index-key": "off",
+        "react/jsx-no-bind": "off",
+        "no-shadow": "off",
+        "react/react-in-jsx-scope": "off",
+        "import/no-unresolved": "off",
+        "import/prefer-default-export": "off",
+        "max-len": ["error", { "code": 200 }]
+      },
+      "globals": {}
+    }
+  ],
+  "ignorePatterns": ["./functions"]
+}

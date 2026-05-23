@@ -1,0 +1,15 @@
+node_modules
+.gadget
+.env
+package-lock.json
+yarn.lock
+.env.local
+*.config.json
+config.json
+.appwrite
+.gadget.env
+.wrangler/
+.dev.vars
+.worktrees/
+.playwright-mcp/
+dist/

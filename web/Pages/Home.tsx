@@ -1,5 +1,6 @@
 import { useAppBridge } from '@shopify/app-bridge-react';
 import { authenticatedFetch } from '@shopify/app-bridge/utilities';
+import type { ClientApplication } from '@shopify/app-bridge';
 import { useQuery } from '@tanstack/react-query';
 import {
   Banner,
@@ -10,15 +11,20 @@ import {
   Text,
   VerticalStack,
 } from '@shopify/polaris';
-import { apiFetch } from '../api';
+import { apiFetch, type AuthenticatedFetch } from '../api';
+
+type ExampleResponse = { shopId: string; now: string };
 
 export default function Home() {
-  const app = useAppBridge();
-  const fetcher = authenticatedFetch(app);
+  // App Bridge 4's useAppBridge returns the new ShopifyGlobal shape, but the
+  // legacy authenticatedFetch utility expects the v3 ClientApplication. The
+  // runtime object is compatible; cast to satisfy the types.
+  const app = useAppBridge() as unknown as ClientApplication;
+  const fetcher = authenticatedFetch(app) as AuthenticatedFetch;
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error } = useQuery<ExampleResponse, Error>({
     queryKey: ['example'],
-    queryFn: () => apiFetch(fetcher, '/api/example'),
+    queryFn: () => apiFetch<ExampleResponse>(fetcher, '/api/example'),
   });
 
   return (
@@ -30,7 +36,7 @@ export default function Home() {
               <Text as="h2" variant="headingMd">Example protected API call</Text>
               {isLoading && <Spinner accessibilityLabel="Loading" size="small" />}
               {error && (
-                <Banner tone="critical">
+                <Banner status="critical">
                   {error instanceof Error ? error.message : 'Failed to fetch /api/example'}
                 </Banner>
               )}

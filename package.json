@@ -12,7 +12,7 @@
     "d1:generate": "drizzle-kit generate",
     "vite:build": "NODE_ENV=production vite build",
     "build:frontend": "./scripts/build.sh",
-    "lint": "eslint web --ext .js,.jsx --fix",
+    "lint": "eslint web --ext .ts,.tsx --fix",
     "type-check": "tsc --noEmit",
     "test": "vitest"
   },
@@ -40,6 +40,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241127.0",
     "@types/node": "^20.12.8",
+    "@typescript-eslint/eslint-plugin": "^8.59.4",
+    "@typescript-eslint/parser": "^8.59.4",
     "dotenv": "^16.4.5",
     "drizzle-kit": "^0.27.0",
     "eslint": "^8.56.0",

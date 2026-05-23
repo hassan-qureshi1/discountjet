@@ -8,16 +8,25 @@
  *
  *   const app = useAppBridge();
  *   const fetcher = authenticatedFetch(app);
- *   const data = await apiFetch(fetcher, '/api/example');
+ *   const data = await apiFetch<ExampleResponse>(fetcher, '/api/example');
  *
  * `authenticatedFetch` attaches the Shopify session token (JWT) to every
  * request, which the Worker's `requireShop` middleware verifies.
  */
-export async function apiFetch(authenticatedFetch, path, init = {}) {
+export type AuthenticatedFetch = (
+  uri: string,
+  options?: RequestInit,
+) => Promise<Response>;
+
+export async function apiFetch<T = unknown>(
+  authenticatedFetch: AuthenticatedFetch,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
   const headers = { 'Content-Type': 'application/json', ...(init.headers ?? {}) };
   const res = await authenticatedFetch(path, { ...init, headers });
   if (!res.ok) {
     throw new Error(`Request to ${path} failed: ${res.status} ${res.statusText}`);
   }
-  return res.json();
+  return res.json() as Promise<T>;
 }

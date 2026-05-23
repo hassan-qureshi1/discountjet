@@ -2,7 +2,9 @@ import Bugsnag from '@bugsnag/js';
 import BugsnagPluginReact from '@bugsnag/plugin-react';
 import React from 'react';
 
-const apiKey = typeof import.meta.env !== 'undefined' ? import.meta.env.VITE_BUGSNAG_API_KEY : undefined;
+const apiKey: string | undefined = typeof import.meta.env !== 'undefined'
+  ? import.meta.env.VITE_BUGSNAG_API_KEY
+  : undefined;
 
 if (apiKey) {
   try {
@@ -18,7 +20,7 @@ if (apiKey) {
   }
 }
 
-const BugSnagBoundary = Bugsnag.getPlugin('react')?.createErrorBoundary(React) ?? React.Fragment;
+const BugSnagBoundary: React.ComponentType<{ children?: React.ReactNode }> = Bugsnag.getPlugin('react')?.createErrorBoundary(React) ?? React.Fragment;
 
 export default BugSnagBoundary;
 

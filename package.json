@@ -3,15 +3,41 @@
   "version": "0.1.0",
   "private": true,
   "description": "Shopify embedded app starter on Cloudflare Workers — Hono, D1, KV, R2, React, Polaris, Drizzle ORM, session-token auth",
-  "keywords": ["shopify", "cloudflare", "cloudflare-workers", "shopify-app", "hono", "d1", "react", "polaris", "drizzle", "typescript", "kv", "r2", "embedded-app"],
-  "repository": {"type": "git", "url": "https://github.com/devkindhq/shopify-on-cloudflare"},
+  "keywords": [
+    "shopify",
+    "cloudflare",
+    "cloudflare-workers",
+    "shopify-app",
+    "hono",
+    "d1",
+    "react",
+    "polaris",
+    "drizzle",
+    "typescript",
+    "kv",
+    "r2",
+    "embedded-app"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/devkindhq/shopify-on-cloudflare"
+  },
   "homepage": "https://github.com/devkindhq/shopify-on-cloudflare#readme",
-  "bugs": {"url": "https://github.com/devkindhq/shopify-on-cloudflare/issues"},
+  "bugs": {
+    "url": "https://github.com/devkindhq/shopify-on-cloudflare/issues"
+  },
   "license": "MIT",
   "cloudflare": {
     "label": "Shopify on Cloudflare Starter",
-    "products": ["D1", "KV", "R2"],
-    "categories": ["starter", "storage"],
+    "products": [
+      "D1",
+      "KV",
+      "R2"
+    ],
+    "categories": [
+      "starter",
+      "storage"
+    ],
     "bindings": {
       "DB": {
         "description": "D1 database — run `wrangler d1 create cloudflare-shopify-starter-db` and paste the returned `database_id` into `wrangler.jsonc`."
@@ -34,8 +60,10 @@
     "d1:migrate:local": "wrangler d1 migrations apply cloudflare-shopify-starter-db --local",
     "d1:generate": "drizzle-kit generate",
     "lint": "eslint web --ext .ts,.tsx --fix",
+    "lint:ci": "eslint web --ext .ts,.tsx",
     "type-check": "tsc --noEmit",
     "test": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "cf-typegen": "wrangler types",
     "check": "tsc --noEmit && vite build && wrangler deploy --dry-run",
@@ -66,6 +94,7 @@
     "@typescript-eslint/eslint-plugin": "^8.59.4",
     "@typescript-eslint/parser": "^8.59.4",
     "@vitejs/plugin-react-swc": "^4.3.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "dotenv": "^16.4.5",
     "drizzle-kit": "^0.31.10",
     "eslint": "^8.56.0",

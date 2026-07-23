@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { setDb } from './db/db';
 import { authRoutes } from './routes/auth';
 import { exampleRoutes } from './routes/example';
+import { previewRoutes } from './routes/preview';
 import { webhookRoutes } from './lifecycle/webhooks';
 import type { Env } from './types/env';
 import { requireShop } from './middleware/requireShop';
@@ -21,6 +22,9 @@ app.use('/api/*', requireShop);
 app.route('/', authRoutes);
 app.route('/', webhookRoutes);
 app.route('/', exampleRoutes);
+
+// Public template preview page (no auth) — see routes/preview.ts.
+app.route('/', previewRoutes);
 
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', app: 'cloudflare-shopify-starter' }));

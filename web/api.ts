@@ -4,24 +4,36 @@
  * Usage (App Bridge 4 — do NOT use the v3 `authenticatedFetch` utility, it
  * calls app.subscribe() which doesn't exist on the v4 useAppBridge() object):
  *   import { useAppBridge } from '@shopify/app-bridge-react';
- *   import { apiFetch, type AuthenticatedFetch } from './api';
+ *   import { apiFetch, createAuthenticatedFetch } from './api';
  *
  *   const shopify = useAppBridge();
- *   const fetcher: AuthenticatedFetch = async (uri, options) => {
- *     const token = await shopify.idToken();
- *     return fetch(uri, {
- *       ...options,
- *       headers: { ...(options?.headers ?? {}), Authorization: `Bearer ${token}` },
- *     });
- *   };
+ *   const fetcher = createAuthenticatedFetch(shopify);
  *   const data = await apiFetch<ExampleResponse>(fetcher, '/api/example');
  *
- * The session token (JWT) is verified by the Worker's `requireShop` middleware.
+ * `createAuthenticatedFetch` attaches the App Bridge 4 ID token as a Bearer
+ * header; the Worker's `requireShop` middleware verifies the JWT.
  */
 export type AuthenticatedFetch = (
   uri: string,
   options?: RequestInit,
 ) => Promise<Response>;
+
+type AppBridgeIdToken = {
+  idToken: () => Promise<string>;
+};
+
+export function createAuthenticatedFetch(
+  appBridge: AppBridgeIdToken,
+  fetchImpl: typeof fetch = fetch,
+): AuthenticatedFetch {
+  return async (uri, options = {}) => {
+    const token = await appBridge.idToken();
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+
+    return fetchImpl(uri, { ...options, headers });
+  };
+}
 
 export async function apiFetch<T = unknown>(
   authenticatedFetch: AuthenticatedFetch,

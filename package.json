@@ -3,15 +3,45 @@
   "version": "0.1.0",
   "private": true,
   "description": "Shopify embedded app starter on Cloudflare Workers — Hono, D1, KV, R2, React, Polaris, Drizzle ORM, session-token auth",
-  "keywords": ["shopify", "cloudflare", "cloudflare-workers", "shopify-app", "hono", "d1", "react", "polaris", "drizzle", "typescript", "kv", "r2", "embedded-app"],
-  "repository": {"type": "git", "url": "https://github.com/devkindhq/shopify-on-cloudflare"},
+  "keywords": [
+    "shopify",
+    "cloudflare",
+    "cloudflare-workers",
+    "shopify-app",
+    "hono",
+    "d1",
+    "react",
+    "polaris",
+    "drizzle",
+    "typescript",
+    "kv",
+    "r2",
+    "embedded-app"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/devkindhq/shopify-on-cloudflare"
+  },
   "homepage": "https://github.com/devkindhq/shopify-on-cloudflare#readme",
-  "bugs": {"url": "https://github.com/devkindhq/shopify-on-cloudflare/issues"},
+  "bugs": {
+    "url": "https://github.com/devkindhq/shopify-on-cloudflare/issues"
+  },
+  "author": {
+    "name": "Devkind",
+    "url": "https://devkind.com.au"
+  },
   "license": "MIT",
   "cloudflare": {
     "label": "Shopify on Cloudflare Starter",
-    "products": ["D1", "KV", "R2"],
-    "categories": ["starter", "storage"],
+    "products": [
+      "D1",
+      "KV",
+      "R2"
+    ],
+    "categories": [
+      "starter",
+      "storage"
+    ],
     "bindings": {
       "DB": {
         "description": "D1 database — run `wrangler d1 create cloudflare-shopify-starter-db` and paste the returned `database_id` into `wrangler.jsonc`."
@@ -44,7 +74,6 @@
   "dependencies": {
     "@bugsnag/js": "^8.9.0",
     "@bugsnag/plugin-react": "^8.9.0",
-    "@shopify/app-bridge": "^3.7.10",
     "@shopify/app-bridge-react": "^4.1.5",
     "@shopify/polaris": "10.45.0",
     "@shopify/polaris-icons": "^9.3.1",

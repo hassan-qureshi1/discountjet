@@ -26,6 +26,10 @@
   "bugs": {
     "url": "https://github.com/devkindhq/shopify-on-cloudflare/issues"
   },
+  "author": {
+    "name": "Devkind",
+    "url": "https://devkind.com.au"
+  },
   "license": "MIT",
   "cloudflare": {
     "label": "Shopify on Cloudflare Starter",
@@ -72,7 +76,6 @@
   "dependencies": {
     "@bugsnag/js": "^8.9.0",
     "@bugsnag/plugin-react": "^8.9.0",
-    "@shopify/app-bridge": "^3.7.10",
     "@shopify/app-bridge-react": "^4.1.5",
     "@shopify/polaris": "10.45.0",
     "@shopify/polaris-icons": "^9.3.1",

@@ -7,6 +7,8 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/devkindhq/shopify-on-cloudflare)
 
+**🔗 Live preview:** [cloudflare-shopify-starter-template.ali-d43.workers.dev/preview](https://cloudflare-shopify-starter-template.ali-d43.workers.dev/preview) (opens without a Shopify login).
+
 **Keywords:** Shopify embedded app, Cloudflare Workers, Hono, Drizzle ORM, D1, KV, R2, React Polaris, session token auth, boilerplate, template, starter
 
 <!-- dash-content-start -->
@@ -32,14 +34,14 @@ What's commented out as opt-in (in `wrangler.jsonc`): Cloudflare Queues, Durable
 Browser (Shopify Admin)
   └── App Bridge (session token JWT)
         └── Cloudflare Worker (Hono)
-              ├── /auth/shopify           → OAuth install start
-              ├── /auth/shopify/callback  → OAuth callback, session saved to KV
+              ├── /shopify/install        → OAuth install start
+              ├── /shopify/callback       → OAuth callback, session saved to KV
               ├── /api/*                  → requireShop middleware (JWT verification)
               │     └── GET /api/example → queries D1, returns JSON
               └── /* (static assets)     → React + Polaris SPA (served via [assets])
 ```
 
-- **Install flow:** `/auth/shopify?shop=<shop>` → Shopify consent → `/auth/shopify/callback` → session persisted in `SESSION_KV`.
+- **Install flow:** `/shopify/install?shop=<shop>` → Shopify consent → `/shopify/callback` → session persisted in `SESSION_KV`.
 - **Session-token flow:** App Bridge embeds a short-lived JWT in every API request header; the `requireShop` middleware verifies it and attaches the shop to the request context.
 - **Data layer:** Drizzle ORM on D1 (SQLite). All tables cascade-delete on shop removal (`SHOP_REDACT` GDPR pattern).
 
@@ -100,8 +102,8 @@ After your first deploy (or when using a tunnel locally), set these values in th
 
 | Field | Value |
 |---|---|
-| App URL | `https://<your-worker-host>` |
-| Allowed redirection URLs | `https://<your-worker-host>/auth/shopify/callback` |
+| App URL | `https://<your-worker-host>/shopify/install` |
+| Allowed redirection URLs | `https://<your-worker-host>/shopify/callback` |
 
 Replace `<your-worker-host>` with your `*.workers.dev` hostname (or custom domain).
 
@@ -138,8 +140,9 @@ Everything is served at http://localhost:5173, with the Worker running in the re
 > npm run dev:tunnel   # exposes http://localhost:5173 via a cloudflared HTTPS tunnel
 > ```
 >
-> Copy the printed `https://*.trycloudflare.com` URL and paste it as your **App URL** and
-> `https://*.trycloudflare.com/auth/shopify/callback` as your **Allowed redirection URL**
+> Copy the printed `https://*.trycloudflare.com` URL and use
+> `https://*.trycloudflare.com/shopify/install` as your **App URL** and
+> `https://*.trycloudflare.com/shopify/callback` as your **Allowed redirection URL**
 > in the Shopify Partner Dashboard for the duration of the dev session.
 
 Seed a test shop and hit the example endpoint:

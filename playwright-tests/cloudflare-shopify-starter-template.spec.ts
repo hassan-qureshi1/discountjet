@@ -36,4 +36,25 @@ test.describe('Cloudflare Shopify Starter Template', () => {
       page.locator('script[src*="app-bridge.js"]'),
     ).toBeAttached();
   });
+
+  test('public /preview page renders without Shopify auth', async ({
+    request,
+    page,
+    templateUrl,
+  }) => {
+    const res = await request.get(`${templateUrl}/preview`);
+    expect(res.status()).toBe(200);
+    expect(await res.text()).toContain('Shopify embedded app');
+
+    // Renders in a bare browser (no Shopify iframe / session).
+    await page.goto(`${templateUrl}/preview`);
+    await expect(
+      page.getByRole('heading', { name: /Shopify on Cloudflare/i }),
+    ).toBeVisible();
+    // The embedded-app framing is prominent so a reviewer can't mistake it for a broken app.
+    await expect(page.getByText(/not a running store/i)).toBeVisible();
+    await expect(
+      page.getByRole('link', { name: /View on GitHub/i }),
+    ).toBeVisible();
+  });
 });

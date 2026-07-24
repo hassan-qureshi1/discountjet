@@ -25,6 +25,7 @@ export async function onShopInstall(
   let currency = '';
   let ianaTimezone = '';
   let primaryLocale = '';
+  let plan = '';
 
   try {
     const res = await fetch(`https://${shopDomain}/admin/api/2026-04/shop.json`, {
@@ -41,6 +42,7 @@ export async function onShopInstall(
       currency = data.shop.currency ?? '';
       ianaTimezone = data.shop.iana_timezone ?? '';
       primaryLocale = data.shop.primary_locale ?? '';
+      plan = data.shop.plan_display_name ?? '';
     } else {
       console.error(`[install] shop.json fetch failed: ${res.status} ${res.statusText} for ${shopDomain}`);
     }
@@ -61,6 +63,7 @@ export async function onShopInstall(
       currency,
       ianaTimezone,
       primaryLocale,
+      plan,
       installDate: now,
       status: 'installed',
       updatedAt: now,

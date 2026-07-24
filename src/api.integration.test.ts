@@ -18,7 +18,7 @@ import { createDb } from './db/db';
 // Minimal chainable Drizzle stand-in: `.select().from().where().get()` resolves
 // to the given row (or null). Typed as the createDb return so call sites need
 // no cast.
-function mockDb(row: { id: string } | null): ReturnType<typeof createDb> {
+function mockDb(row: Record<string, unknown> | null): ReturnType<typeof createDb> {
   return {
     select: () => ({
       from: () => ({
@@ -44,17 +44,27 @@ describe('GET /api/example (protected by requireShop)', () => {
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
-  it('returns the shop id for an installed shop via the dev header fallback', async () => {
-    vi.mocked(createDb).mockReturnValue(mockDb({ id: 'shop-abc' }));
+  it('returns the shop profile for an installed shop via the dev header fallback', async () => {
+    vi.mocked(createDb).mockReturnValue(
+      mockDb({
+        id: 'shop-abc',
+        name: 'Test Store',
+        owner: 'Jane Merchant',
+        status: 'installed',
+      }),
+    );
     const res = await app.request(
       '/api/example',
       { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
       env('development'),
     );
     expect(res.status).toBe(200);
-    const json = (await res.json()) as { shopId: string; now: string };
-    expect(json.shopId).toBe('shop-abc');
-    expect(json.now).toBeTruthy();
+    const json = (await res.json()) as {
+      shop: { name: string; owner: string; status: string };
+    };
+    expect(json.shop.name).toBe('Test Store');
+    expect(json.shop.owner).toBe('Jane Merchant');
+    expect(json.shop.status).toBe('installed');
   });
 
   it('ignores the dev header fallback when ENVIRONMENT is not development', async () => {

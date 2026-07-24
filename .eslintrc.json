@@ -37,6 +37,11 @@
         "no-unused-vars": "off",
         "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
         "max-len": ["error", { "code": 200 }],
+        "jsx-a11y/anchor-is-valid": ["error", {
+          "components": ["Link"],
+          "specialLink": ["to", "url"],
+          "aspects": ["noHref", "invalidHref", "preferButton"]
+        }],
         "import/no-extraneous-dependencies": ["error", {
           "devDependencies": ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"]
         }]

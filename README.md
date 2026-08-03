@@ -7,6 +7,8 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/devkindhq/shopify-on-cloudflare)
 
+![Shopify on Cloudflare: a production-ready Shopify embedded app starter on Cloudflare Workers](preview-image.png)
+
 **🔗 Live preview:** [cloudflare-shopify-starter-template.ali-d43.workers.dev/preview](https://cloudflare-shopify-starter-template.ali-d43.workers.dev/preview) (opens without a Shopify login).
 
 **Keywords:** Shopify embedded app, Cloudflare Workers, Hono, Drizzle ORM, D1, KV, R2, React Polaris, session token auth, boilerplate, template, starter

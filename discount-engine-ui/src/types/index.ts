@@ -1,0 +1,132 @@
+// ─── Shared domain types for the Discount Engine UI ──────────────────────────
+// Every hardcoded fixture in src/data/*.json is typed against these interfaces
+// and hydrated into the Zustand store (src/store/useDiscountStore.ts).
+
+/** Polaris Badge tones we use across the app. 'neutral' means "no tone". */
+export type Tone = 'success' | 'info' | 'warning' | 'critical' | 'magic' | 'neutral';
+
+export interface Shop {
+  name: string;
+  initials: string;
+  plan: string;
+}
+
+// ─── Overview ────────────────────────────────────────────────────────────────
+export interface StatBadge {
+  tone: Tone;
+  label: string;
+}
+
+export interface OverviewStat {
+  label: string;
+  value: string;
+  detail?: string;
+  badges?: StatBadge[];
+  /** Renders the value in the success colour (e.g. "Healthy"). */
+  positive?: boolean;
+}
+
+export interface ActivityItem {
+  symbol: string;
+  tone: Tone;
+  title: string;
+  action: string;
+  meta: string;
+  time: string;
+}
+
+export interface CartScheduleItem {
+  symbol: string;
+  tone: Tone;
+  title: string;
+  detail: string;
+  status: string;
+}
+
+export interface OverviewData {
+  banner: { title: string; description: string };
+  stats: OverviewStat[];
+  recentActivity: ActivityItem[];
+  cartSchedule: CartScheduleItem[];
+}
+
+// ─── Discounts ───────────────────────────────────────────────────────────────
+export type DiscountType = 'Tier' | 'Bundle' | 'Special';
+export type DiscountStatus = 'Active' | 'Inactive';
+
+export interface Discount {
+  id: string;
+  name: string;
+  symbol: string;
+  type: DiscountType;
+  status: DiscountStatus;
+  products: number;
+  updated: string;
+}
+
+// ─── Cart transforms ─────────────────────────────────────────────────────────
+export type CartTransformStatus = 'Active' | 'Scheduled' | 'Ended';
+
+export interface CartTransform {
+  id: string;
+  name: string;
+  detail: string;
+  bundles: number;
+  schedule: string;
+  status: CartTransformStatus;
+  metafield: string;
+  updated: string;
+}
+
+// ─── Campaigns ───────────────────────────────────────────────────────────────
+export type CampaignStatus = 'Draft' | 'Scheduled' | 'Published' | 'Ended';
+
+export interface Campaign {
+  id: string;
+  name: string;
+  detail: string;
+  discounts: number;
+  bundles: number;
+  revenue: number | null;
+  orders: number | null;
+  discount: number | null;
+  schedule: string;
+  status: CampaignStatus;
+  live?: boolean;
+}
+
+// ─── Templates ───────────────────────────────────────────────────────────────
+export interface Template {
+  id: string;
+  emoji: string;
+  name: string;
+  description: string;
+  example: string;
+  category: string;
+}
+
+/** A ready-made campaign preset shown on the "Campaign templates" screen. */
+export interface CampaignTemplate {
+  id: string;
+  emoji: string;
+  name: string;
+  description: string;
+  example: string;
+  category: string;
+}
+
+// ─── Plan & limits ───────────────────────────────────────────────────────────
+export interface PlanTier {
+  name: string;
+  limit: number;
+  current: boolean;
+}
+
+export interface PlanData {
+  banner: { title: string; description: string };
+  current: string;
+  used: number;
+  limit: number;
+  usagePercent: number;
+  tiers: PlanTier[];
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "id": "ct1",
+    "name": "Winter bedroom bundles",
+    "detail": "Bed frame + pillows · Mattress set · +1",
+    "bundles": 3,
+    "schedule": "Aug 1 → Sep 30",
+    "status": "Active",
+    "metafield": "Written",
+    "updated": "Aug 1"
+  },
+  {
+    "id": "ct2",
+    "name": "Spring mattress deals",
+    "detail": "Mattress + protector · Sheet bundle",
+    "bundles": 2,
+    "schedule": "Sep 1 → Sep 14",
+    "status": "Scheduled",
+    "metafield": "Not yet written",
+    "updated": "2 hr ago"
+  },
+  {
+    "id": "ct3",
+    "name": "Clearance combos",
+    "detail": "Sofa + cushions · Rug set · +2",
+    "bundles": 4,
+    "schedule": "Jul 20 → Aug 10",
+    "status": "Ended",
+    "metafield": "Cleared",
+    "updated": "Aug 10"
+  }
+]

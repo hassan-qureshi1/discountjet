@@ -1,0 +1,51 @@
+[
+  {
+    "id": "c1",
+    "name": "Winter bedroom event",
+    "detail": "3 discounts · 2 bundles",
+    "discounts": 3,
+    "bundles": 2,
+    "revenue": 48250,
+    "orders": 312,
+    "discount": 7180,
+    "schedule": "Aug 1 → Sep 30",
+    "status": "Published",
+    "live": true
+  },
+  {
+    "id": "c2",
+    "name": "Spring refresh",
+    "detail": "2 discounts · 1 bundle",
+    "discounts": 2,
+    "bundles": 1,
+    "revenue": null,
+    "orders": null,
+    "discount": null,
+    "schedule": "Sep 1 → Sep 14",
+    "status": "Scheduled"
+  },
+  {
+    "id": "c3",
+    "name": "BOGO weekend",
+    "detail": "1 discount · no bundles · not published",
+    "discounts": 1,
+    "bundles": 0,
+    "revenue": null,
+    "orders": null,
+    "discount": null,
+    "schedule": "—",
+    "status": "Draft"
+  },
+  {
+    "id": "c4",
+    "name": "Clearance blowout",
+    "detail": "4 discounts · 3 bundles · metafield cleared",
+    "discounts": 4,
+    "bundles": 3,
+    "revenue": 61400,
+    "orders": 540,
+    "discount": 14900,
+    "schedule": "Jul 20 → Aug 10",
+    "status": "Ended"
+  }
+]

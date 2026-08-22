@@ -1,0 +1,43 @@
+{
+  "banner": {
+    "title": "Growth plan — 6 of 50 discounts active",
+    "description": "Limits are placeholders in M1 and seeded high, so enforcement is inert. The cron only deactivates discounts if a shop drops below its active count — nothing is deactivated in normal operation."
+  },
+  "stats": [
+    {
+      "label": "Active discounts",
+      "value": "6",
+      "detail": "3 tier · 2 bundle · 1 special"
+    },
+    {
+      "label": "Cart transforms",
+      "value": "3",
+      "badges": [
+        { "tone": "success", "label": "1 active" },
+        { "tone": "info", "label": "1 scheduled" }
+      ]
+    },
+    {
+      "label": "Plan usage",
+      "value": "12%",
+      "detail": "6 / 50 discounts"
+    },
+    {
+      "label": "Webhook sync",
+      "value": "Healthy",
+      "detail": "last event 2 min ago",
+      "positive": true
+    }
+  ],
+  "recentActivity": [
+    { "symbol": "＋", "tone": "success", "title": "Buy 2 Pillows, save 15%", "action": "created", "meta": "tier", "time": "2 min ago" },
+    { "symbol": "✎", "tone": "info", "title": "Mattress + Base bundle", "action": "updated", "meta": "bundle", "time": "1 hr ago" },
+    { "symbol": "✎", "tone": "info", "title": "Sheet set BOGO", "action": "updated", "meta": "special", "time": "3 hr ago" },
+    { "symbol": "✕", "tone": "critical", "title": "Winter clearance tier", "action": "deleted", "meta": "tier", "time": "Yesterday" }
+  ],
+  "cartSchedule": [
+    { "symbol": "●", "tone": "success", "title": "Winter bedroom bundles", "detail": "3 bundles · metafield written · ends Sep 30", "status": "Active" },
+    { "symbol": "◷", "tone": "info", "title": "Spring mattress deals", "detail": "2 bundles · starts Sep 1, 09:00 AEST", "status": "Scheduled" },
+    { "symbol": "◌", "tone": "neutral", "title": "Clearance combos", "detail": "4 bundles · ended Aug 10 · metafield cleared", "status": "Ended" }
+  ]
+}

@@ -12,12 +12,13 @@ import {
   DropZone,
   InlineGrid,
   InlineStack,
+  Modal,
   Page,
   ProgressBar,
   Text,
   TextField,
 } from '@shopify/polaris';
-import { useCampaign } from '../store/useDiscountStore';
+import { useCampaign, useCampaignTemplates } from '../store/useDiscountStore';
 import { Stepper } from '../components/common/Stepper';
 import { ChoiceCard } from '../components/common/ChoiceCard';
 import { KeyValueList } from '../components/common/KeyValueList';
@@ -41,6 +42,7 @@ const INITIAL_DISCOUNTS: DiscountRow[] = [
 export default function CampaignBuilder() {
   const { id } = useParams();
   const existing = useCampaign(id);
+  const templates = useCampaignTemplates();
   const navigate = useNavigate();
 
   const [step, setStep] = useState(0);
@@ -52,6 +54,19 @@ export default function CampaignBuilder() {
   const [ends, setEnds] = useState('2026-09-30  23:59');
   const [discounts, setDiscounts] = useState<DiscountRow[]>(INITIAL_DISCOUNTS);
   const [csvFiles, setCsvFiles] = useState<File[]>([]);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const [prefilledFrom, setPrefilledFrom] = useState<string | null>(null);
+  const [notifyEmails, setNotifyEmails] = useState('marketing@evahome.com');
+
+  const applyTemplate = (templateId: string) => {
+    const t = templates.find((x) => x.id === templateId);
+    if (!t) return;
+    setName(t.name);
+    setDescription(t.description);
+    setPrefilledFrom(t.name);
+    setBuildMethod(1);
+    setTemplateModalOpen(false);
+  };
 
   const removeDiscount = (rid: number) => setDiscounts((d) => d.filter((x) => x.id !== rid));
   const addDiscount = (type: string, symbol: string) =>
@@ -73,6 +88,14 @@ export default function CampaignBuilder() {
           <BlockStack gap="400">
             <Card>
               <BlockStack gap="300">
+                {prefilledFrom && (
+                  <InlineStack gap="200" blockAlign="center">
+                    <Badge tone="success">{`Prefilled from “${prefilledFrom}”`}</Badge>
+                    <Button variant="plain" onClick={() => setTemplateModalOpen(true)}>
+                      Change template
+                    </Button>
+                  </InlineStack>
+                )}
                 <TextField label="Campaign name" value={name} onChange={setName} autoComplete="off" helpText="Internal name — groups every discount and bundle on this schedule." />
                 <TextField label="Description (internal, optional)" value={description} onChange={setDescription} autoComplete="off" multiline={2} />
                 <BlockStack gap="150">
@@ -80,7 +103,7 @@ export default function CampaignBuilder() {
                     How do you want to build it?
                   </Text>
                   <ChoiceCard title="Build manually" helpText="Add discounts and bundles yourself in the next steps." selected={buildMethod === 0} onChange={() => setBuildMethod(0)} />
-                  <ChoiceCard title="Start from a template" helpText="Prefill from a ready-made campaign, then tweak." selected={buildMethod === 1} onChange={() => navigate('/campaigns/templates')} />
+                  <ChoiceCard title="Start from a template" helpText="Prefill from a ready-made campaign, then tweak." selected={buildMethod === 1} onChange={() => setTemplateModalOpen(true)} />
                   <ChoiceCard title="Import from CSV" helpText="Upload a full campaign — discounts, bundles and schedule." selected={buildMethod === 2} onChange={() => setBuildMethod(2)} />
                 </BlockStack>
 
@@ -223,6 +246,16 @@ export default function CampaignBuilder() {
                   <TextField label="Ends at" value={ends} onChange={setEnds} autoComplete="off" />
                 </InlineGrid>
               )}
+              <Divider />
+              <TextField
+                label="Notify marketing when the schedule triggers"
+                type="email"
+                value={notifyEmails}
+                onChange={setNotifyEmails}
+                autoComplete="off"
+                placeholder="marketing@evahome.com, ops@evahome.com"
+                helpText="Comma-separated. We email these people when the campaign activates and when it deactivates."
+              />
             </BlockStack>
           </Card>
         )}
@@ -271,6 +304,7 @@ export default function CampaignBuilder() {
                       { term: 'Bundles', description: '1 (Bed frame + 2 pillows)' },
                       { term: 'Window', description: `${starts.split('  ')[0]} → ${ends.split('  ')[0]} (AEST)` },
                       { term: 'Activation', description: 'Cron, ≤ 5 min after start' },
+                      { term: 'Notify', description: notifyEmails || '—' },
                       { term: 'Metafield', description: <code>$app:cart_transform</code> },
                     ]}
                   />
@@ -309,6 +343,69 @@ export default function CampaignBuilder() {
           </ButtonGroup>
         </InlineStack>
       </BlockStack>
+
+      <Modal
+        open={templateModalOpen}
+        onClose={() => setTemplateModalOpen(false)}
+        title="Choose a campaign template"
+      >
+        <Modal.Section>
+          <BlockStack gap="200">
+            {templates.map((t) => (
+              <div
+                key={t.id}
+                onClick={() => applyTemplate(t.id)}
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: 10,
+                  border: '1px solid var(--p-color-border)',
+                  cursor: 'pointer',
+                }}
+              >
+                <InlineStack gap="300" blockAlign="center" wrap={false}>
+                  <div
+                    aria-hidden
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 10,
+                      display: 'grid',
+                      placeItems: 'center',
+                      fontSize: 20,
+                      flex: '0 0 auto',
+                      background: 'var(--p-color-bg-surface-brand)',
+                      boxShadow: 'inset 0 0 0 1px var(--p-color-border)',
+                    }}
+                  >
+                    {t.emoji}
+                  </div>
+                  <BlockStack gap="050">
+                    <InlineStack gap="200" blockAlign="center">
+                      <Text as="span" variant="bodyMd" fontWeight="semibold">
+                        {t.name}
+                      </Text>
+                      <Badge>{t.category}</Badge>
+                    </InlineStack>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      {t.description}
+                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      {t.example}
+                    </Text>
+                  </BlockStack>
+                  <Box width="100%">
+                    <InlineStack align="end">
+                      <Text as="span" variant="bodyLg" tone="subdued">
+                        ›
+                      </Text>
+                    </InlineStack>
+                  </Box>
+                </InlineStack>
+              </div>
+            ))}
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
     </Page>
   );
 }

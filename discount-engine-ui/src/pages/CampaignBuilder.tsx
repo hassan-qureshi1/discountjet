@@ -9,6 +9,7 @@ import {
   ButtonGroup,
   Card,
   Divider,
+  DropZone,
   InlineGrid,
   InlineStack,
   Page,
@@ -50,6 +51,7 @@ export default function CampaignBuilder() {
   const [starts, setStarts] = useState('2026-09-01  00:00');
   const [ends, setEnds] = useState('2026-09-30  23:59');
   const [discounts, setDiscounts] = useState<DiscountRow[]>(INITIAL_DISCOUNTS);
+  const [csvFiles, setCsvFiles] = useState<File[]>([]);
 
   const removeDiscount = (rid: number) => setDiscounts((d) => d.filter((x) => x.id !== rid));
   const addDiscount = (type: string, symbol: string) =>
@@ -81,6 +83,40 @@ export default function CampaignBuilder() {
                   <ChoiceCard title="Start from a template" helpText="Prefill from a ready-made campaign, then tweak." selected={buildMethod === 1} onChange={() => navigate('/campaigns/templates')} />
                   <ChoiceCard title="Import from CSV" helpText="Upload a full campaign — discounts, bundles and schedule." selected={buildMethod === 2} onChange={() => setBuildMethod(2)} />
                 </BlockStack>
+
+                {buildMethod === 2 && (
+                  <BlockStack gap="200">
+                    <DropZone
+                      accept=".csv,text/csv"
+                      type="file"
+                      onDrop={(_drop, accepted) => setCsvFiles(accepted)}
+                    >
+                      {csvFiles.length > 0 ? (
+                        <Box padding="400">
+                          <BlockStack gap="150">
+                            {csvFiles.map((file) => (
+                              <InlineStack key={file.name} gap="200" blockAlign="center">
+                                <Badge tone="success">CSV</Badge>
+                                <Text as="span" variant="bodyMd" fontWeight="semibold">
+                                  {file.name}
+                                </Text>
+                                <Text as="span" variant="bodySm" tone="subdued">
+                                  {`${Math.max(1, Math.round(file.size / 1024))} kB`}
+                                </Text>
+                              </InlineStack>
+                            ))}
+                          </BlockStack>
+                        </Box>
+                      ) : (
+                        <DropZone.FileUpload actionTitle="Add CSV file" actionHint="or drop a .csv here to upload" />
+                      )}
+                    </DropZone>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Expected columns: campaign, section, type, name, products, value, min_qty, bundle_price,
+                      starts_at, ends_at.
+                    </Text>
+                  </BlockStack>
+                )}
               </BlockStack>
             </Card>
             <Banner tone="info" title="Nothing goes live yet">

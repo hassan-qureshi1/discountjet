@@ -7,6 +7,7 @@ import type {
   OverviewData,
   PlanData,
   Shop,
+  ShopifyDiscount,
   Template,
 } from '../types';
 
@@ -20,6 +21,7 @@ import cartTransformsData from '../data/cartTransforms.json';
 import campaignsData from '../data/campaigns.json';
 import templatesData from '../data/templates.json';
 import campaignTemplatesData from '../data/campaignTemplates.json';
+import shopifyDiscountsData from '../data/shopifyDiscounts.json';
 import planData from '../data/plan.json';
 
 interface DiscountStoreState {
@@ -30,6 +32,7 @@ interface DiscountStoreState {
   campaigns: Campaign[];
   templates: Template[];
   campaignTemplates: CampaignTemplate[];
+  shopifyDiscounts: ShopifyDiscount[];
   plan: PlanData;
 }
 
@@ -41,6 +44,7 @@ export const useDiscountStore = create<DiscountStoreState>(() => ({
   campaigns: campaignsData as Campaign[],
   templates: templatesData as Template[],
   campaignTemplates: campaignTemplatesData as CampaignTemplate[],
+  shopifyDiscounts: shopifyDiscountsData as ShopifyDiscount[],
   plan: planData as PlanData,
 }));
 
@@ -52,6 +56,7 @@ export const useCartTransforms = () => useDiscountStore((s) => s.cartTransforms)
 export const useCampaigns = () => useDiscountStore((s) => s.campaigns);
 export const useTemplates = () => useDiscountStore((s) => s.templates);
 export const useCampaignTemplates = () => useDiscountStore((s) => s.campaignTemplates);
+export const useShopifyDiscounts = () => useDiscountStore((s) => s.shopifyDiscounts);
 export const usePlan = () => useDiscountStore((s) => s.plan);
 
 // Single-item lookups used by detail / edit routes.

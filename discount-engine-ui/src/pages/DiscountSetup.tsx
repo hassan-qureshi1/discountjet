@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Badge,
   Banner,
@@ -23,19 +23,30 @@ import { KeyValueList } from '../components/common/KeyValueList';
 
 const STEPS = ['Offer type', 'Discount', 'Savings levels', 'Review'];
 
+const TYPE_LABEL: Record<string, string> = {
+  Tier: 'Tier discount',
+  Bundle: 'Bundle discount',
+  Split: 'Split bundle discount',
+};
+const TYPE_OFFER: Record<string, number> = { Tier: 0, Bundle: 1, Split: 2 };
+
 export default function DiscountSetup() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const kind = params.get('type') ?? '';
+  const discountLabel = TYPE_LABEL[kind] ?? 'Volume discount';
+
   const [method, setMethod] = useState(0);
   const [title, setTitle] = useState('Buy 2 Pillows, save 15%');
   const [step, setStep] = useState(0);
-  const [offerType, setOfferType] = useState(0);
+  const [offerType, setOfferType] = useState(TYPE_OFFER[kind] ?? 0);
   const [message, setMessage] = useState('Buy more, save more');
 
   return (
     <Page
       backAction={{ content: 'Discounts', onAction: () => navigate('/discounts') }}
       title="Create discount"
-      subtitle="Discount Engine · Volume discount"
+      subtitle={`Discount Engine · ${discountLabel}`}
       primaryAction={{ content: 'Save discount' }}
       secondaryActions={[{ content: 'Discard', onAction: () => navigate('/discounts') }]}
     >
@@ -221,7 +232,7 @@ export default function DiscountSetup() {
                 {title}
               </Text>
               <Text as="span" variant="bodySm" tone="subdued">
-                Discount Engine · Volume discount
+                Discount Engine · {discountLabel}
               </Text>
               <Divider />
               <BlockStack gap="100">

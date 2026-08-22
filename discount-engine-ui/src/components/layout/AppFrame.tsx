@@ -1,6 +1,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Frame, Navigation, TopBar } from '@shopify/polaris';
+import { DiscountIcon, HomeIcon, OrderIcon, ProductIcon } from '@shopify/polaris-icons';
 import { useDiscountStore, useShop } from '../../store/useDiscountStore';
 import { NAV_ROUTES, type CountKey } from './navConfig';
 
@@ -70,8 +71,21 @@ export function AppFrame({ children }: { children: ReactNode }) {
     />
   );
 
+  const shopifyItems = [
+    { url: '#', label: 'Home', icon: HomeIcon, disabled: true },
+    { url: '#', label: 'Orders', icon: OrderIcon, disabled: true, badge: '12' },
+    { url: '#', label: 'Products', icon: ProductIcon, disabled: true },
+    {
+      url: '/shopify-discounts',
+      label: 'Discounts',
+      icon: DiscountIcon,
+      selected: pathname === '/shopify-discounts',
+    },
+  ];
+
   const navigation = (
     <Navigation location={pathname}>
+      <Navigation.Section items={shopifyItems} />
       <Navigation.Section title="Discount Engine" items={navItems} />
     </Navigation>
   );

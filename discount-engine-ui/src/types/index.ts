@@ -115,6 +115,21 @@ export interface CampaignTemplate {
   category: string;
 }
 
+// ─── Shopify (native) discounts list ─────────────────────────────────────────
+export type ShopifyDiscountStatus = 'Active' | 'Scheduled' | 'Expired';
+export type DiscountEngineKind = 'Tier' | 'Bundle' | 'Split';
+
+export interface ShopifyDiscount {
+  id: string;
+  title: string;
+  status: ShopifyDiscountStatus;
+  method: 'Automatic' | 'Code';
+  type: string;
+  /** Set when this row is a Discount Engine app discount (vs a native Shopify one). */
+  engine: DiscountEngineKind | null;
+  used: number;
+}
+
 // ─── Plan & limits ───────────────────────────────────────────────────────────
 export interface PlanTier {
   name: string;

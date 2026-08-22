@@ -15,6 +15,7 @@ import { useDiscounts } from '../store/useDiscountStore';
 import type { Discount } from '../types';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { SymbolTile } from '../components/common/SymbolTile';
+import { DiscountTypeModal } from '../components/common/DiscountTypeModal';
 
 type FilterId = 'all' | 'tier' | 'bundle' | 'special' | 'inactive';
 
@@ -30,6 +31,7 @@ export default function Discounts() {
   const discounts = useDiscounts();
   const navigate = useNavigate();
   const [selected, setSelected] = useState(0);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const filters: { id: FilterId; label: string }[] = [
     { id: 'all', label: 'All' },
@@ -52,7 +54,7 @@ export default function Discounts() {
       title="Discounts"
       subtitle="Read-only. Discounts are authored in Shopify; their config is synced here via webhooks and read by the Rust functions at checkout."
       titleMetadata={<Badge tone="success">Synced from Shopify</Badge>}
-      primaryAction={{ content: 'Create discount', onAction: () => navigate('/discounts/new') }}
+      primaryAction={{ content: 'Create discount', onAction: () => setModalOpen(true) }}
     >
       <BlockStack gap="300">
         <Card padding="0">
@@ -114,6 +116,15 @@ export default function Discounts() {
           “View config” opens the read-only JSON the Rust tier / bundle / special functions evaluate.
         </Text>
       </BlockStack>
+
+      <DiscountTypeModal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSelectEngine={(kind) => {
+          setModalOpen(false);
+          navigate(`/discounts/new?type=${kind}`);
+        }}
+      />
     </Page>
   );
 }

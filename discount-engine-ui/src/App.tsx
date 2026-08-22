@@ -8,6 +8,7 @@ import CampaignTemplates from './pages/CampaignTemplates';
 import CampaignBuilder from './pages/CampaignBuilder';
 import CampaignDetail from './pages/CampaignDetail';
 import Discounts from './pages/Discounts';
+import ShopifyDiscounts from './pages/ShopifyDiscounts';
 import DiscountDetail from './pages/DiscountDetail';
 import DiscountSetup from './pages/DiscountSetup';
 import UpsellDesigner from './pages/UpsellDesigner';
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="/campaigns/:id/edit" element={<CampaignBuilder />} />
         <Route path="/campaigns/:id" element={<CampaignDetail />} />
 
+        <Route path="/shopify-discounts" element={<ShopifyDiscounts />} />
         <Route path="/discounts" element={<Discounts />} />
         <Route path="/discounts/new" element={<DiscountSetup />} />
         <Route path="/discounts/:id" element={<DiscountDetail />} />

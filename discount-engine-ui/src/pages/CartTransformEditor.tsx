@@ -3,7 +3,6 @@ import { useNavigate, useParams } from 'react-router-dom';
 import {
   Badge,
   BlockStack,
-  Box,
   Button,
   Card,
   Divider,
@@ -11,6 +10,7 @@ import {
   InlineStack,
   Page,
   ProgressBar,
+  Tag,
   Text,
   TextField,
 } from '@shopify/polaris';
@@ -18,17 +18,22 @@ import { useCartTransform } from '../store/useDiscountStore';
 import { ChoiceCard } from '../components/common/ChoiceCard';
 import { KeyValueList } from '../components/common/KeyValueList';
 
-interface BundleDraft {
-  id: number;
-  name: string;
-  items: string[];
-  price: string;
-}
-
-const INITIAL_BUNDLES: BundleDraft[] = [
-  { id: 1, name: 'Bed frame + 2 pillows', items: ['Oak Bed Frame — Queen', 'Memory Foam Pillow — Std ×2'], price: '899.00' },
-  { id: 2, name: 'Mattress + protector + sheets', items: ['Cloud Hybrid Mattress — Queen', 'Mattress Protector'], price: '' },
+// Sample catalogue (stands in for the variant picker) with per-item prices so
+// the "sum of items" and saving update live as the merchant edits the bundle.
+// Prices chosen so each seeded bundle's items sum to its sumOfItems in the data.
+const CATALOGUE: { name: string; price: number }[] = [
+  { name: 'Oak Bed Frame — Queen', price: 699 },
+  { name: 'Memory Foam Pillow ×2', price: 358 },
+  { name: 'Bamboo Sheet Set', price: 149 },
+  { name: 'Duvet Cover', price: 89 },
+  { name: 'Cloud Hybrid Mattress — Queen', price: 1221 },
+  { name: 'Mattress Protector', price: 89 },
+  { name: '3-Seat Sofa', price: 899 },
+  { name: 'Scatter Cushion ×2', price: 79 },
+  { name: 'Wool Throw', price: 252 },
 ];
+const priceOf = (name: string) => CATALOGUE.find((c) => c.name === name)?.price ?? 0;
+const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function CartTransformEditor() {
   const { id } = useParams();
@@ -36,102 +41,100 @@ export default function CartTransformEditor() {
   const navigate = useNavigate();
   const isEdit = Boolean(existing);
 
-  const [name, setName] = useState(existing?.name ?? 'Winter bedroom bundles');
-  const [schedule, setSchedule] = useState(1); // 0 immediate, 1 window
+  const [name, setName] = useState(existing?.name ?? 'Winter bedroom bundle');
+  const [items, setItems] = useState<string[]>(existing?.items ?? ['Oak Bed Frame — Queen', 'Memory Foam Pillow ×2']);
+  const [price, setPrice] = useState(String(existing?.price ?? 899));
+  const [schedule, setSchedule] = useState(existing?.status === 'Active' ? 0 : 1);
   const [starts, setStarts] = useState('2026-08-01  00:00');
   const [ends, setEnds] = useState('2026-09-30  23:59');
-  const [bundles, setBundles] = useState<BundleDraft[]>(INITIAL_BUNDLES);
 
-  const addBundle = () =>
-    setBundles((b) => [...b, { id: Date.now(), name: '', items: [], price: '' }]);
-  const removeBundle = (bid: number) => setBundles((b) => b.filter((x) => x.id !== bid));
-  const setBundleName = (bid: number, value: string) =>
-    setBundles((b) => b.map((x) => (x.id === bid ? { ...x, name: value } : x)));
-  const setBundlePrice = (bid: number, value: string) =>
-    setBundles((b) => b.map((x) => (x.id === bid ? { ...x, price: value } : x)));
+  const addVariant = () => {
+    const next = CATALOGUE.find((c) => !items.includes(c.name));
+    if (next) setItems((prev) => [...prev, next.name]);
+  };
+  const removeVariant = (name: string) => setItems((prev) => prev.filter((n) => n !== name));
+
+  const sumOfItems = items.reduce((sum, n) => sum + priceOf(n), 0);
+  const priceNum = parseFloat(price) || 0;
+  const save = Math.max(0, sumOfItems - priceNum);
 
   return (
     <Page
       backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}
-      title={isEdit ? 'Edit campaign' : 'Create campaign'}
-      subtitle="A campaign is a scheduled set of bundles. Each bundle is assembled from its variants at checkout by the cart-transformer."
-      primaryAction={{ content: 'Save campaign' }}
+      title={isEdit ? 'Edit bundle' : 'Create bundle'}
+      subtitle="A bundle is a set of variants the cart-transformer assembles at checkout and sells at one price."
+      primaryAction={{ content: 'Save bundle' }}
       secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
     >
       <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">
         <BlockStack gap="400">
           <Card>
             <TextField
-              label="Campaign name"
+              label="Bundle name"
               value={name}
               onChange={setName}
               autoComplete="off"
-              helpText="Groups all the bundles that share this schedule."
+              helpText="Shown internally and used to label the bundle in the metafield."
             />
           </Card>
 
           <Card>
             <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingSm">
-                  Bundles
-                </Text>
-                <Badge tone="info">{`${bundles.length} bundles`}</Badge>
-              </InlineStack>
-              <Divider />
-              {bundles.map((bundle, i) => (
-                <Box key={bundle.id} padding="300" borderRadius="200" borderWidth="025" borderColor="border">
-                  <BlockStack gap="300">
-                    <InlineStack gap="200" blockAlign="center" wrap={false}>
-                      <Badge tone="magic">{`Bundle ${i + 1}`}</Badge>
-                      <div style={{ flex: 1 }}>
-                        <TextField
-                          label="Bundle name"
-                          labelHidden
-                          value={bundle.name}
-                          onChange={(v) => setBundleName(bundle.id, v)}
-                          autoComplete="off"
-                          placeholder="Bundle name"
-                        />
-                      </div>
-                      <Button tone="critical" variant="tertiary" onClick={() => removeBundle(bundle.id)}>
-                        Remove
-                      </Button>
-                    </InlineStack>
-
-                    <BlockStack gap="150">
-                      <Text as="span" variant="bodySm">
-                        Bundle items
-                      </Text>
-                      {bundle.items.length > 0 ? (
-                        <InlineStack gap="150">
-                          {bundle.items.map((item) => (
-                            <Badge key={item}>{item}</Badge>
-                          ))}
-                        </InlineStack>
-                      ) : (
-                        <Button>Add variants</Button>
-                      )}
-                    </BlockStack>
-
-                    <TextField
-                      label="Bundle price"
-                      type="number"
-                      prefix="$"
-                      value={bundle.price}
-                      onChange={(v) => setBundlePrice(bundle.id, v)}
-                      autoComplete="off"
-                      placeholder="0.00"
-                    />
-                  </BlockStack>
-                </Box>
-              ))}
-              <InlineStack>
-                <Button onClick={addBundle}>＋ Add bundle</Button>
-              </InlineStack>
-              <Text as="span" variant="bodySm" tone="subdued">
-                Each bundle groups multiple variants; the Rust cart-transformer assembles it from them at checkout.
+              <Text as="h3" variant="headingSm">
+                Bundle items
               </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                The variants that make up this bundle — the cart-transformer assembles it from them at
+                checkout.
+              </Text>
+              {items.length > 0 ? (
+                <InlineStack gap="150">
+                  {items.map((item) => (
+                    <Tag key={item} onRemove={() => removeVariant(item)}>
+                      {item}
+                    </Tag>
+                  ))}
+                </InlineStack>
+              ) : (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  No items yet — add the variants that form this bundle.
+                </Text>
+              )}
+              <InlineStack>
+                <Button onClick={addVariant} disabled={items.length >= CATALOGUE.length}>
+                  Add variants
+                </Button>
+              </InlineStack>
+            </BlockStack>
+          </Card>
+
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h3" variant="headingSm">
+                Price
+              </Text>
+              <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                <TextField
+                  label="Bundle price"
+                  type="number"
+                  prefix="$"
+                  value={price}
+                  onChange={setPrice}
+                  autoComplete="off"
+                  min={0}
+                />
+                <BlockStack gap="100">
+                  <Text as="span" variant="bodyMd">
+                    Sum of items
+                  </Text>
+                  <InlineStack gap="200" blockAlign="center">
+                    <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
+                      {money(sumOfItems)}
+                    </Text>
+                    {save > 0 && <Badge tone="success">{`Save ${money(save)}`}</Badge>}
+                  </InlineStack>
+                </BlockStack>
+              </InlineGrid>
             </BlockStack>
           </Card>
         </BlockStack>
@@ -151,7 +154,7 @@ export default function CartTransformEditor() {
               />
               <ChoiceCard
                 title="Schedule a window"
-                helpText="App activates and deactivates automatically."
+                helpText="The app activates and deactivates the bundle automatically."
                 selected={schedule === 1}
                 onChange={() => setSchedule(1)}
               />
@@ -181,8 +184,11 @@ export default function CartTransformEditor() {
                   { term: 'Namespace', description: <code>$app:cart_transform</code> },
                   { term: 'Key', description: <code>config</code> },
                   { term: 'Access', description: 'MERCHANT_READ' },
-                  { term: 'Contains', description: 'All bundles in this campaign' },
-                  { term: 'Status', description: <Badge tone="success">Written · Aug 1</Badge> },
+                  { term: 'Contains', description: `${items.length} variant${items.length === 1 ? '' : 's'}` },
+                  {
+                    term: 'Status',
+                    description: <Badge tone={existing?.metafield === 'Written' ? 'success' : undefined}>{existing?.metafield ?? 'Not yet written'}</Badge>,
+                  },
                 ]}
               />
               <BlockStack gap="150">
@@ -191,14 +197,11 @@ export default function CartTransformEditor() {
                     Serialized size
                   </Text>
                   <Text as="span" variant="bodySm" numeric>
-                    3.1 kB / 10 kB
+                    0.9 kB / 10 kB
                   </Text>
                 </InlineStack>
-                <ProgressBar progress={31} size="small" tone="success" />
+                <ProgressBar progress={9} size="small" tone="success" />
               </BlockStack>
-              <Text as="span" variant="bodySm" tone="subdued">
-                All bundles serialize into one config. Shopify drops metafields over 10 kB — D1 stays canonical.
-              </Text>
             </BlockStack>
           </Card>
         </BlockStack>

@@ -64,14 +64,18 @@ export interface Discount {
   updated: string;
 }
 
-// ─── Cart transforms ─────────────────────────────────────────────────────────
+// ─── Bundles (cart-transform bundles; type name kept for store compatibility) ─
 export type CartTransformStatus = 'Active' | 'Scheduled' | 'Ended';
 
 export interface CartTransform {
   id: string;
   name: string;
-  detail: string;
-  bundles: number;
+  /** Variant/product names that make up the bundle. */
+  items: string[];
+  /** Bundle price the shopper pays. */
+  price: number;
+  /** Sum of the items' individual prices (used to show the saving). */
+  sumOfItems: number;
   schedule: string;
   status: CartTransformStatus;
   metafield: string;

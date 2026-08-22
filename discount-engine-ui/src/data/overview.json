@@ -11,9 +11,9 @@
     },
     {
       "label": "Bundles",
-      "value": "3",
+      "value": "4",
       "badges": [
-        { "tone": "success", "label": "1 active" },
+        { "tone": "success", "label": "2 active" },
         { "tone": "info", "label": "1 scheduled" }
       ]
     },
@@ -36,8 +36,8 @@
     { "symbol": "✕", "tone": "critical", "title": "Winter clearance tier", "action": "deleted", "meta": "tier", "time": "Yesterday" }
   ],
   "cartSchedule": [
-    { "symbol": "●", "tone": "success", "title": "Winter bedroom bundles", "detail": "3 bundles · metafield written · ends Sep 30", "status": "Active" },
-    { "symbol": "◷", "tone": "info", "title": "Spring mattress deals", "detail": "2 bundles · starts Sep 1, 09:00 AEST", "status": "Scheduled" },
-    { "symbol": "◌", "tone": "neutral", "title": "Clearance combos", "detail": "4 bundles · ended Aug 10 · metafield cleared", "status": "Ended" }
+    { "symbol": "●", "tone": "success", "title": "Winter bedroom bundle", "detail": "2 items · metafield written · ends Sep 30", "status": "Active" },
+    { "symbol": "◷", "tone": "info", "title": "Mattress set", "detail": "3 items · starts Sep 1, 09:00 AEST", "status": "Scheduled" },
+    { "symbol": "◌", "tone": "neutral", "title": "Sofa + cushions", "detail": "3 items · ended Aug 10 · metafield cleared", "status": "Ended" }
   ]
 }

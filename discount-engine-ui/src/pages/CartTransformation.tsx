@@ -14,9 +14,16 @@ import {
   Text,
 } from '@shopify/polaris';
 import { useCartTransforms } from '../store/useDiscountStore';
-import type { CartTransform, CartTransformStatus, Tone } from '../types';
+import type { CartTransform, CartTransformOp, CartTransformStatus, Tone } from '../types';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { SymbolTile } from '../components/common/SymbolTile';
+import { getOp } from '../components/discount/cartTransformOps';
+
+const OP_TONE: Record<CartTransformOp, 'info' | 'magic' | 'warning'> = {
+  merge: 'info',
+  expand: 'magic',
+  update: 'warning',
+};
 
 const STATUS_TONE: Record<CartTransformStatus, Tone> = {
   Active: 'success',
@@ -82,6 +89,7 @@ export default function CartTransformation() {
               }
               headings={[
                 { title: 'Bundle' },
+                { title: 'Operation' },
                 { title: 'Price', alignment: 'end' },
                 { title: 'Save', alignment: 'end' },
                 { title: 'Schedule' },
@@ -104,6 +112,9 @@ export default function CartTransformation() {
                         </Text>
                       </BlockStack>
                     </InlineStack>
+                  </IndexTable.Cell>
+                  <IndexTable.Cell>
+                    <Badge tone={OP_TONE[b.operation]}>{getOp(b.operation).label}</Badge>
                   </IndexTable.Cell>
                   <IndexTable.Cell>
                     <Text as="span" numeric alignment="end" fontWeight="semibold">

@@ -8,7 +8,10 @@ export type Tone = 'success' | 'info' | 'warning' | 'critical' | 'magic' | 'neut
 export interface Shop {
   name: string;
   initials: string;
+  /** Our app's plan tier (Starter / Growth / Scale). */
   plan: string;
+  /** The store's Shopify plan (e.g. Basic, Shopify, Advanced, Plus). */
+  shopifyPlan: string;
 }
 
 // ─── Overview ────────────────────────────────────────────────────────────────
@@ -67,9 +70,14 @@ export interface Discount {
 // ─── Bundles (cart-transform bundles; type name kept for store compatibility) ─
 export type CartTransformStatus = 'Active' | 'Scheduled' | 'Ended';
 
+/** The Shopify cart-transform operation a bundle uses. */
+export type CartTransformOp = 'merge' | 'expand' | 'update';
+
 export interface CartTransform {
   id: string;
   name: string;
+  /** Which Shopify cart-transform operation this bundle performs. */
+  operation: CartTransformOp;
   /** Variant/product names that make up the bundle. */
   items: string[];
   /** Bundle price the shopper pays. */

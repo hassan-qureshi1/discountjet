@@ -2,6 +2,7 @@
   {
     "id": "b1",
     "name": "Winter bedroom bundle",
+    "operation": "merge",
     "items": ["Oak Bed Frame — Queen", "Memory Foam Pillow ×2"],
     "price": 899,
     "sumOfItems": 1057,
@@ -13,6 +14,7 @@
   {
     "id": "b2",
     "name": "Sheet + duvet bundle",
+    "operation": "merge",
     "items": ["Bamboo Sheet Set", "Duvet Cover"],
     "price": 189,
     "sumOfItems": 238,
@@ -24,6 +26,7 @@
   {
     "id": "b3",
     "name": "Mattress set",
+    "operation": "expand",
     "items": ["Cloud Hybrid Mattress — Queen", "Mattress Protector", "Bamboo Sheet Set"],
     "price": 1249,
     "sumOfItems": 1459,
@@ -35,6 +38,7 @@
   {
     "id": "b4",
     "name": "Sofa + cushions",
+    "operation": "merge",
     "items": ["3-Seat Sofa", "Scatter Cushion ×2", "Wool Throw"],
     "price": 1090,
     "sumOfItems": 1230,

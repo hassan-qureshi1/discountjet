@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Badge,
-  Banner,
   BlockStack,
   Button,
   Card,
@@ -11,7 +10,6 @@ import {
   InlineStack,
   List,
   Page,
-  ProgressBar,
   Select,
   Tag,
   Text,
@@ -19,8 +17,6 @@ import {
 } from '@shopify/polaris';
 import { useCartTransform, usePlan, useShop } from '../store/useDiscountStore';
 import type { CartTransformOp } from '../types';
-import { ChoiceCard } from '../components/common/ChoiceCard';
-import { KeyValueList } from '../components/common/KeyValueList';
 import {
   CART_TRANSFORM_LIMITS,
   gateField,
@@ -135,9 +131,6 @@ export default function CartTransformEditor() {
     { id: 1, name: 'Memory Foam Pillow ×2', qty: '2' },
     { id: 2, name: 'Bamboo Sheet Set', qty: '1' },
   ]);
-  const [schedule, setSchedule] = useState(existing?.status === 'Active' ? 0 : 1);
-  const [starts, setStarts] = useState('2026-08-01  00:00');
-  const [ends, setEnds] = useState('2026-09-30  23:59');
 
   const addVariant = () => {
     const next = CATALOGUE.find((c) => !items.includes(c.name));
@@ -158,12 +151,13 @@ export default function CartTransformEditor() {
   const save = Math.max(0, sumOfItems - priceNum);
 
   const catalogueOptions = CATALOGUE.map((c) => ({ label: c.name, value: c.name }));
+  const selectedOp = getOp(operation);
 
   return (
     <Page
       backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}
       title={isEdit ? 'Edit bundle' : 'Create bundle'}
-      subtitle="A bundle runs one Shopify cart-transform operation at checkout — merge, expand, or update."
+      subtitle="Define what the bundle is. Scheduling happens later in a bundle campaign."
       titleMetadata={<Badge>{`${appTier} plan · ${shop.shopifyPlan}`}</Badge>}
       primaryAction={{ content: 'Save bundle' }}
       secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
@@ -176,7 +170,7 @@ export default function CartTransformEditor() {
               value={name}
               onChange={setName}
               autoComplete="off"
-              helpText="Shown internally and used to label the bundle in the metafield."
+              helpText="Shown internally and used to label the bundle."
             />
           </Card>
 
@@ -196,13 +190,6 @@ export default function CartTransformEditor() {
                   onSelect={() => setOperation(op.id)}
                 />
               ))}
-              <Banner tone="info" title="Cart transform limits">
-                <List>
-                  {CART_TRANSFORM_LIMITS.map((l) => (
-                    <List.Item key={l}>{l}</List.Item>
-                  ))}
-                </List>
-              </Banner>
             </BlockStack>
           </Card>
 
@@ -363,58 +350,31 @@ export default function CartTransformEditor() {
           )}
         </BlockStack>
 
-        <BlockStack gap="400">
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingSm">
-                Schedule
-              </Text>
-              <Divider />
-              <ChoiceCard title="Activate immediately" helpText="Metafield written on the next cron pass (≤ 5 min)." selected={schedule === 0} onChange={() => setSchedule(0)} />
-              <ChoiceCard title="Schedule a window" helpText="The app activates and deactivates the bundle automatically." selected={schedule === 1} onChange={() => setSchedule(1)} />
-              {schedule === 1 && (
-                <InlineGrid columns={2} gap="300">
-                  <TextField label="Starts at" value={starts} onChange={setStarts} autoComplete="off" />
-                  <TextField label="Ends at" value={ends} onChange={setEnds} autoComplete="off" />
-                </InlineGrid>
-              )}
-            </BlockStack>
-          </Card>
-
-          <Card>
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingSm">
-                  Metafield
-                </Text>
-                <Badge tone="info">App-owned · read-only</Badge>
-              </InlineStack>
-              <Divider />
-              <KeyValueList
-                items={[
-                  { term: 'Namespace', description: <code>$app:cart_transform</code> },
-                  { term: 'Operation', description: <Badge>{getOp(operation).label}</Badge> },
-                  { term: 'Access', description: 'MERCHANT_READ' },
-                  {
-                    term: 'Status',
-                    description: <Badge tone={existing?.metafield === 'Written' ? 'success' : undefined}>{existing?.metafield ?? 'Not yet written'}</Badge>,
-                  },
-                ]}
-              />
-              <BlockStack gap="150">
-                <InlineStack align="space-between">
-                  <Text as="span" variant="bodySm" tone="subdued">
-                    Serialized size
-                  </Text>
-                  <Text as="span" variant="bodySm" numeric>
-                    0.9 kB / 10 kB
-                  </Text>
-                </InlineStack>
-                <ProgressBar progress={9} size="small" tone="success" />
-              </BlockStack>
-            </BlockStack>
-          </Card>
-        </BlockStack>
+        {/* Right rail — operation reference + real Shopify limits */}
+        <Card>
+          <BlockStack gap="300">
+            <Text as="h3" variant="headingSm">
+              Operation
+            </Text>
+            <InlineStack gap="150" blockAlign="center">
+              <Badge tone={operation === 'expand' ? 'magic' : operation === 'update' ? 'warning' : 'info'}>
+                {selectedOp.label}
+              </Badge>
+            </InlineStack>
+            <Text as="span" variant="bodySm" tone="subdued">
+              {selectedOp.description}
+            </Text>
+            <Divider />
+            <Text as="span" variant="headingXs" tone="subdued">
+              CART TRANSFORM LIMITS
+            </Text>
+            <List>
+              {CART_TRANSFORM_LIMITS.map((l) => (
+                <List.Item key={l}>{l}</List.Item>
+              ))}
+            </List>
+          </BlockStack>
+        </Card>
       </InlineGrid>
     </Page>
   );

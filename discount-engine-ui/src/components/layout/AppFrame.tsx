@@ -16,6 +16,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
     campaigns: s.campaigns.length,
     discounts: s.discounts.length,
     cartTransforms: s.cartTransforms.length,
+    bundleCampaigns: s.bundleCampaigns.length,
   }));
 
   const [mobileNavActive, setMobileNavActive] = useState(false);

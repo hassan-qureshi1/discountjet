@@ -14,6 +14,8 @@ import DiscountSetup from './pages/DiscountSetup';
 import UpsellDesigner from './pages/UpsellDesigner';
 import CartTransformation from './pages/CartTransformation';
 import CartTransformEditor from './pages/CartTransformEditor';
+import BundleCampaigns from './pages/BundleCampaigns';
+import BundleCampaignEditor from './pages/BundleCampaignEditor';
 import PlanAndLimits from './pages/PlanAndLimits';
 
 export default function App() {
@@ -40,6 +42,10 @@ export default function App() {
         <Route path="/bundles" element={<CartTransformation />} />
         <Route path="/bundles/new" element={<CartTransformEditor />} />
         <Route path="/bundles/:id/edit" element={<CartTransformEditor />} />
+
+        <Route path="/bundle-campaigns" element={<BundleCampaigns />} />
+        <Route path="/bundle-campaigns/new" element={<BundleCampaignEditor />} />
+        <Route path="/bundle-campaigns/:id/edit" element={<BundleCampaignEditor />} />
 
         <Route path="/plan" element={<PlanAndLimits />} />
         <Route path="*" element={<Navigate to="/" replace />} />

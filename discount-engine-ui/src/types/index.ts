@@ -73,6 +73,25 @@ export type CartTransformStatus = 'Active' | 'Scheduled' | 'Ended';
 /** The Shopify cart-transform operation a bundle uses. */
 export type CartTransformOp = 'merge' | 'expand' | 'update';
 
+// ─── Bundle campaigns ────────────────────────────────────────────────────────
+export type BundleCampaignStatus = 'Draft' | 'Scheduled' | 'Active' | 'Ended';
+
+/** A bundle included in a campaign, with its scheduled price override. */
+export interface BundleCampaignBundle {
+  bundleId: string;
+  price: number;
+  compareAtPrice: number;
+}
+
+export interface BundleCampaign {
+  id: string;
+  name: string;
+  status: BundleCampaignStatus;
+  starts: string;
+  ends: string;
+  bundles: BundleCampaignBundle[];
+}
+
 export interface CartTransform {
   id: string;
   name: string;

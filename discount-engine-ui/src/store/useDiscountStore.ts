@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type {
+  BundleCampaign,
   Campaign,
   CampaignTemplate,
   CartTransform,
@@ -18,6 +19,7 @@ import shopData from '../data/shop.json';
 import overviewData from '../data/overview.json';
 import discountsData from '../data/discounts.json';
 import cartTransformsData from '../data/cartTransforms.json';
+import bundleCampaignsData from '../data/bundleCampaigns.json';
 import campaignsData from '../data/campaigns.json';
 import templatesData from '../data/templates.json';
 import campaignTemplatesData from '../data/campaignTemplates.json';
@@ -30,6 +32,7 @@ interface DiscountStoreState {
   discounts: Discount[];
   cartTransforms: CartTransform[];
   campaigns: Campaign[];
+  bundleCampaigns: BundleCampaign[];
   templates: Template[];
   campaignTemplates: CampaignTemplate[];
   shopifyDiscounts: ShopifyDiscount[];
@@ -42,6 +45,7 @@ export const useDiscountStore = create<DiscountStoreState>(() => ({
   discounts: discountsData as Discount[],
   cartTransforms: cartTransformsData as CartTransform[],
   campaigns: campaignsData as Campaign[],
+  bundleCampaigns: bundleCampaignsData as BundleCampaign[],
   templates: templatesData as Template[],
   campaignTemplates: campaignTemplatesData as CampaignTemplate[],
   shopifyDiscounts: shopifyDiscountsData as ShopifyDiscount[],
@@ -66,5 +70,8 @@ export const useCampaign = (id?: string) =>
   useDiscountStore((s) => s.campaigns.find((c) => c.id === id));
 export const useCartTransform = (id?: string) =>
   useDiscountStore((s) => s.cartTransforms.find((t) => t.id === id));
+export const useBundleCampaigns = () => useDiscountStore((s) => s.bundleCampaigns);
+export const useBundleCampaign = (id?: string) =>
+  useDiscountStore((s) => s.bundleCampaigns.find((c) => c.id === id));
 export const useTemplate = (id?: string) =>
   useDiscountStore((s) => s.templates.find((t) => t.id === id));

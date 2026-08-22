@@ -1,0 +1,33 @@
+[
+  {
+    "id": "bc1",
+    "name": "Winter bedroom event",
+    "status": "Active",
+    "starts": "2026-08-01  00:00",
+    "ends": "2026-09-30  23:59",
+    "bundles": [
+      { "bundleId": "b1", "price": 899, "compareAtPrice": 1057 },
+      { "bundleId": "b2", "price": 189, "compareAtPrice": 238 }
+    ]
+  },
+  {
+    "id": "bc2",
+    "name": "Spring refresh",
+    "status": "Scheduled",
+    "starts": "2026-09-01  00:00",
+    "ends": "2026-09-14  23:59",
+    "bundles": [
+      { "bundleId": "b3", "price": 1199, "compareAtPrice": 1459 }
+    ]
+  },
+  {
+    "id": "bc3",
+    "name": "Clearance blowout",
+    "status": "Ended",
+    "starts": "2026-07-20  00:00",
+    "ends": "2026-08-10  23:59",
+    "bundles": [
+      { "bundleId": "b4", "price": 990, "compareAtPrice": 1230 }
+    ]
+  }
+]

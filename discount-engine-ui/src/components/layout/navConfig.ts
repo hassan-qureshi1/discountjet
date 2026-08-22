@@ -9,7 +9,7 @@ import {
 import type { IconSource } from '@shopify/polaris';
 
 /** Which store collection to count in the nav badge, if any. */
-export type CountKey = 'campaigns' | 'discounts' | 'cartTransforms';
+export type CountKey = 'campaigns' | 'discounts' | 'cartTransforms' | 'bundleCampaigns';
 
 export interface NavRoute {
   path: string;
@@ -25,5 +25,6 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/campaigns', label: 'Campaigns', icon: CalendarIcon, countKey: 'campaigns' },
   { path: '/discounts', label: 'Discounts', icon: DiscountIcon, countKey: 'discounts' },
   { path: '/bundles', label: 'Bundles', icon: CartIcon, countKey: 'cartTransforms' },
+  { path: '/bundle-campaigns', label: 'Bundle campaigns', icon: CalendarIcon, countKey: 'bundleCampaigns' },
   { path: '/plan', label: 'Plan & limits', icon: CreditCardIcon },
 ];

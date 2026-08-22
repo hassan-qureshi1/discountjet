@@ -17,11 +17,11 @@ Other scripts: `npm run build` (typecheck + production build), `npm run preview`
 
 | Route | Page |
 |---|---|
-| `/` | **Overview** — plan banner, KPI stats, recent activity, cart-transform schedule |
+| `/` | **Overview** — plan banner, KPI stats, recent activity, bundle schedule |
 | `/templates` | **Templates** — filterable gallery of promotion templates |
 | `/campaigns` | **Campaigns** — status tabs + campaign table with revenue/orders |
 | `/discounts` | **Discounts** — type/status tabs + synced-discount table |
-| `/cart-transforms` | **Cart transforms** — scheduled bundle campaigns + metafield state |
+| `/bundles` | **Bundles** — scheduled bundle campaigns + metafield state |
 | `/plan` | **Plan & limits** — current plan usage meter + tier table |
 
 ### Create / edit / detail flows
@@ -32,7 +32,7 @@ Other scripts: `npm run build` (typecheck + production build), `npm run preview`
 | `/discounts/new` | Create-discount wizard (4-step function setup) |
 | `/discounts/:id` | Discount detail (synced config + upsell) |
 | `/discounts/:id/upsell` | Upsell card designer with **live preview** |
-| `/cart-transforms/new` · `/cart-transforms/:id/edit` | Cart-transform campaign editor (bundles + schedule) |
+| `/bundles/new` · `/bundles/:id/edit` | Bundle campaign editor (bundles + schedule) |
 | `/campaigns/templates` | Campaign template gallery |
 | `/campaigns/new` · `/campaigns/:id/edit` | Campaign builder (5-step wizard) |
 | `/campaigns/:id` | Campaign detail (published/locked, with metrics) |

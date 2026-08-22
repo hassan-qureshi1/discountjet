@@ -37,9 +37,9 @@ export default function App() {
         <Route path="/discounts/:id" element={<DiscountDetail />} />
         <Route path="/discounts/:id/upsell" element={<UpsellDesigner />} />
 
-        <Route path="/cart-transforms" element={<CartTransformation />} />
-        <Route path="/cart-transforms/new" element={<CartTransformEditor />} />
-        <Route path="/cart-transforms/:id/edit" element={<CartTransformEditor />} />
+        <Route path="/bundles" element={<CartTransformation />} />
+        <Route path="/bundles/new" element={<CartTransformEditor />} />
+        <Route path="/bundles/:id/edit" element={<CartTransformEditor />} />
 
         <Route path="/plan" element={<PlanAndLimits />} />
         <Route path="*" element={<Navigate to="/" replace />} />

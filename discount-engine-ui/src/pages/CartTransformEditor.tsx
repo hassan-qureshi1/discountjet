@@ -52,11 +52,11 @@ export default function CartTransformEditor() {
 
   return (
     <Page
-      backAction={{ content: 'Cart transforms', onAction: () => navigate('/cart-transforms') }}
+      backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}
       title={isEdit ? 'Edit campaign' : 'Create campaign'}
       subtitle="A campaign is a scheduled set of bundles. Each bundle is assembled from its variants at checkout by the cart-transformer."
       primaryAction={{ content: 'Save campaign' }}
-      secondaryActions={[{ content: 'Discard', onAction: () => navigate('/cart-transforms') }]}
+      secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
     >
       <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">
         <BlockStack gap="400">

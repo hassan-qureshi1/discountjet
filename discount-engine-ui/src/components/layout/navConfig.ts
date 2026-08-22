@@ -24,6 +24,6 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/templates', label: 'Templates', icon: CollectionIcon },
   { path: '/campaigns', label: 'Campaigns', icon: CalendarIcon, countKey: 'campaigns' },
   { path: '/discounts', label: 'Discounts', icon: DiscountIcon, countKey: 'discounts' },
-  { path: '/cart-transforms', label: 'Cart transforms', icon: CartIcon, countKey: 'cartTransforms' },
+  { path: '/bundles', label: 'Bundles', icon: CartIcon, countKey: 'cartTransforms' },
   { path: '/plan', label: 'Plan & limits', icon: CreditCardIcon },
 ];

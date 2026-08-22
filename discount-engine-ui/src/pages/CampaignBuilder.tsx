@@ -142,7 +142,7 @@ export default function CampaignBuilder() {
             <BlockStack gap="300">
               <InlineStack align="space-between" blockAlign="center">
                 <Text as="h3" variant="headingSm">
-                  Cart-transform bundles
+                  Bundles
                 </Text>
                 <Badge tone="info">1 bundle</Badge>
               </InlineStack>

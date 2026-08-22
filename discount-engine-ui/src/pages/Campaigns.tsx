@@ -53,7 +53,7 @@ export default function Campaigns() {
   return (
     <Page
       title="Campaigns"
-      subtitle="A campaign groups discounts and cart-transform bundles on one schedule. Publishing creates the discounts in Shopify via the GraphQL Admin API — once live, a campaign is locked, so clone it to make changes."
+      subtitle="A campaign groups discounts and bundles on one schedule. Publishing creates the discounts in Shopify via the GraphQL Admin API — once live, a campaign is locked, so clone it to make changes."
       primaryAction={{ content: 'Create campaign', onAction: () => navigate('/campaigns/new') }}
       secondaryActions={[
         { content: 'Browse templates', onAction: () => navigate('/campaigns/templates') },

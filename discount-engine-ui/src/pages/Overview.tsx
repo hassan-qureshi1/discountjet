@@ -84,9 +84,9 @@ export default function Overview() {
           <Card padding="0">
             <Box padding="400" paddingBlockEnd="300">
               <SectionHeader
-                title="Cart-transform schedule"
+                title="Bundle schedule"
                 action={
-                  <Button size="slim" onClick={() => navigate('/cart-transforms')}>
+                  <Button size="slim" onClick={() => navigate('/bundles')}>
                     Manage
                   </Button>
                 }

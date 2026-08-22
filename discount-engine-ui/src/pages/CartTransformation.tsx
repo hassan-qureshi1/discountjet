@@ -29,9 +29,9 @@ export default function CartTransformation() {
 
   return (
     <Page
-      title="Cart transforms"
+      title="Bundles"
       subtitle="Each campaign holds one or more bundles on a shared schedule. The canonical record lives in D1; the product metafield is its activated projection — written when the window opens, cleared when it closes."
-      primaryAction={{ content: 'Create campaign', onAction: () => navigate('/cart-transforms/new') }}
+      primaryAction={{ content: 'Create campaign', onAction: () => navigate('/bundles/new') }}
     >
       <BlockStack gap="400">
         <Card padding="0">
@@ -86,7 +86,7 @@ export default function CartTransformation() {
                   </Text>
                 </IndexTable.Cell>
                 <IndexTable.Cell>
-                  <Button variant="plain" onClick={() => navigate(`/cart-transforms/${t.id}/edit`)}>
+                  <Button variant="plain" onClick={() => navigate(`/bundles/${t.id}/edit`)}>
                     Edit
                   </Button>
                 </IndexTable.Cell>
@@ -97,9 +97,9 @@ export default function CartTransformation() {
 
         <Banner tone="info" title="Why a schedule, not the function?">
           <p>
-            Discounts get native start/end dates; cart transforms don’t, and a Shopify Function has
+            Discounts get native start/end dates; bundles don’t, and a Shopify Function has
             no reliable clock. The cron owns time — presence of the metafield is what turns a
-            transform on and off. Same cron pass as limit enforcement, every 5 minutes.
+            bundle on and off. Same cron pass as limit enforcement, every 5 minutes.
           </p>
         </Banner>
       </BlockStack>

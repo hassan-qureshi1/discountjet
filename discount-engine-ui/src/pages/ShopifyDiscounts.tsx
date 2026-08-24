@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Badge, BlockStack, Card, IndexTable, Page, Tabs, Text } from '@shopify/polaris';
-import { useShopifyDiscounts } from '../store/useDiscountStore';
+import { Badge, Banner, BlockStack, Button, Card, IndexTable, InlineStack, Page, Tabs, Text } from '@shopify/polaris';
+import { useDiscounts, useShopifyDiscounts } from '../store/useDiscountStore';
 import type { DiscountEngineKind, ShopifyDiscount } from '../types';
 import { DiscountTypeModal } from '../components/common/DiscountTypeModal';
 
@@ -16,9 +16,13 @@ const MATCHERS: Record<FilterId, (d: ShopifyDiscount) => boolean> = {
 
 export default function ShopifyDiscounts() {
   const discounts = useShopifyDiscounts();
+  const appDiscounts = useDiscounts();
   const navigate = useNavigate();
   const [selected, setSelected] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // Resolve the app discount a native row links to, to know if it's campaign-owned.
+  const appOf = (row: ShopifyDiscount) => (row.appId ? appDiscounts.find((d) => d.id === row.appId) : undefined);
 
   const filters: { id: FilterId; label: string }[] = [
     { id: 'all', label: 'All' },
@@ -29,6 +33,7 @@ export default function ShopifyDiscounts() {
 
   const tabs = filters.map((f) => ({ id: f.id, content: f.label }));
   const rows = discounts.filter(MATCHERS[filters[selected].id]);
+  const anyCampaignOwned = discounts.some((d) => appOf(d)?.campaignId);
 
   const onSelectEngine = (kind: DiscountEngineKind) => {
     setModalOpen(false);
@@ -42,6 +47,12 @@ export default function ShopifyDiscounts() {
       secondaryActions={[{ content: 'Export' }]}
     >
       <BlockStack gap="300">
+        {anyCampaignOwned && (
+          <Banner tone="info" title="Some discounts are managed by a campaign">
+            <p>Campaign-owned discounts are read-only here — open one to see which campaign it belongs to.</p>
+          </Banner>
+        )}
+
         <Card padding="0">
           <Tabs tabs={tabs} selected={selected} onSelect={setSelected}>
             <IndexTable
@@ -54,39 +65,57 @@ export default function ShopifyDiscounts() {
                 { title: 'Method' },
                 { title: 'Type' },
                 { title: 'Used', alignment: 'end' },
+                { title: '' },
               ]}
             >
-              {rows.map((d, index) => (
-                <IndexTable.Row id={d.id} key={d.id} position={index}>
-                  <IndexTable.Cell>
-                    <Text as="span" variant="bodyMd" fontWeight="semibold">
-                      {d.title}
-                    </Text>
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    <Badge tone={d.status === 'Active' ? 'success' : undefined}>{d.status}</Badge>
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    <Text as="span" tone="subdued">
-                      {d.method}
-                    </Text>
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    {d.engine ? (
-                      <Badge tone="magic">{d.type}</Badge>
-                    ) : (
+              {rows.map((d, index) => {
+                const app = appOf(d);
+                return (
+                  <IndexTable.Row id={d.id} key={d.id} position={index}>
+                    <IndexTable.Cell>
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text as="span" variant="bodyMd" fontWeight="semibold">
+                          {d.title}
+                        </Text>
+                        {app?.campaignId && <Badge tone="info">Campaign</Badge>}
+                      </InlineStack>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      <Badge tone={d.status === 'Active' ? 'success' : undefined}>{d.status}</Badge>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
                       <Text as="span" tone="subdued">
-                        {d.type}
+                        {d.method}
                       </Text>
-                    )}
-                  </IndexTable.Cell>
-                  <IndexTable.Cell>
-                    <Text as="span" numeric alignment="end">
-                      {d.used}
-                    </Text>
-                  </IndexTable.Cell>
-                </IndexTable.Row>
-              ))}
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      {d.engine ? (
+                        <Badge tone="magic">{d.type}</Badge>
+                      ) : (
+                        <Text as="span" tone="subdued">
+                          {d.type}
+                        </Text>
+                      )}
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      <Text as="span" numeric alignment="end">
+                        {d.used}
+                      </Text>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      {d.appId ? (
+                        <Button variant="plain" onClick={() => navigate(`/discounts/${d.appId}`)}>
+                          View
+                        </Button>
+                      ) : (
+                        <Button variant="plain" disabled>
+                          View in Shopify
+                        </Button>
+                      )}
+                    </IndexTable.Cell>
+                  </IndexTable.Row>
+                );
+              })}
             </IndexTable>
           </Tabs>
         </Card>

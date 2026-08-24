@@ -167,6 +167,8 @@ export interface ShopifyDiscount {
   type: string;
   /** Set when this row is a Discount Engine app discount (vs a native Shopify one). */
   engine: DiscountEngineKind | null;
+  /** Links a Discount Engine row to its app Discount (opens its detail). */
+  appId?: string;
   used: number;
 }
 

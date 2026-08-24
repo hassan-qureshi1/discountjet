@@ -1,7 +1,7 @@
 [
-  { "id": "sd1", "title": "Buy 2 Pillows, save 15%", "status": "Active", "method": "Automatic", "type": "Discount Engine · Tier", "engine": "Tier", "used": 128 },
-  { "id": "sd2", "title": "Mattress + Base bundle", "status": "Active", "method": "Automatic", "type": "Discount Engine · Bundle", "engine": "Bundle", "used": 54 },
-  { "id": "sd3", "title": "Sheet set BOGO", "status": "Active", "method": "Automatic", "type": "Discount Engine · Split", "engine": "Split", "used": 37 },
+  { "id": "sd1", "title": "Buy 2 Pillows, save 15%", "status": "Active", "method": "Automatic", "type": "Discount Engine · Volume", "engine": "Tier", "appId": "d1", "used": 128 },
+  { "id": "sd2", "title": "Mattress + Base bundle", "status": "Active", "method": "Automatic", "type": "Discount Engine · Buy X, get Y", "engine": "Bundle", "appId": "d2", "used": 54 },
+  { "id": "sd3", "title": "Sheet set BOGO", "status": "Active", "method": "Automatic", "type": "Discount Engine · Buy X, discount both", "engine": "Split", "appId": "d3", "used": 37 },
   { "id": "sd4", "title": "SUMMER20", "status": "Active", "method": "Code", "type": "Amount off products", "engine": null, "used": 402 },
   { "id": "sd5", "title": "Free shipping over $99", "status": "Scheduled", "method": "Automatic", "type": "Free shipping", "engine": null, "used": 0 }
 ]

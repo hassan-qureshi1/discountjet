@@ -1,7 +1,7 @@
 [
   { "id": "d1", "name": "Buy 2 Pillows, save 15%", "symbol": "%", "type": "Tier", "status": "Active", "products": 4, "updated": "2 min ago" },
   { "id": "d2", "name": "Mattress + Base bundle", "symbol": "◱", "type": "Bundle", "status": "Active", "products": 2, "updated": "1 hr ago" },
-  { "id": "d3", "name": "Sheet set BOGO", "symbol": "◨", "type": "Special", "status": "Active", "products": 3, "updated": "3 hr ago" },
+  { "id": "d3", "name": "Sheet set BOGO", "symbol": "◨", "type": "Special", "status": "Active", "products": 3, "updated": "3 hr ago", "campaignId": "c1" },
   { "id": "d4", "name": "Bulk towels — 3 tiers", "symbol": "%", "type": "Tier", "status": "Active", "products": 8, "updated": "Yesterday" },
   { "id": "d5", "name": "Bed frame + 2 pillows", "symbol": "◱", "type": "Bundle", "status": "Active", "products": 3, "updated": "2 days ago" },
   { "id": "d6", "name": "Launch tier — 10% off", "symbol": "%", "type": "Tier", "status": "Inactive", "products": 12, "updated": "1 week ago" }

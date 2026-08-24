@@ -8,6 +8,7 @@ import {
   Button,
   ButtonGroup,
   Card,
+  Checkbox,
   Divider,
   DropZone,
   InlineGrid,
@@ -28,6 +29,7 @@ import {
 import { DISCOUNT_TYPE_LABEL } from '../types';
 import { Stepper } from '../components/common/Stepper';
 import { ChoiceCard } from '../components/common/ChoiceCard';
+import { EmailTagField } from '../components/common/EmailTagField';
 import { KeyValueList } from '../components/common/KeyValueList';
 import { SymbolTile } from '../components/common/SymbolTile';
 import { DiscountSetupForm, type BuiltDiscount } from '../components/discount/DiscountSetupForm';
@@ -69,12 +71,13 @@ export default function CampaignBuilder() {
   const [csvFiles, setCsvFiles] = useState<File[]>([]);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [prefilledFrom, setPrefilledFrom] = useState<string | null>(null);
-  const [notifyEmails, setNotifyEmails] = useState('marketing@evahome.com');
+  const [notifyEmails, setNotifyEmails] = useState<string[]>(['marketing@evahome.com']);
 
   // Add-discount modal (full discount-ui wizard, same as the Discounts flow).
   const [discountModalKind, setDiscountModalKind] = useState<string | null>(null);
   const [pendingBuilt, setPendingBuilt] = useState<BuiltDiscount>({ name: 'New discount', type: 'Tier', symbol: '%', products: 0 });
   const [bundleModalOpen, setBundleModalOpen] = useState(false);
+  const [bundleSelection, setBundleSelection] = useState<string[]>([]);
 
   const applyTemplate = (templateId: string) => {
     const t = templates.find((x) => x.id === templateId);
@@ -98,8 +101,15 @@ export default function CampaignBuilder() {
 
   const chosenBundles = bundleIds.map((bid) => allBundles.find((b) => b.id === bid)).filter(Boolean);
   const availableBundles = allBundles.filter((b) => !bundleIds.includes(b.id));
-  const addBundle = (bid: string) => {
-    setBundleIds((ids) => [...ids, bid]);
+  const openBundleModal = () => {
+    setBundleSelection([]);
+    setBundleModalOpen(true);
+  };
+  const toggleBundleSelection = (bid: string) =>
+    setBundleSelection((sel) => (sel.includes(bid) ? sel.filter((x) => x !== bid) : [...sel, bid]));
+  const confirmAddBundles = () => {
+    setBundleIds((ids) => [...ids, ...bundleSelection]);
+    setBundleSelection([]);
     setBundleModalOpen(false);
   };
 
@@ -306,8 +316,8 @@ export default function CampaignBuilder() {
                 </Text>
               )}
               <InlineStack>
-                <Button onClick={() => setBundleModalOpen(true)} disabled={availableBundles.length === 0}>
-                  Add bundle
+                <Button onClick={openBundleModal} disabled={availableBundles.length === 0}>
+                  Add bundles
                 </Button>
               </InlineStack>
               <Text as="span" variant="bodySm" tone="subdued">
@@ -334,14 +344,11 @@ export default function CampaignBuilder() {
                 </InlineGrid>
               )}
               <Divider />
-              <TextField
+              <EmailTagField
                 label="Notify marketing when the schedule triggers"
-                type="email"
                 value={notifyEmails}
                 onChange={setNotifyEmails}
-                autoComplete="off"
-                placeholder="marketing@evahome.com, ops@evahome.com"
-                helpText="Comma-separated. We email these people when the campaign activates and when it deactivates."
+                helpText="We email these people when the campaign activates and when it deactivates."
               />
             </BlockStack>
           </Card>
@@ -397,7 +404,7 @@ export default function CampaignBuilder() {
                     items={[
                       { term: 'Bundles', description: chosenBundles.length ? chosenBundles.map((b) => b?.name).join(', ') : 'None' },
                       { term: 'Window', description: schedule === 1 ? `${dateOnly(starts)} → ${dateOnly(ends)} (AEST)` : 'Immediate on publish' },
-                      { term: 'Notify', description: notifyEmails || '—' },
+                      { term: 'Notify', description: notifyEmails.length ? notifyEmails.join(', ') : '—' },
                       { term: 'Metafield', description: <code>$app:cart_transform</code> },
                     ]}
                   />
@@ -488,34 +495,60 @@ export default function CampaignBuilder() {
         </Modal.Section>
       </Modal>
 
-      {/* Bundle picker modal — choose from bundles created in the Bundles page */}
-      <Modal open={bundleModalOpen} onClose={() => setBundleModalOpen(false)} title="Add a bundle">
+      {/* Bundle picker modal — select multiple bundles at once */}
+      <Modal
+        open={bundleModalOpen}
+        onClose={() => setBundleModalOpen(false)}
+        title="Add bundles"
+        primaryAction={{
+          content: bundleSelection.length ? `Add ${bundleSelection.length} bundle${bundleSelection.length === 1 ? '' : 's'}` : 'Add bundles',
+          disabled: bundleSelection.length === 0,
+          onAction: confirmAddBundles,
+        }}
+        secondaryActions={[{ content: 'Cancel', onAction: () => setBundleModalOpen(false) }]}
+      >
         <Modal.Section>
           <BlockStack gap="200">
-            {availableBundles.length === 0 && (
+            {availableBundles.length === 0 ? (
               <Text as="span" variant="bodySm" tone="subdued">
                 All your bundles are already in this campaign.
               </Text>
+            ) : (
+              <>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Select the bundles to add to this campaign.
+                </Text>
+                {availableBundles.map((b) => {
+                  const checked = bundleSelection.includes(b.id);
+                  return (
+                    <div
+                      key={b.id}
+                      onClick={() => toggleBundleSelection(b.id)}
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 10,
+                        border: '1px solid var(--p-color-border)',
+                        cursor: 'pointer',
+                        boxShadow: checked ? 'inset 0 0 0 2px var(--p-color-border-brand)' : undefined,
+                      }}
+                    >
+                      <InlineStack gap="300" blockAlign="center" wrap={false}>
+                        <Checkbox label="" labelHidden checked={checked} onChange={() => toggleBundleSelection(b.id)} />
+                        <SymbolTile symbol="⇄" size={30} />
+                        <BlockStack gap="050">
+                          <Text as="span" variant="bodyMd" fontWeight="semibold">
+                            {b.name}
+                          </Text>
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            {b.items.slice(0, 2).join(' · ')} · {money(b.price)}
+                          </Text>
+                        </BlockStack>
+                      </InlineStack>
+                    </div>
+                  );
+                })}
+              </>
             )}
-            {availableBundles.map((b) => (
-              <div
-                key={b.id}
-                onClick={() => addBundle(b.id)}
-                style={{ padding: '12px 14px', borderRadius: 10, border: '1px solid var(--p-color-border)', cursor: 'pointer' }}
-              >
-                <InlineStack gap="300" blockAlign="center" wrap={false}>
-                  <SymbolTile symbol="⇄" size={30} />
-                  <BlockStack gap="050">
-                    <Text as="span" variant="bodyMd" fontWeight="semibold">
-                      {b.name}
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      {b.items.slice(0, 2).join(' · ')} · {money(b.price)}
-                    </Text>
-                  </BlockStack>
-                </InlineStack>
-              </div>
-            ))}
           </BlockStack>
         </Modal.Section>
       </Modal>

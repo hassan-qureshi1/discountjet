@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Badge,
   Banner,
@@ -60,7 +60,13 @@ const hasBundleData = (bundles: BundleDiscount[]) =>
 const hasSpecialData = (specials: SpecialDiscount[]) =>
   specials.some((s) => parseItems(s.source_variants).length > 0 && s.targets.some((t) => parseItems(t.target_variants).length > 0));
 
-export function DiscountFunctionSettings({ initialRuleType }: { initialRuleType?: RuleType }) {
+export function DiscountFunctionSettings({
+  initialRuleType,
+  onSummaryChange,
+}: {
+  initialRuleType?: RuleType;
+  onSummaryChange?: (summary: { products: number }) => void;
+}) {
   const [formData, setFormData] = useState<FormData>(() => createInitialFormData(initialRuleType));
   const [step, setStep] = useState(0);
   const [showDataLoss, setShowDataLoss] = useState(false);
@@ -68,6 +74,27 @@ export function DiscountFunctionSettings({ initialRuleType }: { initialRuleType?
   const { ruleType, tiers, bundleDiscounts, specialDiscounts } = formData;
   const steps = STEP_LABELS[ruleType];
   const lastStep = steps.length - 1;
+
+  // Total chosen products across the current offer type — reported to the host
+  // page so it can persist the discount's product count on save.
+  const productCount =
+    ruleType === 'tier-discount'
+      ? tiers.reduce((n, t) => n + parseItems(t.targets).length, 0)
+      : ruleType === 'bundle-discount'
+        ? bundleDiscounts.reduce(
+            (n, b) => n + parseItems(b.source_variants).length + parseItems(b.target_variants).length,
+            0,
+          )
+        : specialDiscounts.reduce(
+            (n, s) =>
+              n +
+              parseItems(s.source_variants).length +
+              s.targets.reduce((m, t) => m + parseItems(t.target_variants).length, 0),
+            0,
+          );
+  useEffect(() => {
+    onSummaryChange?.({ products: productCount });
+  }, [productCount, onSummaryChange]);
 
   const isTier = ruleType === 'tier-discount';
   const isBundle = ruleType === 'bundle-discount';

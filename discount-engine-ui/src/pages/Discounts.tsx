@@ -12,7 +12,7 @@ import {
   Text,
 } from '@shopify/polaris';
 import { useDiscounts } from '../store/useDiscountStore';
-import type { Discount } from '../types';
+import { DISCOUNT_TYPE_LABEL, type Discount } from '../types';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { SymbolTile } from '../components/common/SymbolTile';
 import { DiscountTypeModal } from '../components/common/DiscountTypeModal';
@@ -35,9 +35,9 @@ export default function Discounts() {
 
   const filters: { id: FilterId; label: string }[] = [
     { id: 'all', label: 'All' },
-    { id: 'tier', label: 'Tier' },
-    { id: 'bundle', label: 'Bundle' },
-    { id: 'special', label: 'Special' },
+    { id: 'tier', label: 'Volume' },
+    { id: 'bundle', label: 'Buy X, get Y' },
+    { id: 'special', label: 'Buy X, discount both' },
     { id: 'inactive', label: 'Inactive' },
   ];
 
@@ -52,7 +52,7 @@ export default function Discounts() {
   return (
     <Page
       title="Discounts"
-      subtitle="Read-only. Discounts are authored in Shopify; their config is synced here via webhooks and read by the Rust functions at checkout."
+      subtitle="Synced from Shopify via webhooks. Open a discount to see its details and design its storefront upsell."
       titleMetadata={<Badge tone="success">Synced from Shopify</Badge>}
       primaryAction={{ content: 'Create discount', onAction: () => setModalOpen(true) }}
     >
@@ -80,10 +80,11 @@ export default function Discounts() {
                       <Text as="span" variant="bodyMd" fontWeight="semibold">
                         {d.name}
                       </Text>
+                      {d.campaignId && <Badge tone="info">Campaign</Badge>}
                     </InlineStack>
                   </IndexTable.Cell>
                   <IndexTable.Cell>
-                    <Badge tone="info">{d.type}</Badge>
+                    <Badge tone="magic">{DISCOUNT_TYPE_LABEL[d.type]}</Badge>
                   </IndexTable.Cell>
                   <IndexTable.Cell>
                     <StatusBadge
@@ -103,7 +104,7 @@ export default function Discounts() {
                   </IndexTable.Cell>
                   <IndexTable.Cell>
                     <Button variant="plain" onClick={() => navigate(`/discounts/${d.id}`)}>
-                      View config
+                      View
                     </Button>
                   </IndexTable.Cell>
                 </IndexTable.Row>
@@ -111,10 +112,6 @@ export default function Discounts() {
             </IndexTable>
           </Tabs>
         </Card>
-
-        <Text as="p" variant="bodySm" tone="subdued">
-          “View config” opens the read-only JSON the Rust tier / bundle / special functions evaluate.
-        </Text>
       </BlockStack>
 
       <DiscountTypeModal

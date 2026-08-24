@@ -12,9 +12,9 @@ import type {
   Template,
 } from '../types';
 
-// Hardcoded fixtures — the single source of truth for the demo. They are loaded
-// here once and read everywhere through the store, so the UI behaves as if the
-// data came from a real backend (swap these imports for API calls later).
+// Hardcoded fixtures seed the store; from then on the app mutates it in memory,
+// so created discounts/campaigns/bundles persist and appear in the lists (until
+// a page refresh reseeds). Swap the seeds for API calls later.
 import shopData from '../data/shop.json';
 import overviewData from '../data/overview.json';
 import discountsData from '../data/discounts.json';
@@ -37,9 +37,18 @@ interface DiscountStoreState {
   campaignTemplates: CampaignTemplate[];
   shopifyDiscounts: ShopifyDiscount[];
   plan: PlanData;
+
+  // ── Mutations (in-memory persistence) ──
+  addDiscount: (discount: Discount) => void;
+  updateDiscount: (id: string, patch: Partial<Discount>) => void;
+  addBundle: (bundle: CartTransform) => void;
+  updateBundle: (id: string, patch: Partial<CartTransform>) => void;
+  addCampaign: (campaign: Campaign) => void;
+  addBundleCampaign: (campaign: BundleCampaign) => void;
+  updateBundleCampaign: (id: string, patch: Partial<BundleCampaign>) => void;
 }
 
-export const useDiscountStore = create<DiscountStoreState>(() => ({
+export const useDiscountStore = create<DiscountStoreState>((set) => ({
   shop: shopData as Shop,
   overview: overviewData as OverviewData,
   discounts: discountsData as Discount[],
@@ -50,6 +59,17 @@ export const useDiscountStore = create<DiscountStoreState>(() => ({
   campaignTemplates: campaignTemplatesData as CampaignTemplate[],
   shopifyDiscounts: shopifyDiscountsData as ShopifyDiscount[],
   plan: planData as PlanData,
+
+  addDiscount: (discount) => set((s) => ({ discounts: [discount, ...s.discounts] })),
+  updateDiscount: (id, patch) =>
+    set((s) => ({ discounts: s.discounts.map((d) => (d.id === id ? { ...d, ...patch } : d)) })),
+  addBundle: (bundle) => set((s) => ({ cartTransforms: [bundle, ...s.cartTransforms] })),
+  updateBundle: (id, patch) =>
+    set((s) => ({ cartTransforms: s.cartTransforms.map((b) => (b.id === id ? { ...b, ...patch } : b)) })),
+  addCampaign: (campaign) => set((s) => ({ campaigns: [campaign, ...s.campaigns] })),
+  addBundleCampaign: (campaign) => set((s) => ({ bundleCampaigns: [campaign, ...s.bundleCampaigns] })),
+  updateBundleCampaign: (id, patch) =>
+    set((s) => ({ bundleCampaigns: s.bundleCampaigns.map((c) => (c.id === id ? { ...c, ...patch } : c)) })),
 }));
 
 // ─── Selector hooks — the only way pages read data ───────────────────────────
@@ -75,3 +95,12 @@ export const useBundleCampaign = (id?: string) =>
   useDiscountStore((s) => s.bundleCampaigns.find((c) => c.id === id));
 export const useTemplate = (id?: string) =>
   useDiscountStore((s) => s.templates.find((t) => t.id === id));
+
+// ─── Action hooks ────────────────────────────────────────────────────────────
+export const useAddDiscount = () => useDiscountStore((s) => s.addDiscount);
+export const useUpdateDiscount = () => useDiscountStore((s) => s.updateDiscount);
+export const useAddBundle = () => useDiscountStore((s) => s.addBundle);
+export const useUpdateBundle = () => useDiscountStore((s) => s.updateBundle);
+export const useAddCampaign = () => useDiscountStore((s) => s.addCampaign);
+export const useAddBundleCampaign = () => useDiscountStore((s) => s.addBundleCampaign);
+export const useUpdateBundleCampaign = () => useDiscountStore((s) => s.updateBundleCampaign);

@@ -13,7 +13,12 @@ import {
   Text,
   TextField,
 } from '@shopify/polaris';
-import { useBundleCampaign, useCartTransforms } from '../store/useDiscountStore';
+import {
+  useAddBundleCampaign,
+  useBundleCampaign,
+  useCartTransforms,
+  useUpdateBundleCampaign,
+} from '../store/useDiscountStore';
 import type { BundleCampaignBundle } from '../types';
 import { KeyValueList } from '../components/common/KeyValueList';
 import { SymbolTile } from '../components/common/SymbolTile';
@@ -46,12 +51,28 @@ export default function BundleCampaignEditor() {
   const setField = (bundleId: string, field: 'price' | 'compareAtPrice', value: string) =>
     setRows((prev) => prev.map((r) => (r.bundleId === bundleId ? { ...r, [field]: parseFloat(value) || 0 } : r)));
 
+  const addBundleCampaign = useAddBundleCampaign();
+  const updateBundleCampaign = useUpdateBundleCampaign();
+  const saveCampaign = () => {
+    const campaign = {
+      id: existing?.id ?? `bc-${Date.now()}`,
+      name,
+      status: existing?.status ?? ('Scheduled' as const),
+      starts,
+      ends,
+      bundles: rows,
+    };
+    if (existing) updateBundleCampaign(existing.id, campaign);
+    else addBundleCampaign(campaign);
+    navigate('/bundle-campaigns');
+  };
+
   return (
     <Page
       backAction={{ content: 'Bundle campaigns', onAction: () => navigate('/bundle-campaigns') }}
       title={isEdit ? 'Edit bundle campaign' : 'Create bundle campaign'}
       subtitle="Schedule bundles over a window and set each bundle’s campaign price and compare-at price."
-      primaryAction={{ content: 'Save campaign' }}
+      primaryAction={{ content: 'Save campaign', onAction: saveCampaign }}
       secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundle-campaigns') }]}
     >
       <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">

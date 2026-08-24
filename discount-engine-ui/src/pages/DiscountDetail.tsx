@@ -1,6 +1,7 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Badge,
+  Banner,
   BlockStack,
   Box,
   Button,
@@ -10,19 +11,21 @@ import {
   Page,
   Text,
 } from '@shopify/polaris';
-import { useDiscount } from '../store/useDiscountStore';
+import { useCampaign, useDiscount } from '../store/useDiscountStore';
+import { DISCOUNT_TYPE_LABEL } from '../types';
 import { KeyValueList } from '../components/common/KeyValueList';
 import { SymbolTile } from '../components/common/SymbolTile';
 
 const DESCRIPTIONS: Record<string, string> = {
-  Tier: 'Once a shopper adds enough qualifying items, the tier discount applies automatically. Works at POS & Checkout, on every eligible item.',
-  Bundle: 'When the source and target items are in the cart together, the bundle price applies. Assembled by the Rust bundle function at checkout.',
-  Special: 'A split/BOGO offer — buying the trigger items discounts the reward items. Evaluated by the Rust special function at checkout.',
+  Tier: 'Once a shopper adds enough qualifying items, the discount applies automatically. Works at POS & Checkout, on every eligible item.',
+  Bundle: 'When the qualifying and rewarded items are in the cart together, the discount applies to the products you chose.',
+  Special: 'Buying the qualifying items discounts the paired items too — great for “main item + add-on” deals.',
 };
 
 export default function DiscountDetail() {
   const { id } = useParams();
   const discount = useDiscount(id);
+  const campaign = useCampaign(discount?.campaignId);
   const navigate = useNavigate();
 
   if (!discount) {
@@ -36,62 +39,95 @@ export default function DiscountDetail() {
   }
 
   const isActive = discount.status === 'Active';
+  const locked = Boolean(discount.campaignId);
 
   return (
     <Page
       backAction={{ content: 'Discounts', onAction: () => navigate('/discounts') }}
       title={discount.name}
-      titleMetadata={<Badge tone="magic">{discount.type}</Badge>}
-      subtitle="Synced from Shopify via webhook · read-only config"
+      titleMetadata={
+        <InlineStack gap="150">
+          <Badge tone="magic">{DISCOUNT_TYPE_LABEL[discount.type]}</Badge>
+          {locked && <Badge tone="info">Campaign-owned</Badge>}
+        </InlineStack>
+      }
+      subtitle={locked ? 'Created by a campaign · read-only' : 'Synced from Shopify via webhook · read-only'}
       secondaryActions={[{ content: 'View in Shopify' }]}
     >
-      <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">
-        <BlockStack gap="400">
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingSm">
-                What this discount does
-              </Text>
-              <Text as="p" variant="bodyMd">
-                {DESCRIPTIONS[discount.type]}
-              </Text>
-              <KeyValueList
-                items={[
-                  { term: 'Discount type', description: `${discount.type} discount` },
-                  { term: 'Applies', description: 'POS & Checkout' },
-                  { term: 'Products touched', description: `${discount.products} variants` },
-                  {
-                    term: 'Status',
-                    description: <Badge tone={isActive ? 'success' : undefined}>{discount.status}</Badge>,
-                  },
-                  { term: 'Last synced', description: `${discount.updated} (discounts/update)` },
-                ]}
-              />
-            </BlockStack>
-          </Card>
+      <BlockStack gap="400">
+        {locked && (
+          <Banner
+            tone="warning"
+            title={`This discount belongs to the “${campaign?.name ?? 'campaign'}” campaign`}
+            action={campaign ? { content: 'Open campaign', onAction: () => navigate(`/campaigns/${campaign.id}`) } : undefined}
+          >
+            <p>
+              Changing it here would drift from what shoppers see in the campaign, so its fields are locked. Edit it by
+              cloning the campaign into a new draft.
+            </p>
+          </Banner>
+        )}
 
-          <Card>
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingSm">
-                  Storefront upsell
+        <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">
+          <BlockStack gap="400">
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h3" variant="headingSm">
+                    What this discount does
+                  </Text>
+                  {locked && <Badge tone="attention">🔒 Locked</Badge>}
+                </InlineStack>
+                <Text as="p" variant="bodyMd">
+                  {DESCRIPTIONS[discount.type]}
                 </Text>
-                <Badge tone="success">Shown</Badge>
-              </InlineStack>
-              <Text as="p" variant="bodySm" tone="subdued">
-                When on, the products in this discount appear as an upsell card on the storefront.
-              </Text>
-              <InlineStack gap="300" blockAlign="center">
-                <Button variant="primary" onClick={() => navigate(`/discounts/${discount.id}/upsell`)}>
-                  Design upsell card
-                </Button>
-                <Text as="span" variant="bodySm" tone="subdued">
-                  Customise the card shoppers see for this discount.
+                <KeyValueList
+                  items={[
+                    { term: 'Discount type', description: DISCOUNT_TYPE_LABEL[discount.type] },
+                    { term: 'Applies', description: 'POS & Checkout' },
+                    { term: 'Products touched', description: `${discount.products} variants` },
+                    {
+                      term: 'Status',
+                      description: <Badge tone={isActive ? 'success' : undefined}>{discount.status}</Badge>,
+                    },
+                    locked
+                      ? { term: 'Campaign', description: campaign?.name ?? '—' }
+                      : { term: 'Last synced', description: `${discount.updated} (discounts/update)` },
+                  ]}
+                />
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h3" variant="headingSm">
+                    Storefront upsell
+                  </Text>
+                  <Badge tone="success">Shown</Badge>
+                </InlineStack>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {locked
+                    ? 'This discount’s upsell is managed by its campaign.'
+                    : 'When on, the products in this discount appear as an upsell card on the storefront.'}
                 </Text>
-              </InlineStack>
-            </BlockStack>
-          </Card>
-        </BlockStack>
+                <InlineStack gap="300" blockAlign="center">
+                  <Button
+                    variant="primary"
+                    disabled={locked}
+                    onClick={() => navigate(`/discounts/${discount.id}/upsell`)}
+                  >
+                    Design upsell card
+                  </Button>
+                  {!locked && (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Customise the card shoppers see for this discount.
+                    </Text>
+                  )}
+                </InlineStack>
+              </BlockStack>
+            </Card>
+          </BlockStack>
 
         <Card>
           <BlockStack gap="300">
@@ -122,7 +158,8 @@ export default function DiscountDetail() {
             </Text>
           </BlockStack>
         </Card>
-      </InlineGrid>
+        </InlineGrid>
+      </BlockStack>
     </Page>
   );
 }

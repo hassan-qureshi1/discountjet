@@ -65,7 +65,16 @@ export interface Discount {
   status: DiscountStatus;
   products: number;
   updated: string;
+  /** Set when this discount was created by (and is owned/locked to) a campaign. */
+  campaignId?: string;
 }
+
+/** Merchant-facing label for each discount type (engine name kept internally). */
+export const DISCOUNT_TYPE_LABEL: Record<DiscountType, string> = {
+  Tier: 'Volume discount',
+  Bundle: 'Buy X, get Y',
+  Special: 'Buy X, discount both',
+};
 
 // ─── Bundles (cart-transform bundles; type name kept for store compatibility) ─
 export type CartTransformStatus = 'Active' | 'Scheduled' | 'Ended';

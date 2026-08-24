@@ -69,9 +69,9 @@ const NATIVE = [
 ];
 
 const ENGINE: { kind: DiscountEngineKind; symbol: string; title: string; description: string }[] = [
-  { kind: 'Tier', symbol: '%', title: 'Tier Discount', description: 'Percentage or amount off by quantity tiers · ALL / FIRST / MAXIMUM' },
-  { kind: 'Bundle', symbol: '◱', title: 'Bundle Discount', description: 'Source + target bundle pricing with quantity-dependent ratios' },
-  { kind: 'Split', symbol: '◨', title: 'Split Bundle Discount', description: 'Discounts both the source and target items separately' },
+  { kind: 'Tier', symbol: '%', title: 'Volume discount', description: 'Buy more, save more — a bigger discount as shoppers add more of the same products.' },
+  { kind: 'Bundle', symbol: '◱', title: 'Buy X, get Y', description: 'Buying the qualifying products discounts the products you choose.' },
+  { kind: 'Split', symbol: '◨', title: 'Buy X, discount both', description: 'Discount both the qualifying products and the ones they unlock.' },
 ];
 
 export function DiscountTypeModal({

@@ -15,7 +15,7 @@ import {
   Text,
   TextField,
 } from '@shopify/polaris';
-import { useCartTransform, usePlan, useShop } from '../store/useDiscountStore';
+import { useAddBundle, useCartTransform, usePlan, useShop, useUpdateBundle } from '../store/useDiscountStore';
 import type { CartTransformOp } from '../types';
 import {
   CART_TRANSFORM_LIMITS,
@@ -153,13 +153,33 @@ export default function CartTransformEditor() {
   const catalogueOptions = CATALOGUE.map((c) => ({ label: c.name, value: c.name }));
   const selectedOp = getOp(operation);
 
+  const addBundle = useAddBundle();
+  const updateBundle = useUpdateBundle();
+  const saveBundle = () => {
+    const bundle = {
+      id: existing?.id ?? `b-${Date.now()}`,
+      name,
+      operation,
+      items,
+      price: priceNum,
+      sumOfItems,
+      schedule: existing?.schedule ?? '—',
+      status: existing?.status ?? ('Active' as const),
+      metafield: existing?.metafield ?? 'Not yet written',
+      updated: 'just now',
+    };
+    if (existing) updateBundle(existing.id, bundle);
+    else addBundle(bundle);
+    navigate('/bundles');
+  };
+
   return (
     <Page
       backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}
       title={isEdit ? 'Edit bundle' : 'Create bundle'}
       subtitle="Define what the bundle is. Scheduling happens later in a bundle campaign."
       titleMetadata={<Badge>{`${appTier} plan · ${shop.shopifyPlan}`}</Badge>}
-      primaryAction={{ content: 'Save bundle' }}
+      primaryAction={{ content: 'Save bundle', onAction: saveBundle }}
       secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
     >
       <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">

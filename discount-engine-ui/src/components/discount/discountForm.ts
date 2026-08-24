@@ -137,6 +137,19 @@ export function chipLabel(item: VariantItem | ProductItem): string {
   return item.productTitle || item.productId;
 }
 
+/** A representative product image (emoji) for a chosen product/variant. */
+export function productEmoji(item: VariantItem | ProductItem): string {
+  const t = (item.productTitle || '').toLowerCase();
+  if (t.includes('pillow')) return '🛌';
+  if (t.includes('duvet') || t.includes('sheet')) return '🧺';
+  if (t.includes('protector')) return '🛡️';
+  if (t.includes('bed frame') || t.includes('mattress')) return '🛏️';
+  if (t.includes('sofa')) return '🛋️';
+  if (t.includes('cushion')) return '🪟';
+  if (t.includes('throw')) return '🧣';
+  return '📦';
+}
+
 export function itemKey(item: VariantItem | ProductItem): string {
   return 'variantId' in item ? item.variantId : item.productId;
 }

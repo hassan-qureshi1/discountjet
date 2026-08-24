@@ -36,6 +36,7 @@ export default function App() {
         <Route path="/shopify-discounts" element={<ShopifyDiscounts />} />
         <Route path="/discounts" element={<Discounts />} />
         <Route path="/discounts/new" element={<DiscountSetup />} />
+        <Route path="/discounts/:id/edit" element={<DiscountSetup />} />
         <Route path="/discounts/:id" element={<DiscountDetail />} />
         <Route path="/discounts/:id/upsell" element={<UpsellDesigner />} />
 

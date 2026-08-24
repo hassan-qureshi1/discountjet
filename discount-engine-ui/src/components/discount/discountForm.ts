@@ -216,17 +216,62 @@ export const newSpecial = (): SpecialDiscount => ({
   targets: [newSpecialTarget()],
 });
 
-export const createInitialFormData = (ruleType: RuleType = 'tier-discount'): FormData => ({
-  ruleType,
-  discountType: 'percentage',
-  applyTo: 'price',
-  productDiscountSelectionStrategy: 'ALL',
-  platform: 'BOTH',
-  message: '',
-  tiers: [newTier()],
-  bundleDiscounts: ruleType === 'bundle-discount' ? [newBundle()] : [],
-  specialDiscounts: ruleType === 'special_discount' ? [newSpecial()] : [],
-});
+export const createInitialFormData = (ruleType: RuleType = 'tier-discount', prefill = false): FormData => {
+  const base = {
+    ruleType,
+    discountType: 'percentage' as Operator,
+    applyTo: 'price' as ApplyTo,
+    productDiscountSelectionStrategy: 'ALL' as Strategy,
+    platform: 'BOTH' as Platform,
+    message: prefill ? 'Buy more, save more' : '',
+  };
+
+  // Editing an existing discount: seed the wizard with sample products + values
+  // so it opens showing predefined data rather than an empty form.
+  if (prefill && ruleType === 'bundle-discount') {
+    return {
+      ...base,
+      tiers: [newTier()],
+      bundleDiscounts: [
+        {
+          ...newBundle(),
+          source_variants: JSON.stringify(SAMPLE_VARIANTS.slice(0, 1)),
+          target_variants: JSON.stringify(SAMPLE_VARIANTS.slice(1, 2)),
+          value: '20',
+          message: '20% off',
+        },
+      ],
+      specialDiscounts: [],
+    };
+  }
+  if (prefill && ruleType === 'special_discount') {
+    return {
+      ...base,
+      tiers: [newTier()],
+      bundleDiscounts: [],
+      specialDiscounts: [
+        {
+          ...newSpecial(),
+          source_variants: JSON.stringify(SAMPLE_VARIANTS.slice(0, 1)),
+          source_value: '15',
+          message: '15% off',
+          targets: [{ ...newSpecialTarget(), target_variants: JSON.stringify(SAMPLE_VARIANTS.slice(1, 2)), target_value: '50' }],
+        },
+      ],
+    };
+  }
+
+  return {
+    ...base,
+    tiers: [
+      prefill
+        ? { ...newTier(), value: '15', min_qty: '2', targets: JSON.stringify(SAMPLE_VARIANTS.slice(0, 2)) }
+        : newTier(),
+    ],
+    bundleDiscounts: ruleType === 'bundle-discount' ? [newBundle()] : [],
+    specialDiscounts: ruleType === 'special_discount' ? [newSpecial()] : [],
+  };
+};
 
 // ─── Wizard step labels per offer type (always 4 steps) ──────────────────────
 export const STEP_LABELS: Record<RuleType, string[]> = {

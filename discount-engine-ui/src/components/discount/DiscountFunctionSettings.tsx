@@ -62,12 +62,14 @@ const hasSpecialData = (specials: SpecialDiscount[]) =>
 
 export function DiscountFunctionSettings({
   initialRuleType,
+  prefill = false,
   onSummaryChange,
 }: {
   initialRuleType?: RuleType;
+  prefill?: boolean;
   onSummaryChange?: (summary: { products: number }) => void;
 }) {
-  const [formData, setFormData] = useState<FormData>(() => createInitialFormData(initialRuleType));
+  const [formData, setFormData] = useState<FormData>(() => createInitialFormData(initialRuleType, prefill));
   const [step, setStep] = useState(0);
   const [showDataLoss, setShowDataLoss] = useState(false);
 

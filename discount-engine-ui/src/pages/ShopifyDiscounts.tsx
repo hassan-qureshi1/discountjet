@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Badge, Banner, BlockStack, Button, Card, IndexTable, InlineStack, Page, Tabs, Text } from '@shopify/polaris';
+import { Badge, Banner, BlockStack, Button, ButtonGroup, Card, IndexTable, InlineStack, Page, Tabs, Text } from '@shopify/polaris';
 import { useDiscounts, useShopifyDiscounts } from '../store/useDiscountStore';
 import type { DiscountEngineKind, ShopifyDiscount } from '../types';
 import { DiscountTypeModal } from '../components/common/DiscountTypeModal';
@@ -104,9 +104,16 @@ export default function ShopifyDiscounts() {
                     </IndexTable.Cell>
                     <IndexTable.Cell>
                       {d.appId ? (
-                        <Button variant="plain" onClick={() => navigate(`/discounts/${d.appId}`)}>
-                          View
-                        </Button>
+                        <ButtonGroup>
+                          <Button variant="plain" onClick={() => navigate(`/discounts/${d.appId}`)}>
+                            View
+                          </Button>
+                          {!app?.campaignId && (
+                            <Button variant="plain" onClick={() => navigate(`/discounts/${d.appId}/edit`)}>
+                              Edit
+                            </Button>
+                          )}
+                        </ButtonGroup>
                       ) : (
                         <Button variant="plain" disabled>
                           View in Shopify

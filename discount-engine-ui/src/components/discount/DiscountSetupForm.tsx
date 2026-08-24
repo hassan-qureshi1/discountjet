@@ -29,10 +29,12 @@ export interface BuiltDiscount {
 export function DiscountSetupForm({
   kind,
   defaultTitle = 'New discount',
+  prefill = false,
   onChange,
 }: {
   kind: string;
   defaultTitle?: string;
+  prefill?: boolean;
   onChange: (built: BuiltDiscount) => void;
 }) {
   const initialRuleType = RULE_FROM_KIND[kind] ?? 'tier-discount';
@@ -74,6 +76,7 @@ export function DiscountSetupForm({
           <Box background="bg-surface-secondary" padding="400" borderRadius="300" borderWidth="025" borderColor="border">
             <DiscountFunctionSettings
               initialRuleType={initialRuleType}
+              prefill={prefill}
               onSummaryChange={(s) => setProducts(s.products)}
             />
           </Box>

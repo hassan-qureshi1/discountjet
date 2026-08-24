@@ -33,7 +33,6 @@ import {
   type Tier,
 } from './discountForm';
 import { Stepper } from '../common/Stepper';
-import { ChoiceCard } from '../common/ChoiceCard';
 import { TierCard } from './TierCard';
 import { BundleDiscountCard } from './BundleDiscountCard';
 import { SpecialDiscountCard } from './SpecialDiscountCard';
@@ -54,12 +53,6 @@ function PlatformField({ value, onChange }: { value: Platform; onChange: (v: Pla
   );
 }
 
-const hasTierData = (tiers: Tier[]) => tiers.some((t) => parseItems(t.targets).length > 0);
-const hasBundleData = (bundles: BundleDiscount[]) =>
-  bundles.some((b) => parseItems(b.source_variants).length > 0 && parseItems(b.target_variants).length > 0);
-const hasSpecialData = (specials: SpecialDiscount[]) =>
-  specials.some((s) => parseItems(s.source_variants).length > 0 && s.targets.some((t) => parseItems(t.target_variants).length > 0));
-
 export function DiscountFunctionSettings({
   initialRuleType,
   prefill = false,
@@ -71,10 +64,11 @@ export function DiscountFunctionSettings({
 }) {
   const [formData, setFormData] = useState<FormData>(() => createInitialFormData(initialRuleType, prefill));
   const [step, setStep] = useState(0);
-  const [showDataLoss, setShowDataLoss] = useState(false);
 
   const { ruleType, tiers, bundleDiscounts, specialDiscounts } = formData;
-  const steps = STEP_LABELS[ruleType];
+  // The offer type is picked in the type-picker modal before this opens, so the
+  // wizard skips that step and starts at the first real config step.
+  const steps = STEP_LABELS[ruleType].slice(1);
   const lastStep = steps.length - 1;
 
   // Total chosen products across the current offer type — reported to the host
@@ -132,22 +126,6 @@ export function DiscountFunctionSettings({
   const removeSpecial = (i: number) =>
     setFormData((prev) => ({ ...prev, specialDiscounts: prev.specialDiscounts.filter((_, idx) => idx !== i) }));
 
-  const switchRuleType = (next: RuleType) => {
-    if (next === ruleType) return;
-    const wouldLose =
-      (ruleType === 'tier-discount' && hasTierData(tiers)) ||
-      (ruleType === 'bundle-discount' && hasBundleData(bundleDiscounts)) ||
-      (ruleType === 'special_discount' && hasSpecialData(specialDiscounts));
-    setFormData((prev) => ({
-      ...prev,
-      ruleType: next,
-      tiers: prev.tiers.length ? prev.tiers : [newTier()],
-      bundleDiscounts: next === 'bundle-discount' ? (prev.bundleDiscounts.length ? prev.bundleDiscounts : [newBundle()]) : [],
-      specialDiscounts: next === 'special_discount' ? (prev.specialDiscounts.length ? prev.specialDiscounts : [newSpecial()]) : [],
-    }));
-    if (wouldLose) setShowDataLoss(true);
-  };
-
   return (
     <BlockStack gap="400">
       <Text as="h3" variant="headingMd">
@@ -163,12 +141,6 @@ export function DiscountFunctionSettings({
               </Text>
             ))}
           </BlockStack>
-        </Banner>
-      )}
-
-      {showDataLoss && (
-        <Banner tone="critical" onDismiss={() => setShowDataLoss(false)}>
-          <p>Heads up: switching offer type will clear the setup from your previous offer type once you save.</p>
         </Banner>
       )}
 
@@ -191,35 +163,8 @@ export function DiscountFunctionSettings({
 
       <Divider />
 
-      {/* STEP 0 · Offer type */}
-      {step === 0 && (
-        <BlockStack gap="200">
-          <Text as="span" variant="bodyMd">
-            What kind of offer is this?
-          </Text>
-          <ChoiceCard
-            title="Volume discount — buy more, save more"
-            helpText="Shoppers unlock a bigger discount as they add more of the same products to their cart."
-            selected={isTier}
-            onChange={() => switchRuleType('tier-discount')}
-          />
-          <ChoiceCard
-            title="Buy X, get Y discounted"
-            helpText="When a shopper buys the qualifying products, the products you choose get discounted."
-            selected={isBundle}
-            onChange={() => switchRuleType('bundle-discount')}
-          />
-          <ChoiceCard
-            title="Buy X, discount both items"
-            helpText="Discount both the qualifying products and the products they unlock — great for “main item + add-on” deals."
-            selected={isSpecial}
-            onChange={() => switchRuleType('special_discount')}
-          />
-        </BlockStack>
-      )}
-
-      {/* TIER · Step 1 Discount basics */}
-      {isTier && step === 1 && (
+      {/* TIER · Discount basics */}
+      {isTier && step === 0 && (
         <BlockStack gap="300">
           <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
             <Select
@@ -268,7 +213,7 @@ export function DiscountFunctionSettings({
       )}
 
       {/* TIER · Step 2 Savings levels */}
-      {isTier && step === 2 && (
+      {isTier && step === 1 && (
         <BlockStack gap="300">
           <Text as="h3" variant="headingSm">
             Savings levels
@@ -294,7 +239,7 @@ export function DiscountFunctionSettings({
       )}
 
       {/* BUNDLE · Step 1 Products */}
-      {isBundle && step === 1 && (
+      {isBundle && step === 0 && (
         <BlockStack gap="300">
           <Banner tone="warning">
             <p>
@@ -323,7 +268,7 @@ export function DiscountFunctionSettings({
       )}
 
       {/* BUNDLE · Step 2 Discount & rules */}
-      {isBundle && step === 2 && (
+      {isBundle && step === 1 && (
         <BlockStack gap="300">
           <PlatformField value={formData.platform} onChange={(v) => updateField('platform', v)} />
           <Divider />
@@ -342,7 +287,7 @@ export function DiscountFunctionSettings({
       )}
 
       {/* SPECIAL · Step 1 Products */}
-      {isSpecial && step === 1 && (
+      {isSpecial && step === 0 && (
         <BlockStack gap="300">
           <Text as="h3" variant="headingSm">
             Your offers
@@ -365,7 +310,7 @@ export function DiscountFunctionSettings({
       )}
 
       {/* SPECIAL · Step 2 Discount & rules */}
-      {isSpecial && step === 2 && (
+      {isSpecial && step === 1 && (
         <BlockStack gap="300">
           <PlatformField value={formData.platform} onChange={(v) => updateField('platform', v)} />
           <Divider />

@@ -137,9 +137,9 @@ export function chipLabel(item: VariantItem | ProductItem): string {
   return item.productTitle || item.productId;
 }
 
-/** A representative product image (emoji) for a chosen product/variant. */
-export function productEmoji(item: VariantItem | ProductItem): string {
-  const t = (item.productTitle || '').toLowerCase();
+/** A representative product image (emoji) for a product/variant title. */
+export function emojiForTitle(title: string): string {
+  const t = (title || '').toLowerCase();
   if (t.includes('pillow')) return '🛌';
   if (t.includes('duvet') || t.includes('sheet')) return '🧺';
   if (t.includes('protector')) return '🛡️';
@@ -148,6 +148,11 @@ export function productEmoji(item: VariantItem | ProductItem): string {
   if (t.includes('cushion')) return '🪟';
   if (t.includes('throw')) return '🧣';
   return '📦';
+}
+
+/** A representative product image (emoji) for a chosen product/variant. */
+export function productEmoji(item: VariantItem | ProductItem): string {
+  return emojiForTitle(item.productTitle || '');
 }
 
 export function itemKey(item: VariantItem | ProductItem): string {

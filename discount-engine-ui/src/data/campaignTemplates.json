@@ -1,0 +1,8 @@
+[
+  { "id": "winter-bedroom", "emoji": "🛏", "name": "Winter bedroom event", "description": "Tier + bundle discounts across bedding, plus room bundles.", "example": "3 discounts · 2 bundles · 8 weeks", "category": "Seasonal" },
+  { "id": "bogo-weekend", "emoji": "🎁", "name": "BOGO weekend", "description": "A short, high-urgency buy-one-get-one push.", "example": "1 special discount · 3 days", "category": "BOGO" },
+  { "id": "bundle-blowout", "emoji": "🎒", "name": "Bundle blowout", "description": "Several curated bundles at one saving.", "example": "2 bundle discounts · 4 bundles", "category": "Bundle" },
+  { "id": "clearance-markdown", "emoji": "🏷️", "name": "Clearance markdown", "description": "Mark down against RRP to show the saving.", "example": "Tier off compare-at price", "category": "Clearance" },
+  { "id": "stock-up-volume", "emoji": "📈", "name": "Stock-up volume event", "description": "Buy-more-save-more across staples.", "example": "3-tier volume discount", "category": "Volume" },
+  { "id": "new-arrival", "emoji": "✨", "name": "New arrival launch", "description": "Intro discount + an add-on bundle for launch day.", "example": "1 discount · 1 bundle · 2 weeks", "category": "Launch" }
+]

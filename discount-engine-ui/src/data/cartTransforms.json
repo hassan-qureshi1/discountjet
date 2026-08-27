@@ -1,0 +1,50 @@
+[
+  {
+    "id": "b1",
+    "name": "Winter bedroom bundle",
+    "operation": "merge",
+    "items": ["Oak Bed Frame — Queen", "Memory Foam Pillow ×2"],
+    "price": 899,
+    "sumOfItems": 1057,
+    "schedule": "Aug 1 → Sep 30",
+    "status": "Active",
+    "metafield": "Written",
+    "updated": "Aug 1"
+  },
+  {
+    "id": "b2",
+    "name": "Sheet + duvet bundle",
+    "operation": "merge",
+    "items": ["Bamboo Sheet Set", "Duvet Cover"],
+    "price": 189,
+    "sumOfItems": 238,
+    "schedule": "Aug 5 → Oct 1",
+    "status": "Active",
+    "metafield": "Written",
+    "updated": "3 days ago"
+  },
+  {
+    "id": "b3",
+    "name": "Mattress set",
+    "operation": "expand",
+    "items": ["Cloud Hybrid Mattress — Queen", "Mattress Protector", "Bamboo Sheet Set"],
+    "price": 1249,
+    "sumOfItems": 1459,
+    "schedule": "Sep 1 → Sep 14",
+    "status": "Scheduled",
+    "metafield": "Not yet written",
+    "updated": "2 hr ago"
+  },
+  {
+    "id": "b4",
+    "name": "Sofa + cushions",
+    "operation": "merge",
+    "items": ["3-Seat Sofa", "Scatter Cushion ×2", "Wool Throw"],
+    "price": 1090,
+    "sumOfItems": 1230,
+    "schedule": "Jul 20 → Aug 10",
+    "status": "Ended",
+    "metafield": "Cleared",
+    "updated": "Aug 10"
+  }
+]

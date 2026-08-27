@@ -1,0 +1,15 @@
+{
+  "banner": {
+    "title": "Enforcement is inert in M1",
+    "description": "The cron only deactivates discounts when a shop is over its limit — reachable only after a merchant downgrades or drops a plan. Plan tiers, names and pricing are placeholders; real Shopify Billing wiring is out of scope."
+  },
+  "current": "Growth",
+  "used": 6,
+  "limit": 50,
+  "usagePercent": 12,
+  "tiers": [
+    { "name": "Starter", "limit": 10, "current": false },
+    { "name": "Growth", "limit": 50, "current": true },
+    { "name": "Scale", "limit": 200, "current": false }
+  ]
+}

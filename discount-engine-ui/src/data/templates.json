@@ -1,0 +1,10 @@
+[
+  { "id": "buy-more", "emoji": "📈", "name": "Buy more, save more", "description": "Reward bigger baskets with a better rate.", "example": "Buy 3, get 20% off", "category": "Volume" },
+  { "id": "pct-off", "emoji": "％", "name": "Percentage off", "description": "A simple sale across a product or collection.", "example": "15% off this collection", "category": "Save %" },
+  { "id": "clearance", "emoji": "🏷️", "name": "Clearance / RRP markdown", "description": "Show the saving against the original price.", "example": "Was $80, now $60", "category": "Clearance" },
+  { "id": "bundle", "emoji": "🎒", "name": "Bundle & save", "description": "Discount when items are bought together.", "example": "Buy shirt + jeans, save 25%", "category": "Bundle" },
+  { "id": "bxgy", "emoji": "🎁", "name": "Buy X, Get Y", "description": "Add a reward item at a special price.", "example": "Buy 2 candles, get 1 half-price", "category": "BOGO" },
+  { "id": "bogo", "emoji": "🤝", "name": "BOGO", "description": "The classic buy-one-get-one-free.", "example": "Buy one, get one free", "category": "BOGO" },
+  { "id": "addon", "emoji": "📱", "name": "Main + add-on deal", "description": "Discount an accessory with a main product.", "example": "Buy a phone, get the case 50% off", "category": "Bundle" },
+  { "id": "mixmatch", "emoji": "🧩", "name": "Mix & match", "description": "Any set from a range for one price.", "example": "Any 3 from this range for $99", "category": "Bundle" }
+]

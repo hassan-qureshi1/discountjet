@@ -12,7 +12,7 @@ import type {
   Template,
 } from '../types';
 
-import { fetchDiscounts } from '../api';
+import { fetchDiscounts, fetchShopifyDiscounts } from '../api';
 
 // Hardcoded fixtures seed the store; from then on the app mutates it in memory,
 // so created discounts/campaigns/bundles persist and appear in the lists (until
@@ -112,7 +112,18 @@ export function hydrateDiscountsFromApi(): void {
     .catch((err) => console.warn('[discounts] live sync unavailable, using seed data:', err));
 }
 
+// Replace the seeded `shopifyDiscounts` with the live native+app list from the
+// Worker (GET /api/shopify-discounts). Same fallback-to-seed behavior; the
+// native view page (`ShopifyDiscounts.tsx`) and `useShopifyDiscounts` are untouched.
+export function hydrateShopifyDiscountsFromApi(): void {
+  if (typeof window === 'undefined') return;
+  fetchShopifyDiscounts()
+    .then(({ shopifyDiscounts }) => useDiscountStore.setState({ shopifyDiscounts }))
+    .catch((err) => console.warn('[shopify-discounts] live sync unavailable, using seed data:', err));
+}
+
 hydrateDiscountsFromApi();
+hydrateShopifyDiscountsFromApi();
 
 // ─── Action hooks ────────────────────────────────────────────────────────────
 export const useAddDiscount = () => useDiscountStore((s) => s.addDiscount);

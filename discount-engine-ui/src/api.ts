@@ -4,7 +4,7 @@
 // it as a Bearer token so the Worker's `requireShop` middleware can authenticate
 // the request. Outside the embed (pure local dev) the call falls back to an
 // unauthenticated fetch, which the Worker accepts only via its dev shop-param path.
-import type { Discount } from './types';
+import type { Discount, ShopifyDiscount } from './types';
 
 interface AppBridgeGlobal {
   idToken?: () => Promise<string>;
@@ -35,4 +35,14 @@ export async function fetchDiscounts(): Promise<DiscountsResponse> {
   const res = await fetch('/api/discounts', { headers: await authHeaders() });
   if (!res.ok) throw new Error(`GET /api/discounts failed: ${res.status} ${res.statusText}`);
   return res.json() as Promise<DiscountsResponse>;
+}
+
+export interface ShopifyDiscountsResponse {
+  shopifyDiscounts: ShopifyDiscount[];
+}
+
+export async function fetchShopifyDiscounts(): Promise<ShopifyDiscountsResponse> {
+  const res = await fetch('/api/shopify-discounts', { headers: await authHeaders() });
+  if (!res.ok) throw new Error(`GET /api/shopify-discounts failed: ${res.status} ${res.statusText}`);
+  return res.json() as Promise<ShopifyDiscountsResponse>;
 }

@@ -1,0 +1,14 @@
+api_version = "2026-01"
+[[extensions]]
+name = "Buy-X Discount Both"
+description = "Configure special (source + discounted sets) product discounts"
+handle = "discount-special-ui"
+uid = "c60f6699-9eaa-726f-34ce-506ec4c19cf69fd2cf56"
+type = "ui_extension"
+[[extensions.targeting]]
+module = "./src/DiscountSpecialSettings.tsx"
+target = "admin.discount-details.function-settings.render"
+
+[[extensions.metafields]]
+namespace = "$app:discount-special"
+key = "config"

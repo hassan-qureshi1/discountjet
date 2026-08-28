@@ -1,0 +1,6 @@
+{
+  "candidates": [
+    { "message": "Buy 2 Get 1", "targets": ["line1"], "value": { "percentage": 0.0 } },
+    { "message": "Buy 2 Get 1 20% OFF", "targets": ["line2", "line3"], "value": { "percentage": 20.0 } }
+  ]
+}

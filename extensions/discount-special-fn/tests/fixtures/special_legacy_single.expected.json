@@ -1,0 +1,6 @@
+{
+  "candidates": [
+    { "message": "Source Item Deal 20% OFF", "targets": ["line1"], "value": { "percentage": 20.0 } },
+    { "message": "Target Item Bonus 30% OFF", "targets": ["line2"], "value": { "percentage": 30.0 } }
+  ]
+}

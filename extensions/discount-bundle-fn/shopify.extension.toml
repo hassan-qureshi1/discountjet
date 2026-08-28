@@ -1,0 +1,26 @@
+api_version = "2026-07"
+
+[[extensions]]
+name = "Buy X, Get Y"
+handle = "discount-bundle"
+type = "function"
+uid = "e8ea6950-d730-8c2c-31d1-d6424096cc2f5da5550d"
+description = "t:description"
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/cart_lines_discounts_generate_run.graphql"
+  export = "cart_lines_discounts_generate_run"
+
+  [[extensions.targeting]]
+  target = "cart.delivery-options.discounts.generate.run"
+  input_query = "src/cart_delivery_options_discounts_generate_run.graphql"
+  export = "cart_delivery_options_discounts_generate_run"
+
+  [extensions.build]
+  command = "cargo build --target=wasm32-unknown-unknown --release"
+  path = "target/wasm32-unknown-unknown/release/discount-bundle-fn.wasm"
+  watch = [ "src/**/*.rs" ]
+
+  [extensions.ui]
+  handle = "discount-bundle-ui"

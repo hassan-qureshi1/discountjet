@@ -1,0 +1,46 @@
+query Input {
+  triggeringDiscountCode
+  cart {
+    platform: attribute(key: "platform_source") {
+      value
+    }
+    discountCode: attribute(key: "discountCode") {
+      value
+    }
+    lines {
+      id
+      quantity
+      cost {
+        subtotalAmount {
+          amount
+        }
+        amountPerQuantity {
+          amount
+        }
+        compareAtAmountPerQuantity {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          product {
+            id
+          }
+        }
+      }
+    }
+  }
+  discount {
+    discountClasses
+    metafield(namespace: "$app:discount-special", key: "config") {
+      value
+    }
+  }
+  shop {
+    metafield(namespace: "checkout", key: "priority_codes") {
+      value
+    }
+  }
+}

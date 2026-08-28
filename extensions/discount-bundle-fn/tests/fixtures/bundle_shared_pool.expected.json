@@ -1,0 +1,7 @@
+{
+  "candidates": [
+    { "message": "Deal", "targets": ["src"], "value": { "percentage": 0.0 } },
+    { "message": "Deal 20% OFF", "targets": ["tgt1"], "value": { "fixedAmountStr": "20" } },
+    { "message": "Deal", "targets": ["tgt2"], "value": { "percentage": 0.0 } }
+  ]
+}

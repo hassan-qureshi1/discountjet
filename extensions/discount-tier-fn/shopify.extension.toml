@@ -1,0 +1,26 @@
+api_version = "2026-07"
+
+[[extensions]]
+name = "Volume Discount"
+handle = "discount-tier"
+type = "function"
+uid = "bccf1ce1-7ead-4f18-9229-23a3211e330701e68cc3"
+description = "t:description"
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/cart_lines_discounts_generate_run.graphql"
+  export = "cart_lines_discounts_generate_run"
+
+  [[extensions.targeting]]
+  target = "cart.delivery-options.discounts.generate.run"
+  input_query = "src/cart_delivery_options_discounts_generate_run.graphql"
+  export = "cart_delivery_options_discounts_generate_run"
+
+  [extensions.build]
+  command = "cargo build --target=wasm32-unknown-unknown --release"
+  path = "target/wasm32-unknown-unknown/release/discount-tier-fn.wasm"
+  watch = [ "src/**/*.rs" ]
+
+  [extensions.ui]
+  handle = "discount-tier-ui"

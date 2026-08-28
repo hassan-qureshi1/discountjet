@@ -1,0 +1,9 @@
+{
+  "label": "percentage price path, ALL strategy (eva tier_discount.test.js case A)",
+  "config": "{\"discount_type\":\"percentage\",\"apply_to\":\"price\",\"product_discount_selection_strategy\":\"ALL\",\"platform\":\"BOTH\",\"message\":\"\",\"discount_tiers\":{\"20\":{\"targets\":[12345,67890],\"product_selector_type\":\"variant_id\",\"min_qty\":0}}}",
+  "lines": [
+    { "id": "line1", "quantity": 2, "amountPerQuantity": "29.99", "subtotal": "59.98", "compareAt": "39.99", "variantGid": "gid://shopify/ProductVariant/12345", "productGid": "gid://shopify/Product/100" },
+    { "id": "line2", "quantity": 1, "amountPerQuantity": "49.99", "subtotal": "49.99", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/67890", "productGid": "gid://shopify/Product/200" },
+    { "id": "line3", "quantity": 3, "amountPerQuantity": "19.99", "subtotal": "59.97", "compareAt": "29.99", "variantGid": "gid://shopify/ProductVariant/11111", "productGid": "gid://shopify/Product/100" }
+  ]
+}

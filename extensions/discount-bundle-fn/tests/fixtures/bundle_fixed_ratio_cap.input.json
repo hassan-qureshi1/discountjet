@@ -1,0 +1,8 @@
+{
+  "label": "fixed_ratios + max_target_qty per-source cap → partial fixedAmount 80 (bundle_discount.test.js ~843)",
+  "config": "{\"platform\":\"BOTH\",\"bundle_discounts\":[{\"source_selector_type\":\"variant_id\",\"source_variants\":[100],\"target_selector_type\":\"variant_id\",\"target_variants\":[300],\"operator\":\"percentage\",\"value\":20,\"message\":\"\",\"quantity_dependent\":true,\"target_per_source\":4,\"min_qty\":1,\"fixed_ratios\":true,\"max_target_qty\":5}]}",
+  "lines": [
+    { "id": "src", "quantity": 2, "amountPerQuantity": "10", "subtotal": "20", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/100", "productGid": "gid://shopify/Product/1" },
+    { "id": "tgt", "quantity": 9, "amountPerQuantity": "50", "subtotal": "450", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/300", "productGid": "gid://shopify/Product/3" }
+  ]
+}

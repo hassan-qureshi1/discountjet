@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createDb } from '../db/db';
-import { discount } from '../db/schema';
+import { discount, shopifyShop } from '../db/schema';
+import { getSyncHealth, reconcileDiscounts } from '../lifecycle/discountSync';
 import type { AppEnv } from '../types/env.d';
 
 export const discountRoutes = new Hono<AppEnv>();
@@ -89,6 +90,29 @@ discountRoutes.get('/api/discounts', async (c) => {
   const status = (c.req.query('status') ?? 'all') as FilterId;
   const matcher = MATCHERS[status] ?? MATCHERS.all;
   return c.json({ discounts: all.filter(matcher), counts });
+});
+
+// GET /api/discounts/sync-health — last webhook, last reconcile, unknown-config
+// count. Registered before /:id so "sync-health" isn't captured as an id.
+discountRoutes.get('/api/discounts/sync-health', async (c) => {
+  const db = createDb(c.env.DB);
+  return c.json(await getSyncHealth(db, c.get('shopId')));
+});
+
+// POST /api/discounts/reconcile — re-sync from Shopify and tombstone rows deleted
+// while offline. Idempotent: a run with no Shopify changes writes no new tombstones.
+discountRoutes.post('/api/discounts/reconcile', async (c) => {
+  const db = createDb(c.env.DB);
+  const shopId = c.get('shopId');
+  const shop = await db
+    .select({ domain: shopifyShop.myshopifyDomain })
+    .from(shopifyShop)
+    .where(eq(shopifyShop.id, shopId))
+    .get();
+  if (!shop?.domain) return c.json({ error: 'Shop domain not found' }, 404);
+
+  const result = await reconcileDiscounts({ db, env: c.env, shopId, shopDomain: shop.domain });
+  return c.json(result);
 });
 
 // GET /api/discounts/:id — single row (404 when missing or tombstoned).

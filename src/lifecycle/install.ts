@@ -1,5 +1,6 @@
 import type { Env } from '../types/env';
 import { registerWebhooks } from './webhooks';
+import { backfillDiscounts } from './discountSync';
 import { createDb } from '../db/db';
 import { shopifyShop } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -73,4 +74,20 @@ export async function onShopInstall(
   // 3. Register webhooks with Shopify.
   // Starter only registers APP_UNINSTALLED. Add more topics in src/lifecycle/webhooks.ts.
   await registerWebhooks(shopDomain, session.accessToken, env);
+
+  // 4. Backfill the discount mirror (E4-5). Webhooks only cover changes after
+  // install, so seed the mirror with existing app-owned discounts now. Best-effort:
+  // a failure here (e.g. token not yet readable) is recoverable via reconcile.
+  try {
+    const shopRow = await db
+      .select({ id: shopifyShop.id })
+      .from(shopifyShop)
+      .where(eq(shopifyShop.myshopifyDomain, shopDomain))
+      .get();
+    if (shopRow?.id) {
+      await backfillDiscounts({ db, env, shopId: shopRow.id, shopDomain });
+    }
+  } catch (err) {
+    console.error(`[install] discount backfill failed for ${shopDomain}:`, err);
+  }
 }

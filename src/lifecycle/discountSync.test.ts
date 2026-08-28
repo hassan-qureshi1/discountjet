@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { classifyNode, countProducts, kindAndConfig, mapMethod, mapStatus } from './discountSync';
+import {
+  classifyNode,
+  countProducts,
+  gidsToTombstone,
+  kindAndConfig,
+  mapMethod,
+  mapStatus,
+} from './discountSync';
 
 describe('mapMethod', () => {
   it.each([
@@ -102,5 +109,17 @@ describe('classifyNode', () => {
   it('falls back to the payload name when the node has no title', () => {
     const c = classifyNode({ discount: null }, 'Fallback name');
     expect(c.name).toBe('Fallback name');
+  });
+});
+
+describe('gidsToTombstone (reconcile diff)', () => {
+  it('returns mirrored gids that are no longer live in Shopify', () => {
+    expect(gidsToTombstone(['a', 'b', 'c'], new Set(['a', 'c']))).toEqual(['b']);
+  });
+  it('returns nothing when every mirrored gid is still live (idempotent reconcile)', () => {
+    expect(gidsToTombstone(['a', 'b'], new Set(['a', 'b', 'x']))).toEqual([]);
+  });
+  it('returns nothing for an empty mirror', () => {
+    expect(gidsToTombstone([], new Set(['a']))).toEqual([]);
   });
 });

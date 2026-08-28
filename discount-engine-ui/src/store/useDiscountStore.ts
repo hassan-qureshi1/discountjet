@@ -12,9 +12,13 @@ import type {
   Template,
 } from '../types';
 
+import { fetchDiscounts } from '../api';
+
 // Hardcoded fixtures seed the store; from then on the app mutates it in memory,
 // so created discounts/campaigns/bundles persist and appear in the lists (until
-// a page refresh reseeds). Swap the seeds for API calls later.
+// a page refresh reseeds). The `discounts` slice is now hydrated from the live
+// `GET /api/discounts` mirror (E4) — see hydrateDiscountsFromApi below — while
+// the other slices still seed from fixtures until their epics land.
 import shopData from '../data/shop.json';
 import overviewData from '../data/overview.json';
 import discountsData from '../data/discounts.json';
@@ -95,6 +99,20 @@ export const useBundleCampaign = (id?: string) =>
   useDiscountStore((s) => s.bundleCampaigns.find((c) => c.id === id));
 export const useTemplate = (id?: string) =>
   useDiscountStore((s) => s.templates.find((t) => t.id === id));
+
+// ─── Live sync (E4) ──────────────────────────────────────────────────────────
+// Replace the seeded `discounts` with the webhook-synced mirror from the Worker.
+// Runs once on load; keeps the fixture seed as a fallback if the API is
+// unreachable (e.g. pure localhost dev without an authenticated session) so the
+// page always renders. `Discounts.tsx` / `useDiscounts` are untouched.
+export function hydrateDiscountsFromApi(): void {
+  if (typeof window === 'undefined') return;
+  fetchDiscounts()
+    .then(({ discounts }) => useDiscountStore.setState({ discounts }))
+    .catch((err) => console.warn('[discounts] live sync unavailable, using seed data:', err));
+}
+
+hydrateDiscountsFromApi();
 
 // ─── Action hooks ────────────────────────────────────────────────────────────
 export const useAddDiscount = () => useDiscountStore((s) => s.addDiscount);

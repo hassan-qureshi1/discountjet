@@ -1,4 +1,4 @@
-import { BlockStack, Button, InlineStack, Text } from '@shopify/polaris';
+import { BlockStack, Button, InlineStack, Labelled, Text } from '@shopify/polaris';
 import {
   chipLabel,
   itemKey,
@@ -82,11 +82,13 @@ export function ProductPicker({
   selectorType,
   json,
   onChange,
+  requiredIndicator = false,
 }: {
   label: string;
   selectorType: SelectorType;
   json: string;
   onChange: (json: string) => void;
+  requiredIndicator?: boolean;
 }) {
   const items = parseItems<VariantItem | ProductItem>(json);
 
@@ -95,9 +97,17 @@ export function ProductPicker({
     onChange(JSON.stringify(next));
   };
 
+  const button = <Button onClick={() => onChange(pickNext(json, selectorType))}>{label}</Button>;
+
   return (
     <BlockStack gap="200">
-      <Button onClick={() => onChange(pickNext(json, selectorType))}>{label}</Button>
+      {requiredIndicator ? (
+        <Labelled id={`picker-${label}`} label={label} requiredIndicator>
+          {button}
+        </Labelled>
+      ) : (
+        button
+      )}
       {items.length > 0 && (
         <BlockStack gap="150">
           <Text as="span" variant="bodySm">

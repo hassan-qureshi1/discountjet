@@ -134,12 +134,12 @@ export function SpecialCard({ special, specialIndex, allSpecials, onUpdate, onRe
             <s-divider />
             <s-heading>Discount for the qualifying products</s-heading>
             <s-grid gridTemplateColumns="1fr 1fr" gap="base">
-              <s-select label="Discount type" value={special.source_operator}
+              <s-select required label="Discount type" value={special.source_operator}
                 onChange={(e: Event) => onUpdate("source_operator", (e.currentTarget as HTMLSelectElement).value)}>
                 <s-option value="percentage">Percentage</s-option>
                 <s-option value="amount">Amount</s-option>
               </s-select>
-              <s-number-field label={isPct ? "Discount percentage" : "Discount amount"} value={special.source_value}
+              <s-number-field required label={isPct ? "Discount percentage" : "Discount amount"} value={special.source_value}
                 min={0} max={isPct ? 100 : undefined} suffix={isPct ? "%" : "$"}
                 onChange={(e: Event) => onUpdate("source_value", (e.currentTarget as HTMLInputElement).value)} />
             </s-grid>
@@ -188,12 +188,12 @@ export function SpecialCard({ special, specialIndex, allSpecials, onUpdate, onRe
                 {renderRules ? (
                   <>
                     <s-grid gridTemplateColumns="1fr 1fr" gap="base">
-                      <s-select label="Discount type" value={t.target_operator}
+                      <s-select required label="Discount type" value={t.target_operator}
                         onChange={(e: Event) => updateTarget(ti, "target_operator", (e.currentTarget as HTMLSelectElement).value)}>
                         <s-option value="percentage">Percentage</s-option>
                         <s-option value="amount">Amount</s-option>
                       </s-select>
-                      <s-number-field label={tPct ? "Discount percentage" : "Discount amount"} value={t.target_value}
+                      <s-number-field required label={tPct ? "Discount percentage" : "Discount amount"} value={t.target_value}
                         min={0} max={tPct ? 100 : undefined} suffix={tPct ? "%" : "$"}
                         onChange={(e: Event) => updateTarget(ti, "target_value", (e.currentTarget as HTMLInputElement).value)} />
                     </s-grid>

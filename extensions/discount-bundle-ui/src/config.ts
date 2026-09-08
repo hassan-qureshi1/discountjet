@@ -121,7 +121,6 @@ export function validateBundleConfig(formData: BundleFormData): string[] {
     if (b.value == null || b.value === "" || Number.isNaN(parseFloat(b.value))) {
       errors.push(`Bundle ${n}: Discount value is required.`);
     }
-    if (!b.message || b.message.trim() === "") errors.push(`Bundle ${n}: Message is required.`);
     if (b.fixed_ratios === true && b.max_target_qty !== "" && b.max_target_qty != null) {
       const parsed = parseInt(b.max_target_qty, 10);
       if (!Number.isNaN(parsed) && parsed > 0) {

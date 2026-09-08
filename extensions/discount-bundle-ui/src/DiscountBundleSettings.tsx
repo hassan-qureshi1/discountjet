@@ -154,6 +154,7 @@ function App() {
 
   const platformField = (
     <s-select
+      required
       label="Where does this apply?"
       value={formData.platform}
       onChange={(e: Event) => patch({ platform: (e.currentTarget as HTMLSelectElement).value as Platform })}

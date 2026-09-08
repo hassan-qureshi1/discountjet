@@ -214,6 +214,7 @@ function App() {
             <s-stack gap="base">
               <s-grid gridTemplateColumns="1fr 1fr" gap="base">
                 <s-select
+                  required
                   label="Discount type"
                   value={formData.discountType}
                   onChange={(e: Event) =>
@@ -235,6 +236,7 @@ function App() {
                   <s-option value="compare_at_price">Original (compare-at) price</s-option>
                 </s-select>
                 <s-select
+                  required
                   label="Where does this apply?"
                   value={formData.platform}
                   onChange={(e: Event) =>

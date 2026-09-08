@@ -41,6 +41,7 @@ import { ReviewSummary } from './ReviewSummary';
 function PlatformField({ value, onChange }: { value: Platform; onChange: (v: Platform) => void }) {
   return (
     <Select
+      requiredIndicator
       label="Where does this apply?"
       options={[
         { label: 'Online store & in person (POS)', value: 'BOTH' },
@@ -168,6 +169,7 @@ export function DiscountFunctionSettings({
         <BlockStack gap="300">
           <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
             <Select
+              requiredIndicator
               label="Discount type"
               options={[
                 { label: 'Percentage off', value: 'percentage' },

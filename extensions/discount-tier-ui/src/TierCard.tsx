@@ -131,6 +131,7 @@ export function TierCard({
 
         <s-grid gridTemplateColumns="1fr 1fr" gap="base">
           <s-number-field
+            required
             label={valueLabel}
             value={tier.value}
             min={0}

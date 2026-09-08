@@ -118,6 +118,7 @@ export function SpecialDiscountCard({
             </Text>
             <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
               <Select
+                requiredIndicator
                 label="Discount type"
                 options={[
                   { label: 'Percentage off', value: 'percentage' },
@@ -127,6 +128,7 @@ export function SpecialDiscountCard({
                 onChange={(v) => onUpdate('source_operator', v as Operator)}
               />
               <TextField
+                requiredIndicator
                 label={special.source_operator === 'percentage' ? 'Discount percentage' : 'Discount amount'}
                 type="number"
                 value={special.source_value}
@@ -161,6 +163,7 @@ export function SpecialDiscountCard({
             />
             <ProductPicker
               label="Choose qualifying products"
+              requiredIndicator
               selectorType={special.sourceSelectorType}
               json={special.source_variants}
               onChange={(json) => onUpdate('source_variants', json)}
@@ -187,6 +190,7 @@ export function SpecialDiscountCard({
               {renderRules && (
                 <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
                   <Select
+                    requiredIndicator
                     label="Discount type"
                     options={[
                       { label: 'Percentage off', value: 'percentage' },
@@ -196,6 +200,7 @@ export function SpecialDiscountCard({
                     onChange={(v) => updateTarget(ti, 'target_operator', v)}
                   />
                   <TextField
+                    requiredIndicator
                     label={target.target_operator === 'percentage' ? 'Discount percentage' : 'Discount amount'}
                     type="number"
                     value={target.target_value}
@@ -228,6 +233,7 @@ export function SpecialDiscountCard({
                   />
                   <ProductPicker
                     label="Choose discounted products"
+                    requiredIndicator
                     selectorType={target.targetSelectorType}
                     json={target.target_variants}
                     onChange={(json) => updateTarget(ti, 'target_variants', json)}

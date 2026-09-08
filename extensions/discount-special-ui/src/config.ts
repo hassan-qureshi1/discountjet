@@ -126,13 +126,23 @@ export function validateSpecialConfig(formData: SpecialFormData): string[] {
     if (parseItems(s.source_variants).length === 0) {
       errors.push(`Special ${n}: At least one source product or variant is required.`);
     }
+    if (!s.source_operator) errors.push(`Special ${n}: Discount type for the qualifying products is required.`);
+    if (s.source_value == null || String(s.source_value).trim() === "" || Number.isNaN(parseFloat(s.source_value))) {
+      errors.push(`Special ${n}: Discount value for the qualifying products is required.`);
+    }
     if (!Array.isArray(s.targets) || s.targets.length === 0) {
       errors.push(`Special ${n}: At least one target is required.`);
     } else {
       const minItems = Math.min(...s.targets.map((t) => parseItems(t.target_variants).length));
       if (minItems === 0) errors.push(`Special ${n}: Each target must have at least one product or variant.`);
+      s.targets.forEach((t, ti) => {
+        const tn = ti + 1;
+        if (!t.target_operator) errors.push(`Special ${n} · Discounted set ${tn}: Discount type is required.`);
+        if (t.target_value == null || String(t.target_value).trim() === "" || Number.isNaN(parseFloat(t.target_value))) {
+          errors.push(`Special ${n} · Discounted set ${tn}: Discount value is required.`);
+        }
+      });
     }
-    if (!s.message || s.message.trim() === "") errors.push(`Special ${n}: Message is required.`);
   });
   if (!formData.platform) errors.push("Platform is required.");
   return errors;

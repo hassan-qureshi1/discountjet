@@ -316,15 +316,26 @@ export function validate(formData: FormData): string[] {
         errors.push(`Bundle ${i + 1}: At least one qualifying product is required.`);
       if (parseItems(b.target_variants).length === 0)
         errors.push(`Bundle ${i + 1}: At least one discounted product is required.`);
-      if (!b.message.trim()) errors.push(`Bundle ${i + 1}: Message is required.`);
+      if (!b.operator) errors.push(`Bundle ${i + 1}: Discount type is required.`);
+      if (!b.value || String(b.value).trim() === '' || Number.isNaN(parseFloat(b.value)))
+        errors.push(`Bundle ${i + 1}: Discount value is required.`);
     });
   } else {
     formData.specialDiscounts.forEach((s, i) => {
       if (parseItems(s.source_variants).length === 0)
         errors.push(`Special ${i + 1}: At least one qualifying product is required.`);
+      if (!s.source_operator)
+        errors.push(`Special ${i + 1}: Discount type for the qualifying products is required.`);
+      if (!s.source_value || String(s.source_value).trim() === '' || Number.isNaN(parseFloat(s.source_value)))
+        errors.push(`Special ${i + 1}: Discount value for the qualifying products is required.`);
       const hasTarget = s.targets.some((t) => parseItems(t.target_variants).length > 0);
       if (!hasTarget) errors.push(`Special ${i + 1}: Each target must have at least one product.`);
-      if (!s.message.trim()) errors.push(`Special ${i + 1}: Message is required.`);
+      s.targets.forEach((t, ti) => {
+        if (!t.target_operator)
+          errors.push(`Special ${i + 1} · Discounted set ${ti + 1}: Discount type is required.`);
+        if (!t.target_value || String(t.target_value).trim() === '' || Number.isNaN(parseFloat(t.target_value)))
+          errors.push(`Special ${i + 1} · Discounted set ${ti + 1}: Discount value is required.`);
+      });
     });
   }
   return errors;

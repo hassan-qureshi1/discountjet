@@ -48,6 +48,7 @@ export function BundleDiscountCard({
           <>
             <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
               <Select
+                requiredIndicator
                 label="Discount type"
                 options={[
                   { label: 'Percentage off', value: 'percentage' },
@@ -57,6 +58,7 @@ export function BundleDiscountCard({
                 onChange={(v) => onUpdate('operator', v as Operator)}
               />
               <TextField
+                requiredIndicator
                 label={bundle.operator === 'percentage' ? 'Discount percentage' : 'Discount amount'}
                 type="number"
                 value={bundle.value}
@@ -186,6 +188,7 @@ export function BundleDiscountCard({
             />
             <ProductPicker
               label="Choose qualifying products"
+              requiredIndicator
               selectorType={bundle.sourceSelectorType}
               json={bundle.source_variants}
               onChange={(json) => onUpdate('source_variants', json)}
@@ -209,6 +212,7 @@ export function BundleDiscountCard({
             />
             <ProductPicker
               label="Choose discounted products"
+              requiredIndicator
               selectorType={bundle.targetSelectorType}
               json={bundle.target_variants}
               onChange={(json) => onUpdate('target_variants', json)}

@@ -101,12 +101,12 @@ export function BundleCard({ bundle, bundleIndex, allBundles, onUpdate, onRemove
         {renderRules ? (
         <>
         <s-grid gridTemplateColumns="1fr 1fr" gap="base">
-          <s-select label="Discount type" value={bundle.operator}
+          <s-select required label="Discount type" value={bundle.operator}
             onChange={(e: Event) => onUpdate("operator", (e.currentTarget as HTMLSelectElement).value)}>
             <s-option value="percentage">Percentage off</s-option>
             <s-option value="amount">Fixed amount off</s-option>
           </s-select>
-          <s-number-field label={isPercentage ? "Discount percentage" : "Discount amount"}
+          <s-number-field required label={isPercentage ? "Discount percentage" : "Discount amount"}
             value={bundle.value} min={0} max={isPercentage ? 100 : undefined} suffix={isPercentage ? "%" : "$"}
             onChange={(e: Event) => onUpdate("value", (e.currentTarget as HTMLInputElement).value)} />
           <s-select label="Discount from" details="Choose which price the discount is taken off." value={bundle.apply_to}

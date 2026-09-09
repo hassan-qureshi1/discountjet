@@ -3,6 +3,7 @@ import { Link, Route, Routes } from 'react-router-dom';
 import BugSnagBoundary from './bugsnag';
 import Home from './Pages/Home';
 import Discounts from './Pages/Discounts';
+import DiscountDetail from './Pages/DiscountDetail';
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/discounts" element={<Discounts />} />
+        <Route path="/discounts/:id" element={<DiscountDetail />} />
         <Route path="*" element={<Home />} />
       </Routes>
       <NavMenu>

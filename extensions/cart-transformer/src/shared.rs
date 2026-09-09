@@ -25,6 +25,10 @@ pub struct CartLine {
     pub amount_per_quantity: Option<String>,
     /// `cost.subtotalAmount.amount`.
     pub subtotal_amount: Option<String>,
+    /// The cart line's `quantity`. Only consumed by the merge-bundle pass
+    /// (`merge_applier`), which needs it to build the `linesMerge` operation's
+    /// `cartLines` input.
+    pub quantity: i64,
 }
 
 /// A single item to place inside a `lineExpand` operation's `expandedCartItems`.
@@ -47,6 +51,53 @@ pub struct LineExpandOp {
     pub cart_line_id: String,
     pub expanded_items: Vec<ExpandedItemOut>,
     pub title: Option<String>,
+}
+
+/// A single `linesMerge` operation. Ported behaviour-faithfully from
+/// `eva/discount-engine`'s merge-bundle handling: several cart lines are
+/// merged into one, priced down to a configured target total via a
+/// percentage-decrease price adjustment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinesMergeOp {
+    /// The matched source cart lines to merge, as `(cartLineId, quantity)`.
+    pub cart_lines: Vec<(String, i64)>,
+    /// The GID of the product variant that represents the merged group.
+    pub parent_variant_id: String,
+    /// Percentage (0-100) knocked off the merged lines' combined subtotal to
+    /// bring it down to the configured target `price`.
+    pub percentage_decrease: f64,
+    pub title: Option<String>,
+}
+
+/// A single operation emitted by the orchestrator. Both existing passes
+/// (bundle expansion and the config applier) emit `lineExpand`; the
+/// merge-bundle pass emits `linesMerge`. Unified here so `orchestrator::transform`
+/// can return one ordered list spanning all three passes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CartOp {
+    Expand(LineExpandOp),
+    Merge(LinesMergeOp),
+}
+
+impl CartOp {
+    /// Test/parity helper: unwrap the `Expand` variant. Panics if this is a
+    /// `Merge` operation — only meant for tests that assert on `lineExpand`
+    /// shapes.
+    pub fn as_expand(&self) -> &LineExpandOp {
+        match self {
+            CartOp::Expand(op) => op,
+            CartOp::Merge(_) => panic!("expected CartOp::Expand, got CartOp::Merge"),
+        }
+    }
+
+    /// Test/parity helper: unwrap the `Merge` variant. Panics if this is an
+    /// `Expand` operation.
+    pub fn as_merge(&self) -> &LinesMergeOp {
+        match self {
+            CartOp::Merge(op) => op,
+            CartOp::Expand(_) => panic!("expected CartOp::Merge, got CartOp::Expand"),
+        }
+    }
 }
 
 /// Extract the trailing numeric id from a GID string, e.g.

@@ -79,6 +79,7 @@ mod tests {
             composition: Some(composition_json.to_string()),
             amount_per_quantity: Some(subtotal.to_string()),
             subtotal_amount: Some(subtotal.to_string()),
+            quantity: 1,
         }
     }
 

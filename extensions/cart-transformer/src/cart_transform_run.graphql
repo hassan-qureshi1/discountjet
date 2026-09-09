@@ -48,5 +48,8 @@ query Input {
     priority_codes: metafield(namespace: "checkout", key: "priority_codes") {
       value
     }
+    merge_bundles: metafield(namespace: "checkout", key: "merge_bundles") {
+      value
+    }
   }
 }

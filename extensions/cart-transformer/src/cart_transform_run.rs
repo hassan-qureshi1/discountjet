@@ -1,7 +1,7 @@
 use super::schema;
-use cart_transformer::config::parse_discount_engine_config;
+use cart_transformer::config::{parse_discount_engine_config, parse_merge_bundle_config};
 use cart_transformer::orchestrator;
-use cart_transformer::shared::{has_priority_discount_code, id_from_gid, CartLine, LineExpandOp};
+use cart_transformer::shared::{has_priority_discount_code, id_from_gid, CartLine, CartOp};
 use shopify_function::prelude::*;
 use shopify_function::Result;
 
@@ -56,6 +56,7 @@ fn cart_transform_run(
             composition,
             amount_per_quantity: Some(line.cost().amount_per_quantity().amount().to_string()),
             subtotal_amount: Some(line.cost().subtotal_amount().amount().to_string()),
+            quantity: *line.quantity() as i64,
         });
     }
 
@@ -63,11 +64,15 @@ fn cart_transform_run(
     let raw_config = input.shop().metafield().map(|m| m.value().as_str());
     let configs = parse_discount_engine_config(raw_config);
 
+    // ── Parse shop `checkout.merge_bundles` config for Pass 3 ──────────────
+    let raw_merge_config = input.shop().merge_bundles().map(|m| m.value().as_str());
+    let merge_configs = parse_merge_bundle_config(raw_merge_config);
+
     // ── Platform source (cart attribute; default CHECKOUT) ─────────────────
     let platform_attr =
         input.cart().platform_source().and_then(|a| a.value()).map(|s| s.as_str());
 
-    let operations = orchestrator::transform(&lines, &configs, platform_attr)?;
+    let operations = orchestrator::transform(&lines, &configs, &merge_configs, platform_attr)?;
 
     let out_operations = operations.into_iter().map(|op| build_operation(op, &id_lookup)).collect();
 
@@ -75,7 +80,17 @@ fn cart_transform_run(
 }
 
 fn build_operation(
-    op: LineExpandOp,
+    op: CartOp,
+    id_lookup: &std::collections::HashMap<String, schema::Id>,
+) -> schema::Operation {
+    match op {
+        CartOp::Expand(op) => build_expand_operation(op, id_lookup),
+        CartOp::Merge(op) => build_merge_operation(op, id_lookup),
+    }
+}
+
+fn build_expand_operation(
+    op: cart_transformer::shared::LineExpandOp,
     id_lookup: &std::collections::HashMap<String, schema::Id>,
 ) -> schema::Operation {
     let cart_line_id = id_lookup
@@ -114,6 +129,34 @@ fn build_operation(
         expanded_cart_items,
         image: None,
         price: None,
+        title: op.title,
+    })
+}
+
+fn build_merge_operation(
+    op: cart_transformer::shared::LinesMergeOp,
+    id_lookup: &std::collections::HashMap<String, schema::Id>,
+) -> schema::Operation {
+    let cart_lines = op
+        .cart_lines
+        .into_iter()
+        .map(|(line_id, quantity)| {
+            let cart_line_id =
+                id_lookup.get(&line_id).cloned().unwrap_or_else(|| line_id.clone());
+            schema::CartLineInput { cart_line_id, quantity: quantity as i32 }
+        })
+        .collect();
+
+    schema::Operation::LinesMerge(schema::LinesMergeOperation {
+        attributes: None,
+        cart_lines,
+        image: None,
+        parent_variant_id: op.parent_variant_id,
+        price: Some(schema::PriceAdjustment {
+            percentage_decrease: Some(schema::PriceAdjustmentValue {
+                value: Decimal(op.percentage_decrease),
+            }),
+        }),
         title: op.title,
     })
 }

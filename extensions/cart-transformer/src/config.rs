@@ -122,6 +122,50 @@ pub struct BundleComponent {
     pub price: f64,
 }
 
+/// One entry of the shop `checkout.merge_bundles` config array — consumed by
+/// the merge-bundle pass (`merge_applier`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MergeBundleConfig {
+    #[serde(rename = "parentVariantId")]
+    pub parent_variant_id: String,
+    pub price: f64,
+    #[serde(default)]
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// Parse the shop `checkout.merge_bundles` metafield for Pass 3 (the
+/// merge-bundle applier). Mirrors the same tolerant fallback as
+/// `parse_discount_engine_config`:
+///  - missing value or empty string -> `[]`
+///  - invalid JSON -> `[]`
+///  - a single JSON object (not wrapped in an array) is normalized to a
+///    one-element vec
+///  - array entries whose shape doesn't match `MergeBundleConfig` are skipped
+///    rather than aborting the whole parse.
+pub fn parse_merge_bundle_config(raw: Option<&str>) -> Vec<MergeBundleConfig> {
+    let raw = match raw {
+        Some(s) if !s.is_empty() => s,
+        _ => return Vec::new(),
+    };
+
+    let value: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value::<MergeBundleConfig>(item).ok())
+            .collect(),
+        other => serde_json::from_value::<MergeBundleConfig>(other)
+            .map(|c| vec![c])
+            .unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +203,49 @@ mod tests {
         let raw = r#"{"source_variants":[1],"target_variants":[],"value":5}"#;
         let cfgs = parse_discount_engine_config(Some(raw));
         assert_eq!(cfgs.len(), 1);
+    }
+
+    #[test]
+    fn merge_bundle_config_missing_value_yields_empty() {
+        assert!(parse_merge_bundle_config(None).is_empty());
+    }
+
+    #[test]
+    fn merge_bundle_config_empty_string_yields_empty() {
+        assert!(parse_merge_bundle_config(Some("")).is_empty());
+    }
+
+    #[test]
+    fn merge_bundle_config_invalid_json_yields_empty() {
+        assert!(parse_merge_bundle_config(Some("not json")).is_empty());
+    }
+
+    #[test]
+    fn merge_bundle_config_parses_array() {
+        let raw = r#"[{"parentVariantId":"gid://shopify/ProductVariant/999","price":49.99,"sources":["gid://shopify/ProductVariant/1","gid://shopify/ProductVariant/2"],"title":"Bundle"}]"#;
+        let cfgs = parse_merge_bundle_config(Some(raw));
+        assert_eq!(cfgs.len(), 1);
+        assert_eq!(cfgs[0].parent_variant_id, "gid://shopify/ProductVariant/999");
+        assert_eq!(cfgs[0].price, 49.99);
+        assert_eq!(
+            cfgs[0].sources,
+            vec!["gid://shopify/ProductVariant/1".to_string(), "gid://shopify/ProductVariant/2".to_string()]
+        );
+        assert_eq!(cfgs[0].title.as_deref(), Some("Bundle"));
+    }
+
+    #[test]
+    fn merge_bundle_config_single_object_is_wrapped_in_vec() {
+        let raw = r#"{"parentVariantId":"gid://shopify/ProductVariant/999","price":10.0,"sources":[]}"#;
+        let cfgs = parse_merge_bundle_config(Some(raw));
+        assert_eq!(cfgs.len(), 1);
+        assert!(cfgs[0].title.is_none());
+    }
+
+    #[test]
+    fn merge_bundle_config_malformed_entry_is_skipped() {
+        // Missing required `parentVariantId`/`price` -> that entry doesn't parse.
+        let raw = r#"[{"sources":["gid://shopify/ProductVariant/1"]}]"#;
+        assert!(parse_merge_bundle_config(Some(raw)).is_empty());
     }
 }

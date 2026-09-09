@@ -7,5 +7,6 @@
 pub mod applier;
 pub mod bundle_expander;
 pub mod config;
+pub mod merge_applier;
 pub mod orchestrator;
 pub mod shared;

@@ -185,6 +185,7 @@ mod tests {
             composition: None,
             amount_per_quantity: Some(price.to_string()),
             subtotal_amount: None,
+            quantity: 1,
         }
     }
 

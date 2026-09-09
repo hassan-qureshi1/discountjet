@@ -369,13 +369,25 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
   const merged: Row = { ...existing, ...patch };
 
-  // `update` bundles never write a metafield (the reference cart-transform
-  // function has no update path) — only `expand` (composition_v2, on the
-  // parent variant) and `merge` (merge_bundles, on the shop) bundles with a
-  // parent variant do, mirroring POST. And only when this PUT actually
-  // changed an input that feeds the written config — a plain rename/
-  // status-change PUT on an already-written bundle must not trigger an
-  // extra Admin API round-trip (or a spurious 502 if it fails).
+  // A bundle uses AT MOST ONE metafield transport at a time — `expand` ->
+  // the variant `bundle.composition_v2` metafield, `merge` -> the shop
+  // `checkout.merge_bundles` metafield, `update` -> none. `metafieldState`/
+  // `metafieldGid` track whichever transport is currently live. Reconcile in
+  // two ordered phases so a bundle is never left pointing at two live
+  // transports (or a stale one the Rust cart-transform function keeps
+  // reading): first clear the OLD transport if this PUT moves the bundle
+  // away from the operation that owns it, then write the NEW transport if
+  // this PUT moves the bundle into (or keeps it in, with changed inputs) an
+  // operation that owns one.
+  const prevOp = existing.operation;
+  const newOp = effectiveOperation;
+
+  // Only when this PUT actually changed an input that feeds the written
+  // config, OR the operation itself changed into that transport — a plain
+  // rename/status-change PUT on an already-written bundle must not trigger
+  // an extra Admin API round-trip (or a spurious 502 if it fails), but a
+  // transition INTO `expand`/`merge` must always (re)write, even if
+  // items/parentVariantId happen to be unchanged from before.
   const compositionInputsChanged = body.items !== undefined || body.parentVariantId !== undefined;
   const mergeInputsChanged =
     body.items !== undefined ||
@@ -383,7 +395,44 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     body.price !== undefined ||
     body.name !== undefined;
 
-  if (merged.operation === 'expand' && merged.parentVariantId && compositionInputsChanged) {
+  // Phase 1 — clear the OLD transport when this PUT moves the bundle away
+  // from the operation that owns it. Best-effort: a stale metafield on the
+  // old owner is a lesser problem than blocking the PUT on Shopify being
+  // reachable, but the row's tracked state is still flipped to `Cleared` so
+  // it doesn't keep claiming a metafield that (from this row's perspective)
+  // no longer applies.
+  if (prevOp === 'expand' && newOp !== 'expand' && existing.metafieldState === 'Written' && existing.parentVariantId) {
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      await clearComposition(c.env, shopDomain, existing.parentVariantId);
+    } catch (err) {
+      console.error(`[bundles] failed to clear composition_v2 for bundle ${id} on operation change:`, err);
+    }
+    merged.metafieldState = 'Cleared';
+    merged.metafieldGid = null;
+    await db
+      .update(bundle)
+      .set({ metafieldState: 'Cleared', metafieldGid: null })
+      .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+  } else if (prevOp === 'merge' && newOp !== 'merge' && existing.metafieldState === 'Written' && existing.parentVariantId) {
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
+    } catch (err) {
+      console.error(`[bundles] failed to remove merge_bundles entry for bundle ${id} on operation change:`, err);
+    }
+    merged.metafieldState = 'Cleared';
+    merged.metafieldGid = null;
+    await db
+      .update(bundle)
+      .set({ metafieldState: 'Cleared', metafieldGid: null })
+      .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+  }
+
+  // Phase 2 — write the NEW transport. A failure here surfaces as a 502
+  // (the row's phase-1 clear, if any, already committed — never mask a
+  // failed write by leaving the client thinking it succeeded).
+  if (newOp === 'expand' && merged.parentVariantId && (newOp !== prevOp || compositionInputsChanged)) {
     try {
       const shopDomain = await requireShopDomain(db, shopId);
       const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, effectiveItems);
@@ -400,7 +449,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
         502,
       );
     }
-  } else if (merged.operation === 'merge' && merged.parentVariantId && mergeInputsChanged) {
+  } else if (newOp === 'merge' && merged.parentVariantId && (newOp !== prevOp || mergeInputsChanged)) {
     try {
       const shopDomain = await requireShopDomain(db, shopId);
       const entry = mergeConfigEntry({

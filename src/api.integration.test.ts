@@ -739,4 +739,160 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.metafieldState).toBe('Written');
     expect(adminGraphql).not.toHaveBeenCalled();
   });
+
+  it('PUT /api/bundles/:id transitions expand -> merge: clears composition_v2 and writes checkout.merge_bundles', async () => {
+    const existing = bundleRow({
+      operation: 'expand',
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+      price: 4999,
+    });
+    const shopDb = mockDb({ id: 'shop-abc' });
+    // Same reuse pattern as the other PUT tests: this single row shape covers
+    // the existing-bundle select AND the requireShopDomain select AND both
+    // post-write updates (`.domain` for the latter, the bundle fields for the
+    // former).
+    const routeDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+
+    // Call order: clearComposition (metafieldsDelete) for the OLD transport,
+    // then upsertMergeConfig's read + write for the NEW transport.
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: {
+          metafieldsDelete: {
+            deletedMetafields: [{ key: 'composition_v2', namespace: 'bundle', ownerId: 'gid://shopify/ProductVariant/999' }],
+            userErrors: [],
+          },
+        },
+      })
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+    const body = {
+      operation: 'merge',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+      price: 39.99,
+    };
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { bundle: { operation: string; metafieldState: string; metafieldGid?: string } };
+    expect(json.bundle.operation).toBe('merge');
+    expect(json.bundle.metafieldState).toBe('Written');
+    expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/2');
+
+    expect(adminGraphql).toHaveBeenCalledTimes(3);
+    const [, , clearQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(clearQuery).toContain('metafieldsDelete');
+    const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(readQuery).toContain('merge_bundles');
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[2];
+    expect(writeQuery).toContain('metafieldsSet');
+    expect(writeVars).toEqual({
+      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+    });
+  });
+
+  it('PUT /api/bundles/:id transitions merge -> update: removes the checkout.merge_bundles entry and writes nothing new', async () => {
+    const existing = bundleRow({
+      operation: 'merge',
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+    });
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+
+    const removedEntry = {
+      parentVariantId: existing.parentVariantId,
+      price: 29.99,
+      sources: ['gid://shopify/ProductVariant/1'],
+    };
+    // removeMergeConfig's read finds only this bundle's entry -> removing it
+    // empties the array -> metafieldsDelete (not metafieldsSet) is called.
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: {
+          shop: {
+            id: 'gid://shopify/Shop/1',
+            metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([removedEntry]) },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          metafieldsDelete: {
+            deletedMetafields: [{ key: 'merge_bundles', namespace: 'checkout', ownerId: 'gid://shopify/Shop/1' }],
+            userErrors: [],
+          },
+        },
+      });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'update' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { bundle: { operation: string; metafieldState: string; metafieldGid?: string } };
+    expect(json.bundle.operation).toBe('update');
+    expect(json.bundle.metafieldState).toBe('Cleared');
+    expect(json.bundle.metafieldGid).toBeUndefined();
+
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(readQuery).toContain('merge_bundles');
+    const [, , deleteQuery] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(deleteQuery).toContain('metafieldsDelete');
+  });
+
+  it('DELETE /api/bundles/:id removes the checkout.merge_bundles entry for a Written merge bundle', async () => {
+    const existing = bundleRow({
+      operation: 'merge',
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+    });
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const deleteDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(deleteDb);
+
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
+      .mockResolvedValueOnce({ data: { metafieldsDelete: { deletedMetafields: [], userErrors: [] } } });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      { method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(deleteDb.delete).toHaveBeenCalled();
+
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(readQuery).toContain('merge_bundles');
+    const [, , deleteQuery] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(deleteQuery).toContain('metafieldsDelete');
+  });
 });

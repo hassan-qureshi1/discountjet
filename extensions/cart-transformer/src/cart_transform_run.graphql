@@ -1,0 +1,52 @@
+query Input {
+  cart {
+    discountCode: attribute(key: "discountCode") {
+      key
+      value
+    }
+    lines {
+      id
+      quantity
+      cost {
+        amountPerQuantity {
+          amount
+        }
+        subtotalAmount {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          title
+          product {
+            id
+            title
+          }
+          component_reference: metafield(
+            namespace: "custom"
+            key: "component_reference"
+          ) {
+            jsonValue
+          }
+          composition: metafield(namespace: "bundle", key: "composition_v2") {
+            value
+          }
+        }
+      }
+    }
+    platform_source: attribute(key: "platform_source") {
+      key
+      value
+    }
+  }
+  shop {
+    metafield(namespace: "checkout", key: "discount_engine") {
+      value
+    }
+    priority_codes: metafield(namespace: "checkout", key: "priority_codes") {
+      value
+    }
+  }
+}

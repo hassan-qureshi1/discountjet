@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // ─── shopify_shop ───────────────────────────────────────────────────────────
 //
@@ -74,6 +74,48 @@ export const discount = sqliteTable(
   },
   (t) => ({
     shopGidUnq: uniqueIndex('discount_shop_gid_unq').on(t.shopId, t.shopifyGid),
+  }),
+);
+
+// ─── bundle ─────────────────────────────────────────────────────────────────
+//
+// E6 bundles. Each row is an app-owned bundle definition — the `items` JSON
+// list of components is materialized into a Shopify Cart Transform Function
+// config and, once live, a variant metafield (`metafieldState`/`metafieldGid`
+// track that write). Shopify is not the source of truth here; this table is.
+//
+export const bundle = sqliteTable(
+  'bundle',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id')
+      .notNull()
+      .references(() => shopifyShop.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    operation: text('operation', { enum: ['merge', 'expand', 'update'] }).notNull(),
+    // JSON string: [{variantId, qty, priceAdjustment?, titleOverride?, imageOverride?}]
+    items: text('items').notNull(),
+
+    parentVariantId: text('parent_variant_id'),
+    price: integer('price'), // cents
+    sumOfItems: integer('sum_of_items'), // cents
+
+    metafieldState: text('metafield_state', { enum: ['NotYet', 'Written', 'Cleared'] })
+      .notNull()
+      .default('NotYet'),
+    metafieldGid: text('metafield_gid'),
+
+    scheduleStart: text('schedule_start'),
+    scheduleEnd: text('schedule_end'),
+    status: text('status', { enum: ['Active', 'Scheduled', 'Ended', 'Draft'] }).notNull(),
+    blockOnFailure: integer('block_on_failure').notNull().default(0),
+
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    shopIdIdx: index('bundle_shop_id_idx').on(t.shopId),
   }),
 );
 

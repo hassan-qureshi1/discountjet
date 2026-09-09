@@ -42,6 +42,7 @@ interface BundleDto {
   sumOfItems: number | null;
   status: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
+  metafieldGid?: string;
   updated: string;
 }
 
@@ -79,6 +80,7 @@ function toDto(row: Row): BundleDto {
     sumOfItems: toDollars(row.sumOfItems),
     status: row.status,
     metafieldState: row.metafieldState,
+    ...(row.metafieldGid ? { metafieldGid: row.metafieldGid } : {}),
     updated: relativeTime(row.updatedAt),
   };
 }
@@ -227,8 +229,12 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
   // `merge`/`update` bundles never write composition_v2 (the reference
   // cart-transform function has no merge/update path) — only `expand`
-  // bundles with a parent variant do, mirroring POST.
-  if (merged.operation === 'expand' && merged.parentVariantId) {
+  // bundles with a parent variant do, mirroring POST. And only when this
+  // PUT actually changed a composition input (`items`/`parentVariantId`) —
+  // a plain rename/status-change PUT on an already-expand bundle must not
+  // trigger an extra Admin API round-trip (or a spurious 502 if it fails).
+  const compositionInputsChanged = body.items !== undefined || body.parentVariantId !== undefined;
+  if (merged.operation === 'expand' && merged.parentVariantId && compositionInputsChanged) {
     const items = body.items ?? (JSON.parse(existing.items) as BundleItem[]);
     try {
       const shopDomain = await requireShopDomain(db, shopId);

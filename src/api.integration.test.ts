@@ -11,9 +11,13 @@ vi.mock('./shopify', () => ({
   createShopify: vi.fn(),
   createSessionStorage: vi.fn(),
 }));
+vi.mock('./lib/graphqlAdmin', () => ({
+  adminGraphql: vi.fn(),
+}));
 
 import { app } from './index';
 import { createDb } from './db/db';
+import { adminGraphql } from './lib/graphqlAdmin';
 
 // Minimal chainable Drizzle stand-in: `.select().from().where().get()` resolves
 // to the given row (or null), and `.where().all()` resolves to an array (or
@@ -340,5 +344,139 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       env('development'),
     );
     expect(res.status).toBe(404);
+  });
+
+  it('POST /api/bundles writes composition_v2 for an expand bundle with a parentVariantId', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    // Reused inside the route for the insert, the shopDomain lookup, and the
+    // post-write metafieldState update — a single row shape covers all three.
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        metafieldsSet: {
+          metafields: [{ id: 'gid://shopify/Metafield/1' }],
+          userErrors: [],
+        },
+      },
+    });
+
+    const body = {
+      name: 'Ski Set',
+      operation: 'expand',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2, price: 10 }],
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as { bundle: { metafieldState: string; metafieldGid?: string } };
+    expect(json.bundle.metafieldState).toBe('Written');
+    expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/1');
+
+    expect(adminGraphql).toHaveBeenCalledTimes(1);
+    const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(query).toContain('metafieldsSet');
+    expect(variables).toEqual({
+      metafields: [expect.objectContaining({ namespace: 'bundle', key: 'composition_v2' })],
+    });
+  });
+
+  it('POST /api/bundles does not write composition_v2 for a merge bundle', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const insertDb = mockDb(null);
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(insertDb);
+
+    const body = {
+      name: 'Camp Kit',
+      operation: 'merge',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as { bundle: { metafieldState: string } };
+    expect(json.bundle.metafieldState).toBe('NotYet');
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles returns a 502 JSON error when the metafield write fails', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        metafieldsSet: {
+          metafields: null,
+          userErrors: [{ field: ['metafields', '0', 'value'], message: 'bad value' }],
+        },
+      },
+    });
+
+    const body = {
+      name: 'Ski Set',
+      operation: 'expand',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2, price: 10 }],
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toEqual(expect.any(String));
+  });
+
+  it('PUT /api/bundles/:id does not re-write composition_v2 on a rename-only update', async () => {
+    // Already-Written expand bundle; a rename/status-only PUT (no `items` or
+    // `parentVariantId` in the body) must not touch the metafield.
+    const existing = bundleRow({
+      operation: 'expand',
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+    });
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const updateDb = mockDb(existing);
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(updateDb);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed Kit' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { bundle: { name: string; metafieldState: string } };
+    expect(json.bundle.name).toBe('Renamed Kit');
+    expect(json.bundle.metafieldState).toBe('Written');
+    expect(adminGraphql).not.toHaveBeenCalled();
   });
 });

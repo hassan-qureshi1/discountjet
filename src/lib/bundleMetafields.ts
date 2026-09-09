@@ -28,16 +28,39 @@ function toVariantGid(variantId: string): string {
   return variantId.startsWith('gid://') ? variantId : `${VARIANT_GID_PREFIX}${variantId}`;
 }
 
+// The Rust `BundleComponent.quantity` is `i64` and `bundle_expander.rs`
+// deserializes the whole `composition_v2` array in one shot — a single
+// non-integer (or non-finite) quantity fails deserialization and aborts the
+// ENTIRE cart-transform invocation for that cart, not just the one line. The
+// route does no shape validation on `body.items`, so this guard is the only
+// thing standing between a malformed qty and a broken checkout. Round to the
+// nearest integer and clamp to at least 1 (a 0/negative/NaN/Infinity qty
+// becomes 1 rather than emitting something the Rust side can't parse).
+function toSafeQuantity(qty: number): number {
+  const rounded = Math.round(qty);
+  return Number.isFinite(rounded) ? Math.max(1, rounded) : 1;
+}
+
+// `price` is `f64` on the Rust side, which parses fine from any finite JSON
+// number — but a non-finite (NaN/Infinity) or missing value would either
+// serialize as `null` (deserialization failure) or fail `JSON.stringify`
+// entirely. Fall back to 0 rather than propagate garbage.
+function toSafePrice(price: number | undefined): number {
+  return typeof price === 'number' && Number.isFinite(price) ? price : 0;
+}
+
 /**
  * Pure mapping from bundle items to the `bundle.composition_v2` JSON array
  * shape. Shopify-independent (no network calls) — the value the Rust
  * `bundle_expander` reads is `JSON.stringify(compositionFromItems(items))`.
+ * Guarantees a valid integer `quantity` (>= 1) and a finite `price` even if
+ * the caller's input isn't shape-validated upstream.
  */
 export function compositionFromItems(items: BundleItemLike[]): CompositionEntry[] {
   return items.map((item) => ({
     id: toVariantGid(item.variantId),
-    quantity: item.qty,
-    price: item.price ?? 0,
+    quantity: toSafeQuantity(item.qty),
+    price: toSafePrice(item.price),
   }));
 }
 

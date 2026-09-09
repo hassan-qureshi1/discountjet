@@ -35,6 +35,31 @@ describe('compositionFromItems', () => {
   it('returns an empty array for no items', () => {
     expect(compositionFromItems([])).toEqual([]);
   });
+
+  it('rounds a non-integer qty to the nearest integer (Rust quantity is i64)', () => {
+    const result = compositionFromItems([{ variantId: '1', qty: 2.5, price: 10 }]);
+    expect(result).toEqual([{ id: 'gid://shopify/ProductVariant/1', quantity: 3, price: 10 }]);
+    expect(Number.isInteger(result[0].quantity)).toBe(true);
+  });
+
+  it('clamps a zero/negative/non-finite qty up to 1', () => {
+    const result = compositionFromItems([
+      { variantId: '1', qty: 0, price: 1 },
+      { variantId: '2', qty: -3, price: 1 },
+      { variantId: '3', qty: NaN, price: 1 },
+      { variantId: '4', qty: Infinity, price: 1 },
+    ]);
+    expect(result.map((r) => r.quantity)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('falls back a non-finite price to 0', () => {
+    const result = compositionFromItems([
+      { variantId: '1', qty: 1, price: NaN },
+      { variantId: '2', qty: 1, price: Infinity },
+    ]);
+    expect(result.map((r) => r.price)).toEqual([0, 0]);
+    expect(result.every((r) => Number.isFinite(r.price))).toBe(true);
+  });
 });
 
 describe('writeComposition', () => {

@@ -1,9 +1,5 @@
 query Input {
   cart {
-    discountCode: attribute(key: "discountCode") {
-      key
-      value
-    }
     lines {
       id
       quantity
@@ -43,9 +39,6 @@ query Input {
   }
   shop {
     metafield(namespace: "checkout", key: "discount_engine") {
-      value
-    }
-    priority_codes: metafield(namespace: "checkout", key: "priority_codes") {
       value
     }
     merge_bundles: metafield(namespace: "$app:cart-transform", key: "merge_bundles") {

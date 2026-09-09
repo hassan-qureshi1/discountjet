@@ -105,15 +105,6 @@ pub fn parse_discount_engine_config(raw: Option<&str>) -> Vec<EngineConfig> {
     }
 }
 
-/// One entry of the shop `checkout.priority_codes` metafield JSON array.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct PriorityCodeEntry {
-    #[serde(default)]
-    pub code: Option<String>,
-    #[serde(default)]
-    pub selector: Option<String>,
-}
-
 /// A single component of a `bundle.composition_v2` metafield JSON array.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BundleComponent {

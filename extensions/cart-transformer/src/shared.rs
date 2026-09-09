@@ -1,9 +1,6 @@
 //! Shared cart-input types and helpers (pure, Shopify-independent).
-//! Ported from `eva/discount-engine`'s `cart_transform_run.js` priority-code
-//! guard and the `getVariantId` / GID-parsing helpers used throughout the
-//! JS applier and bundle expander.
-
-use crate::config::PriorityCodeEntry;
+//! Ported from `eva/discount-engine`'s `getVariantId` / GID-parsing helpers
+//! used throughout the JS applier and bundle expander.
 
 /// A single cart line, reduced to the fields both passes (bundle expansion
 /// and config-driven transformation) need. Shopify-independent — built by
@@ -120,68 +117,6 @@ pub fn format_num(n: f64) -> String {
     }
 }
 
-/// Selector mode for a priority discount code entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrioritySelector {
-    Prefix,
-    Suffix,
-    Exact,
-}
-
-impl PrioritySelector {
-    /// Mirrors JS `(codeConfig.selector || 'exact').toLowerCase()`.
-    pub fn from_str_opt(s: Option<&str>) -> Self {
-        match s.map(|v| v.to_lowercase()) {
-            Some(v) if v == "prefix" => PrioritySelector::Prefix,
-            Some(v) if v == "suffix" => PrioritySelector::Suffix,
-            _ => PrioritySelector::Exact,
-        }
-    }
-}
-
-/// Mirrors JS `matchesPriorityCode`.
-pub fn matches_priority_code(cart_code: &str, config_code: Option<&str>, selector: PrioritySelector) -> bool {
-    let config_code = match config_code {
-        Some(c) if !c.is_empty() => c,
-        _ => return false,
-    };
-    if cart_code.is_empty() {
-        return false;
-    }
-    match selector {
-        PrioritySelector::Prefix => cart_code.starts_with(config_code),
-        PrioritySelector::Suffix => cart_code.ends_with(config_code),
-        PrioritySelector::Exact => cart_code == config_code,
-    }
-}
-
-/// Mirrors JS `hasPriorityDiscountCode`: returns true if the cart's discount
-/// code matches a "priority" code configured in the shop's
-/// `checkout.priority_codes` metafield (a JSON array of `{ code, selector }`).
-/// A missing/empty cart code, missing/empty metafield value, invalid JSON, a
-/// non-array value, or an empty array all yield `false` (no suppression).
-pub fn has_priority_discount_code(cart_code: Option<&str>, priority_codes_raw: Option<&str>) -> bool {
-    let cart_code = match cart_code {
-        Some(c) if !c.is_empty() => c,
-        _ => return false,
-    };
-    let raw = match priority_codes_raw {
-        Some(r) if !r.is_empty() => r,
-        _ => return false,
-    };
-    let codes: Vec<PriorityCodeEntry> = match serde_json::from_str(raw) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    if codes.is_empty() {
-        return false;
-    }
-    codes.iter().any(|c| {
-        let selector = PrioritySelector::from_str_opt(c.selector.as_deref());
-        matches_priority_code(cart_code, c.code.as_deref(), selector)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,66 +139,5 @@ mod tests {
     #[test]
     fn format_num_fractional() {
         assert_eq!(format_num(10.5), "10.5");
-    }
-
-    #[test]
-    fn priority_exact_match() {
-        assert!(has_priority_discount_code(
-            Some("PRIORITY50"),
-            Some(r#"[{"code":"PRIORITY50","selector":"exact"}]"#)
-        ));
-    }
-
-    #[test]
-    fn priority_prefix_match() {
-        assert!(has_priority_discount_code(
-            Some("PRIORITY2024"),
-            Some(r#"[{"code":"PRIORITY","selector":"prefix"}]"#)
-        ));
-    }
-
-    #[test]
-    fn priority_suffix_match() {
-        assert!(has_priority_discount_code(
-            Some("FLASHSALE"),
-            Some(r#"[{"code":"SALE","selector":"suffix"}]"#)
-        ));
-    }
-
-    #[test]
-    fn priority_no_match_returns_false() {
-        assert!(!has_priority_discount_code(
-            Some("REGULAR10"),
-            Some(r#"[{"code":"PRIORITY","selector":"prefix"}]"#)
-        ));
-    }
-
-    #[test]
-    fn priority_missing_cart_code_returns_false() {
-        assert!(!has_priority_discount_code(
-            None,
-            Some(r#"[{"code":"PRIORITY","selector":"exact"}]"#)
-        ));
-    }
-
-    #[test]
-    fn priority_missing_metafield_returns_false() {
-        assert!(!has_priority_discount_code(Some("PRIORITY50"), None));
-    }
-
-    #[test]
-    fn priority_empty_array_returns_false() {
-        assert!(!has_priority_discount_code(Some("PRIORITY50"), Some("[]")));
-    }
-
-    #[test]
-    fn priority_invalid_json_returns_false() {
-        assert!(!has_priority_discount_code(Some("PRIORITY50"), Some("not json")));
-    }
-
-    #[test]
-    fn priority_default_selector_is_exact() {
-        assert!(has_priority_discount_code(Some("ABC"), Some(r#"[{"code":"ABC"}]"#)));
-        assert!(!has_priority_discount_code(Some("ABCDEF"), Some(r#"[{"code":"ABC"}]"#)));
     }
 }

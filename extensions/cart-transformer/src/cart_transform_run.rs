@@ -1,7 +1,7 @@
 use super::schema;
 use cart_transformer::config::{parse_discount_engine_config, parse_merge_bundle_config};
 use cart_transformer::orchestrator;
-use cart_transformer::shared::{has_priority_discount_code, id_from_gid, CartLine, CartOp};
+use cart_transformer::shared::{id_from_gid, CartLine, CartOp};
 use shopify_function::prelude::*;
 use shopify_function::Result;
 
@@ -14,13 +14,6 @@ fn cart_transform_run(
     input: schema::cart_transform_run::Input,
 ) -> Result<schema::CartTransformRunResult> {
     use schema::cart_transform_run as q;
-
-    // ── Guard: priority discount code suppresses all transformations ──────
-    let cart_code = input.cart().discount_code().and_then(|a| a.value()).map(|s| s.as_str());
-    let priority_codes_raw = input.shop().priority_codes().map(|m| m.value().as_str());
-    if has_priority_discount_code(cart_code, priority_codes_raw) {
-        return Ok(empty());
-    }
 
     // ── Guard: empty cart — nothing to expand or transform ────────────────
     let raw_lines = input.cart().lines();

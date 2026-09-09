@@ -12,7 +12,7 @@
 
 use cart_transformer::config::{parse_discount_engine_config, parse_merge_bundle_config};
 use cart_transformer::orchestrator;
-use cart_transformer::shared::{has_priority_discount_code, id_from_gid, CartLine, CartOp};
+use cart_transformer::shared::{id_from_gid, CartLine, CartOp};
 
 fn variant_gid(id: i64) -> String {
     format!("gid://shopify/ProductVariant/{id}")
@@ -189,95 +189,15 @@ fn multiple_target_variants_per_config() {
     assert_eq!(ops[0].as_expand().expanded_items.len(), 4); // 1 source + 3 targets
 }
 
-// ── cartTransformRun: priority discount code guard ──────────────────────
-// These mirror `describe('cartTransformRun – priority discount', ...)`,
-// composing the pure `has_priority_discount_code` guard with the pipeline —
-// exactly what the adapter's `cart_transform_run` does before delegating.
+// ── cartTransformRun: adapter-level guard composition ───────────────────
+// Mirrors what the adapter's `cart_transform_run` does before delegating to
+// the pipeline: an empty-cart guard, then `orchestrator::transform`.
 
-fn run_full(
-    cart_code: Option<&str>,
-    priority_codes_raw: Option<&str>,
-    lines: &[CartLine],
-    configs: &[cart_transformer::config::EngineConfig],
-) -> Vec<CartOp> {
-    if has_priority_discount_code(cart_code, priority_codes_raw) {
-        return vec![];
-    }
+fn run_full(lines: &[CartLine], configs: &[cart_transformer::config::EngineConfig]) -> Vec<CartOp> {
     if lines.is_empty() {
         return vec![];
     }
     orchestrator::transform(lines, configs, &[], None).unwrap()
-}
-
-#[test]
-fn priority_code_exact_suppresses_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(
-        Some("PRIORITY50"),
-        Some(r#"[{"code":"PRIORITY50","selector":"exact"}]"#),
-        &lines,
-        &configs,
-    );
-    assert!(ops.is_empty());
-}
-
-#[test]
-fn priority_code_prefix_suppresses_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(
-        Some("PRIORITY2024"),
-        Some(r#"[{"code":"PRIORITY","selector":"prefix"}]"#),
-        &lines,
-        &configs,
-    );
-    assert!(ops.is_empty());
-}
-
-#[test]
-fn priority_code_suffix_suppresses_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(Some("FLASHSALE"), Some(r#"[{"code":"SALE","selector":"suffix"}]"#), &lines, &configs);
-    assert!(ops.is_empty());
-}
-
-#[test]
-fn non_matching_discount_code_still_applies_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(
-        Some("REGULAR10"),
-        Some(r#"[{"code":"PRIORITY","selector":"prefix"}]"#),
-        &lines,
-        &configs,
-    );
-    assert_eq!(ops.len(), 1);
-}
-
-#[test]
-fn no_discount_code_still_applies_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(None, Some(r#"[{"code":"PRIORITY","selector":"exact"}]"#), &lines, &configs);
-    assert_eq!(ops.len(), 1);
-}
-
-#[test]
-fn missing_priority_codes_metafield_still_applies_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(Some("PRIORITY50"), None, &lines, &configs);
-    assert_eq!(ops.len(), 1);
-}
-
-#[test]
-fn empty_priority_codes_array_still_applies_transformation() {
-    let lines = vec![line(48121306906908, "line_A", "1")];
-    let configs = vec![parse_one(CONFIG_ANY_JSON)];
-    let ops = run_full(Some("PRIORITY50"), Some("[]"), &lines, &configs);
-    assert_eq!(ops.len(), 1);
 }
 
 // ── cartTransformRun: bundles run even without shop discount_engine config ─
@@ -301,7 +221,7 @@ fn bundle_only_line(subtotal: &str) -> CartLine {
 fn bundle_expands_when_shop_metafield_missing() {
     let lines = vec![bundle_only_line("10.00")];
     let configs = parse_discount_engine_config(None); // missing shop metafield
-    let ops = run_full(None, None, &lines, &configs);
+    let ops = run_full(&lines, &configs);
     assert_eq!(ops.len(), 1);
     let op = ops[0].as_expand();
     assert_eq!(op.cart_line_id, "gid://shopify/CartLine/bundle-1");
@@ -312,7 +232,7 @@ fn bundle_expands_when_shop_metafield_missing() {
 fn bundle_expands_when_shop_config_is_legacy_placeholder() {
     let lines = vec![bundle_only_line("10.00")];
     let configs = parse_discount_engine_config(Some("[{}]"));
-    let ops = run_full(None, None, &lines, &configs);
+    let ops = run_full(&lines, &configs);
     assert_eq!(ops.len(), 1);
     assert_eq!(ops[0].as_expand().cart_line_id, "gid://shopify/CartLine/bundle-1");
 }
@@ -320,7 +240,7 @@ fn bundle_expands_when_shop_config_is_legacy_placeholder() {
 #[test]
 fn no_lines_and_no_shop_config_yields_no_operations() {
     let configs = parse_discount_engine_config(None);
-    let ops = run_full(None, None, &[], &configs);
+    let ops = run_full(&[], &configs);
     assert!(ops.is_empty());
 }
 
@@ -328,7 +248,7 @@ fn no_lines_and_no_shop_config_yields_no_operations() {
 fn non_bundle_line_yields_no_operations_when_shop_config_empty() {
     let lines = vec![line(48121306906908, "line_only", "1")];
     let configs = parse_discount_engine_config(Some("[{}]"));
-    let ops = run_full(None, None, &lines, &configs);
+    let ops = run_full(&lines, &configs);
     assert!(ops.is_empty());
 }
 
@@ -360,7 +280,7 @@ fn no_operations_fixture_yields_empty_operations() {
         .collect();
 
     let configs = parse_discount_engine_config(None);
-    let ops = run_full(None, None, &lines, &configs);
+    let ops = run_full(&lines, &configs);
 
     let expected_ops = payload["output"]["operations"].as_array().unwrap();
     assert_eq!(ops.len(), expected_ops.len());

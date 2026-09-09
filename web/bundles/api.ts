@@ -5,9 +5,13 @@
 // (src/routes/shop.ts). App Bridge auth is supplied by the caller (react-query
 // hooks). Mirrors web/discounts/api.ts.
 import { apiFetch, type AuthenticatedFetch } from '../api';
-import type { Bundle, BundleItem, BundleOperation, BundleStatus, BundleSummary } from '../types/bundles';
+import type {
+  Bundle, BundleItem, BundleOperation, BundleStatus, BundleSummary,
+} from '../types/bundles';
 
-export type { Bundle, BundleItem, BundleOperation, BundleStatus, BundleSummary };
+export type {
+  Bundle, BundleItem, BundleOperation, BundleStatus, BundleSummary,
+};
 
 export interface BundleInput {
   name: string;

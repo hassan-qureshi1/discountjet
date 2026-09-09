@@ -42,7 +42,8 @@ function ItemThumbs({ count }: { count: number }) {
       ))}
       {extra > 0 && (
         <Text as="span" variant="bodySm" tone="subdued">
-          +{extra}
+          +
+          {extra}
         </Text>
       )}
     </InlineStack>
@@ -124,7 +125,10 @@ export default function Bundles() {
                             {b.name}
                           </Text>
                           <Text as="span" variant="bodySm" tone="subdued">
-                            {b.items.length} variants · {b.updated}
+                            {b.items.length}
+                            {' '}
+                            variants ·
+                            {b.updated}
                           </Text>
                         </BlockStack>
                       </InlineStack>

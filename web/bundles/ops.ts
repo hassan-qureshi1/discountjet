@@ -25,12 +25,12 @@ export const OPERATIONS: OperationMeta[] = [
   {
     id: 'expand',
     label: 'Expand',
-    description: "Expand one cart line into its bundled component lines (max 2000 per line).",
+    description: 'Expand one cart line into its bundled component lines (max 2000 per line).',
   },
   {
     id: 'update',
     label: 'Update',
-    description: "Override a line's price, title, or image in the cart.",
+    description: 'Override a line\'s price, title, or image in the cart.',
   },
 ];
 

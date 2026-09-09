@@ -1,8 +1,8 @@
 // web/types/discounts.ts
 //
 // Domain types for the E4 discount screens. These mirror the response shapes
-// the Worker already emits (src/routes/discounts.ts, src/routes/shopifyDiscounts.ts),
-// ported from the discount-engine-ui prototype so the pages render unchanged.
+// the Worker already emits (src/routes/discounts.ts), ported from the
+// discount-engine-ui prototype so the pages render unchanged.
 
 export type Tone = 'success' | 'info' | 'warning' | 'critical' | 'magic' | 'neutral';
 
@@ -27,19 +27,5 @@ export const DISCOUNT_TYPE_LABEL: Record<DiscountType, string> = {
   Special: 'Buy X, discount both',
 };
 
-// ─── Native + app discounts (GET /api/shopify-discounts) ──────────────────────
-export type ShopifyDiscountStatus = 'Active' | 'Scheduled' | 'Expired';
+// ─── Discount engine kinds (used by the discount-type picker) ─────────────────
 export type DiscountEngineKind = 'Tier' | 'Bundle' | 'Split';
-
-export interface ShopifyDiscount {
-  id: string;
-  title: string;
-  status: ShopifyDiscountStatus;
-  method: 'Automatic' | 'Code';
-  type: string;
-  /** Set when this row is a Discount Engine app discount (vs a native Shopify one). */
-  engine: DiscountEngineKind | null;
-  /** Links a Discount Engine row to its app Discount (opens its detail). */
-  appId?: string;
-  used: number;
-}

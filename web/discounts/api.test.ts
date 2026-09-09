@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchDiscount, fetchDiscounts, fetchShopifyDiscounts } from './api';
+import { fetchDiscount, fetchDiscounts } from './api';
 
 const jsonResponse = (body: unknown) =>
   new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
@@ -23,12 +23,5 @@ describe('discount data layer', () => {
     expect(f.mock.calls[0][0]).toBe('/api/discounts/abc');
     expect(res.discount.id).toBe('abc');
     expect(res.campaign).toBeNull();
-  });
-
-  it('fetchShopifyDiscounts requests /api/shopify-discounts', async () => {
-    const f = vi.fn().mockResolvedValue(jsonResponse({ shopifyDiscounts: [] }));
-    const res = await fetchShopifyDiscounts(f);
-    expect(f.mock.calls[0][0]).toBe('/api/shopify-discounts');
-    expect(res.shopifyDiscounts).toEqual([]);
   });
 });

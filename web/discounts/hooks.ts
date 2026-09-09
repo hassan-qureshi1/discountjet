@@ -6,7 +6,7 @@
 import { useAppBridge } from '@shopify/app-bridge-react';
 import { useQuery } from '@tanstack/react-query';
 import { createAuthenticatedFetch } from '../api';
-import { fetchDiscount, fetchDiscounts, fetchShopifyDiscounts } from './api';
+import { fetchDiscount, fetchDiscounts } from './api';
 
 export function useDiscountsQuery() {
   const shopify = useAppBridge();
@@ -24,14 +24,5 @@ export function useDiscountQuery(id: string | undefined) {
     queryKey: ['discount', id],
     queryFn: () => fetchDiscount(fetcher, id as string),
     enabled: Boolean(id),
-  });
-}
-
-export function useShopifyDiscountsQuery() {
-  const shopify = useAppBridge();
-  const fetcher = createAuthenticatedFetch(shopify);
-  return useQuery({
-    queryKey: ['shopify-discounts'],
-    queryFn: () => fetchShopifyDiscounts(fetcher),
   });
 }

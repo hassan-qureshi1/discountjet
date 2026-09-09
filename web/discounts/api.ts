@@ -3,7 +3,7 @@
 // hit the already-shipped Worker routes and return the prototype's response
 // shapes. App Bridge auth is supplied by the caller (react-query hooks).
 import { apiFetch, type AuthenticatedFetch } from '../api';
-import type { Discount, ShopifyDiscount } from '../types/discounts';
+import type { Discount } from '../types/discounts';
 
 export interface DiscountCounts {
   all: number;
@@ -29,8 +29,4 @@ export function fetchDiscounts(f: AuthenticatedFetch): Promise<DiscountsResponse
 
 export function fetchDiscount(f: AuthenticatedFetch, id: string): Promise<DiscountDetailResponse> {
   return apiFetch<DiscountDetailResponse>(f, `/api/discounts/${encodeURIComponent(id)}`);
-}
-
-export function fetchShopifyDiscounts(f: AuthenticatedFetch): Promise<{ shopifyDiscounts: ShopifyDiscount[] }> {
-  return apiFetch<{ shopifyDiscounts: ShopifyDiscount[] }>(f, '/api/shopify-discounts');
 }

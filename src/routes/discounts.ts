@@ -125,5 +125,8 @@ discountRoutes.get('/api/discounts/:id', async (c) => {
     .get();
 
   if (!row || row.deletedAt) return c.json({ error: 'Discount not found' }, 404);
-  return c.json({ discount: toUi(row) });
+  // E4-3 contract: campaign summary when this row is campaign-owned. The campaign
+  // table lands in E8; until then we cannot resolve a name, so return null. The
+  // detail UI still renders the locked state from row.campaignId alone.
+  return c.json({ discount: toUi(row), campaign: null });
 });

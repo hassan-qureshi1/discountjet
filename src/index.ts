@@ -3,7 +3,6 @@ import { setDb } from './db/db';
 import { authRoutes } from './routes/auth';
 import { exampleRoutes } from './routes/example';
 import { discountRoutes } from './routes/discounts';
-import { shopifyDiscountRoutes } from './routes/shopifyDiscounts';
 import { previewRoutes } from './routes/preview';
 import { webhookRoutes } from './lifecycle/webhooks';
 import type { Env } from './types/env';
@@ -25,7 +24,6 @@ app.route('/', authRoutes);
 app.route('/', webhookRoutes);
 app.route('/', exampleRoutes);
 app.route('/', discountRoutes);
-app.route('/', shopifyDiscountRoutes);
 
 // Public template preview page (no auth) — see routes/preview.ts.
 app.route('/', previewRoutes);

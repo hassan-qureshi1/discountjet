@@ -5,6 +5,7 @@ import { bundle, shopifyShop } from '../db/schema';
 import type { AppEnv } from '../types/env.d';
 import { writeComposition, clearComposition } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
+import { ensureCartTransform } from '../lib/cartTransformRegistration';
 
 export const bundleRoutes = new Hono<AppEnv>();
 
@@ -110,6 +111,28 @@ bundleRoutes.get('/api/bundles', async (c) => {
     bundles,
     summary: { count: bundles.length, inCampaigns: 0, avgSaving },
   });
+});
+
+// GET /api/bundles/activation — reports whether the cart-transform function
+// is registered for the caller's shop, idempotently registering it if not
+// (mirrors the best-effort registration attempted at install time — this
+// endpoint lets the UI retry/reflect that state on demand). Registered
+// before `/api/bundles/:id` so `activation` isn't swallowed as an `:id`.
+bundleRoutes.get('/api/bundles/activation', async (c) => {
+  const db = createDb(c.env.DB);
+  const shopId = c.get('shopId');
+
+  try {
+    const shopDomain = await requireShopDomain(db, shopId);
+    const result = await ensureCartTransform(c.env, shopDomain, db, shopId);
+    if ('conflict' in result) {
+      return c.json({ active: false, conflict: true });
+    }
+    return c.json({ active: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ active: false, error: message }, 500);
+  }
 });
 
 // GET /api/bundles/:id — single row scoped to the caller's shop (404 when missing).

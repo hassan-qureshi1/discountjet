@@ -14,10 +14,14 @@ vi.mock('./shopify', () => ({
 vi.mock('./lib/graphqlAdmin', () => ({
   adminGraphql: vi.fn(),
 }));
+vi.mock('./lib/cartTransformRegistration', () => ({
+  ensureCartTransform: vi.fn(),
+}));
 
 import { app } from './index';
 import { createDb } from './db/db';
 import { adminGraphql } from './lib/graphqlAdmin';
+import { ensureCartTransform } from './lib/cartTransformRegistration';
 
 // Minimal chainable Drizzle stand-in: `.select().from().where().get()` resolves
 // to the given row (or null), and `.where().all()` resolves to an array (or
@@ -605,6 +609,58 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     );
 
     expect(res.status).toBe(404);
+  });
+
+  it('GET /api/bundles/activation returns {active:true} when ensureCartTransform resolves a gid', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    // requireShop -> getCurrentShopId (1), route's requireShopDomain (2).
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: true });
+
+    const res = await app.request(
+      '/api/bundles/activation',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ active: true });
+    expect(ensureCartTransform).toHaveBeenCalledTimes(1);
+  });
+
+  it('GET /api/bundles/activation returns {active:false, conflict:true} on a foreign transform', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(ensureCartTransform).mockResolvedValueOnce({ conflict: true });
+
+    const res = await app.request(
+      '/api/bundles/activation',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ active: false, conflict: true });
+  });
+
+  it('GET /api/bundles/activation returns 500 { active:false, error } when ensureCartTransform throws', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(ensureCartTransform).mockRejectedValueOnce(new Error('cart-transform function not deployed'));
+
+    const res = await app.request(
+      '/api/bundles/activation',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(500);
+    const json = (await res.json()) as { active: boolean; error: string };
+    expect(json.active).toBe(false);
+    expect(json.error).toContain('cart-transform function not deployed');
   });
 
   it('PUT /api/bundles/:id does not re-write composition_v2 on a rename-only update', async () => {

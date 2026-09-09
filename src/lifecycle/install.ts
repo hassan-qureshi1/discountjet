@@ -1,6 +1,7 @@
 import type { Env } from '../types/env';
 import { registerWebhooks } from './webhooks';
 import { backfillDiscounts } from './discountSync';
+import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { createDb } from '../db/db';
 import { shopifyShop } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -78,8 +79,9 @@ export async function onShopInstall(
   // 4. Backfill the discount mirror (E4-5). Webhooks only cover changes after
   // install, so seed the mirror with existing app-owned discounts now. Best-effort:
   // a failure here (e.g. token not yet readable) is recoverable via reconcile.
+  let shopRow: { id: string } | null | undefined;
   try {
-    const shopRow = await db
+    shopRow = await db
       .select({ id: shopifyShop.id })
       .from(shopifyShop)
       .where(eq(shopifyShop.myshopifyDomain, shopDomain))
@@ -89,5 +91,23 @@ export async function onShopInstall(
     }
   } catch (err) {
     console.error(`[install] discount backfill failed for ${shopDomain}:`, err);
+  }
+
+  // 5. Register the cart-transform function (E6). Best-effort: a failure
+  // here (e.g. the function not yet deployed) is recoverable — the
+  // activation-status endpoint retries this on next load.
+  try {
+    if (shopRow?.id) {
+      const result = await ensureCartTransform(env, shopDomain, db, shopRow.id);
+      if ('conflict' in result) {
+        console.error(`[install] cart transform registration conflict for ${shopDomain}: a foreign transform already exists`);
+      } else {
+        console.log(
+          `[install] cart transform ${result.created ? 'created' : 'adopted'} for ${shopDomain}: ${result.gid}`,
+        );
+      }
+    }
+  } catch (err) {
+    console.error(`[install] cart transform registration failed for ${shopDomain}:`, err);
   }
 }

@@ -457,7 +457,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('POST /api/bundles writes composition_v2 for an expand bundle with a parentVariantId', async () => {
+  it('POST /api/bundles writes composition for an expand bundle with a parentVariantId', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     // Reused inside the route for the insert, the shopDomain lookup, and the
     // post-write metafieldState update — a single row shape covers all three.
@@ -497,11 +497,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[0];
     expect(query).toContain('metafieldsSet');
     expect(variables).toEqual({
-      metafields: [expect.objectContaining({ namespace: 'bundle', key: 'composition_v2' })],
+      metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'composition' })],
     });
   });
 
-  it('POST /api/bundles writes checkout.merge_bundles (never composition_v2) for a merge bundle', async () => {
+  it('POST /api/bundles writes $app:cart-transform.merge_bundles (never composition) for a merge bundle', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
@@ -536,10 +536,10 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
-      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+      metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
     });
     expect(writeVars).not.toEqual({
-      metafields: [expect.objectContaining({ namespace: 'bundle', key: 'composition_v2' })],
+      metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'composition' })],
     });
   });
 
@@ -593,7 +593,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
-  it('POST /api/bundles writes checkout.merge_bundles for a merge bundle with a parentVariantId', async () => {
+  it('POST /api/bundles writes $app:cart-transform.merge_bundles for a merge bundle with a parentVariantId', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     // Reused inside the route for the insert, the shopDomain lookup, and the
     // post-write metafieldState update — a single row shape covers all three.
@@ -636,7 +636,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
-      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+      metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
     });
   });
 
@@ -784,7 +784,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.error).toContain('cart-transform function not deployed');
   });
 
-  it('PUT /api/bundles/:id does not re-write composition_v2 on a rename-only update', async () => {
+  it('PUT /api/bundles/:id does not re-write composition on a rename-only update', async () => {
     // Already-Written expand bundle; a rename/status-only PUT (no `items` or
     // `parentVariantId` in the body) must not touch the metafield.
     const existing = bundleRow({
@@ -814,7 +814,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
-  it('PUT /api/bundles/:id transitions expand -> merge: clears composition_v2 and writes checkout.merge_bundles', async () => {
+  it('PUT /api/bundles/:id transitions expand -> merge: clears composition and writes $app:cart-transform.merge_bundles', async () => {
     const existing = bundleRow({
       operation: 'expand',
       parentVariantId: 'gid://shopify/ProductVariant/999',
@@ -836,7 +836,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       .mockResolvedValueOnce({
         data: {
           metafieldsDelete: {
-            deletedMetafields: [{ key: 'composition_v2', namespace: 'bundle', ownerId: 'gid://shopify/ProductVariant/999' }],
+            deletedMetafields: [{ key: 'composition', namespace: '$app:cart-transform', ownerId: 'gid://shopify/ProductVariant/999' }],
             userErrors: [],
           },
         },
@@ -875,7 +875,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[2];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
-      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+      metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
     });
   });
 
@@ -913,7 +913,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       .mockResolvedValueOnce({
         data: {
           metafieldsDelete: {
-            deletedMetafields: [{ key: 'merge_bundles', namespace: 'checkout', ownerId: 'gid://shopify/Shop/1' }],
+            deletedMetafields: [{ key: 'merge_bundles', namespace: '$app:cart-transform', ownerId: 'gid://shopify/Shop/1' }],
             userErrors: [],
           },
         },
@@ -957,7 +957,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const [, , upsertWriteQuery, upsertWriteVars] = vi.mocked(adminGraphql).mock.calls[3];
     expect(upsertWriteQuery).toContain('metafieldsSet');
     expect(upsertWriteVars).toEqual({
-      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+      metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
     });
   });
 
@@ -991,7 +991,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       .mockResolvedValueOnce({
         data: {
           metafieldsDelete: {
-            deletedMetafields: [{ key: 'merge_bundles', namespace: 'checkout', ownerId: 'gid://shopify/Shop/1' }],
+            deletedMetafields: [{ key: 'merge_bundles', namespace: '$app:cart-transform', ownerId: 'gid://shopify/Shop/1' }],
             userErrors: [],
           },
         },

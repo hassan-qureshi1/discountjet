@@ -76,7 +76,7 @@ describe('writeComposition', () => {
 
   beforeEach(() => vi.clearAllMocks());
 
-  it('calls metafieldsSet with namespace bundle / key composition_v2 / type json and the stringified composition', async () => {
+  it('calls metafieldsSet with namespace $app:cart-transform / key composition / type json and the stringified composition', async () => {
     vi.mocked(adminGraphql).mockResolvedValue({
       data: {
         metafieldsSet: {
@@ -99,8 +99,8 @@ describe('writeComposition', () => {
       metafields: [
         {
           ownerId: parentVariantGid,
-          namespace: 'bundle',
-          key: 'composition_v2',
+          namespace: '$app:cart-transform',
+          key: 'composition',
           type: 'json',
           value: JSON.stringify([{ id: 'gid://shopify/ProductVariant/123', quantity: 2, price: 149 }]),
         },
@@ -155,7 +155,7 @@ describe('clearComposition', () => {
     vi.mocked(adminGraphql).mockResolvedValue({
       data: {
         metafieldsDelete: {
-          deletedMetafields: [{ key: 'composition_v2', namespace: 'bundle', ownerId: parentVariantGid }],
+          deletedMetafields: [{ key: 'composition', namespace: '$app:cart-transform', ownerId: parentVariantGid }],
           userErrors: [],
         },
       },
@@ -169,7 +169,7 @@ describe('clearComposition', () => {
     expect(calledEnv).toBe(env);
     expect(calledQuery).toContain('metafieldsDelete');
     expect(calledVariables).toEqual({
-      metafields: [{ ownerId: parentVariantGid, namespace: 'bundle', key: 'composition_v2' }],
+      metafields: [{ ownerId: parentVariantGid, namespace: '$app:cart-transform', key: 'composition' }],
     });
   });
 
@@ -265,7 +265,7 @@ describe('upsertMergeConfig', () => {
       metafields: [
         {
           ownerId: shopGid,
-          namespace: 'checkout',
+          namespace: '$app:cart-transform',
           key: 'merge_bundles',
           type: 'json',
           value: JSON.stringify([entry]),
@@ -365,7 +365,7 @@ describe('removeMergeConfig', () => {
         data: { shop: { id: shopGid, metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([removed]) } } },
       })
       .mockResolvedValueOnce({
-        data: { metafieldsDelete: { deletedMetafields: [{ key: 'merge_bundles', namespace: 'checkout', ownerId: shopGid }], userErrors: [] } },
+        data: { metafieldsDelete: { deletedMetafields: [{ key: 'merge_bundles', namespace: '$app:cart-transform', ownerId: shopGid }], userErrors: [] } },
       });
 
     await removeMergeConfig(env, shopDomain, parentVariantId);
@@ -374,7 +374,7 @@ describe('removeMergeConfig', () => {
     const [, , deleteQuery, deleteVars] = vi.mocked(adminGraphql).mock.calls[1];
     expect(deleteQuery).toContain('metafieldsDelete');
     expect(deleteVars).toEqual({
-      metafields: [{ ownerId: shopGid, namespace: 'checkout', key: 'merge_bundles' }],
+      metafields: [{ ownerId: shopGid, namespace: '$app:cart-transform', key: 'merge_bundles' }],
     });
   });
 

@@ -2,6 +2,7 @@ import type { Env } from '../types/env';
 import { registerWebhooks } from './webhooks';
 import { backfillDiscounts } from './discountSync';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
+import { ensureCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
 import { createDb } from '../db/db';
 import { shopifyShop } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -109,5 +110,15 @@ export async function onShopInstall(
     }
   } catch (err) {
     console.error(`[install] cart transform registration failed for ${shopDomain}:`, err);
+  }
+
+  // 6. Create the `$app:cart-transform` metafield definitions (E6). Non-fatal:
+  // a definition only controls admin visibility/read-only-ness — the
+  // underlying metafield reads/writes work regardless of whether it exists —
+  // so a failure here must never fail install.
+  try {
+    await ensureCartTransformMetafieldDefinitions(env, shopDomain);
+  } catch (err) {
+    console.error(`[install] cart-transform metafield definition creation failed for ${shopDomain}:`, err);
   }
 }

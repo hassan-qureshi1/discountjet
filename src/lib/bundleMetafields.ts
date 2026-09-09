@@ -9,8 +9,8 @@ export interface BundleItemLike {
 }
 
 /**
- * The `bundle.composition_v2` metafield entry shape the Rust cart-transform
- * function's `BundleComponent` deserializes
+ * The `$app:cart-transform.composition` metafield entry shape the Rust
+ * cart-transform function's `BundleComponent` deserializes
  * (`extensions/cart-transformer/src/config.rs`): `{ id, quantity, price }`
  * where `id` is a `ProductVariant` GID string, `quantity` an integer, and
  * `price` the per-unit price in dollars (not cents).
@@ -29,7 +29,7 @@ function toVariantGid(variantId: string): string {
 }
 
 // The Rust `BundleComponent.quantity` is `i64` and `bundle_expander.rs`
-// deserializes the whole `composition_v2` array in one shot — a single
+// deserializes the whole `composition` array in one shot — a single
 // non-integer (or non-finite) quantity fails deserialization and aborts the
 // ENTIRE cart-transform invocation for that cart, not just the one line. The
 // route does no shape validation on `body.items`, so this guard is the only
@@ -50,8 +50,8 @@ function toSafePrice(price: number | undefined): number {
 }
 
 /**
- * Pure mapping from bundle items to the `bundle.composition_v2` JSON array
- * shape. Shopify-independent (no network calls) — the value the Rust
+ * Pure mapping from bundle items to the `$app:cart-transform.composition`
+ * JSON array shape. Shopify-independent (no network calls) — the value the Rust
  * `bundle_expander` reads is `JSON.stringify(compositionFromItems(items))`.
  * Guarantees a valid integer `quantity` (>= 1) and a finite `price` even if
  * the caller's input isn't shape-validated upstream.
@@ -97,11 +97,12 @@ interface MetafieldsDeleteResponse {
 }
 
 /**
- * Writes the `bundle.composition_v2` metafield (namespace `bundle`, key
- * `composition_v2`, type `json`) on an `expand` bundle's parent variant —
- * the JSON the Rust cart-transform function reads at checkout. Fails loudly:
- * throws on a transport error, GraphQL `userErrors`, or a missing metafield
- * id in the response (no `?? ''` masking of a failed write).
+ * Writes the `$app:cart-transform.composition` metafield (app-owned reserved
+ * namespace, key `composition`, type `json`) on an `expand` bundle's parent
+ * variant — the JSON the Rust cart-transform function reads at checkout.
+ * Fails loudly: throws on a transport error, GraphQL `userErrors`, or a
+ * missing metafield id in the response (no `?? ''` masking of a failed
+ * write).
  */
 export async function writeComposition(
   env: Env,
@@ -115,8 +116,8 @@ export async function writeComposition(
     metafields: [
       {
         ownerId: parentVariantGid,
-        namespace: 'bundle',
-        key: 'composition_v2',
+        namespace: '$app:cart-transform',
+        key: 'composition',
         type: 'json',
         value: JSON.stringify(composition),
       },
@@ -125,7 +126,7 @@ export async function writeComposition(
 
   if (res.errors && res.errors.length > 0) {
     throw new Error(
-      `[writeComposition] GraphQL errors writing composition_v2 for ${parentVariantGid}: ${JSON.stringify(res.errors)}`,
+      `[writeComposition] GraphQL errors writing composition for ${parentVariantGid}: ${JSON.stringify(res.errors)}`,
     );
   }
 
@@ -147,11 +148,11 @@ export async function writeComposition(
 }
 
 /**
- * Clears the `bundle.composition_v2` metafield on a variant (identified by
- * ownerId + namespace + key, not by metafield id) — called when a bundle
- * that had written it is deleted. Throws loudly on failure; callers that
- * treat delete-time clearing as best-effort should catch/log rather than
- * let this mask other failures.
+ * Clears the `$app:cart-transform.composition` metafield on a variant
+ * (identified by ownerId + namespace + key, not by metafield id) — called
+ * when a bundle that had written it is deleted. Throws loudly on failure;
+ * callers that treat delete-time clearing as best-effort should catch/log
+ * rather than let this mask other failures.
  */
 export async function clearComposition(
   env: Env,
@@ -162,15 +163,15 @@ export async function clearComposition(
     metafields: [
       {
         ownerId: parentVariantGid,
-        namespace: 'bundle',
-        key: 'composition_v2',
+        namespace: '$app:cart-transform',
+        key: 'composition',
       },
     ],
   });
 
   if (res.errors && res.errors.length > 0) {
     throw new Error(
-      `[clearComposition] GraphQL errors clearing composition_v2 for ${parentVariantGid}: ${JSON.stringify(res.errors)}`,
+      `[clearComposition] GraphQL errors clearing composition for ${parentVariantGid}: ${JSON.stringify(res.errors)}`,
     );
   }
 
@@ -183,8 +184,8 @@ export async function clearComposition(
 }
 
 /**
- * The `checkout.merge_bundles` metafield entry shape the Rust cart-transform
- * function's `MergeBundleConfig` deserializes
+ * The `$app:cart-transform.merge_bundles` metafield entry shape the Rust
+ * cart-transform function's `MergeBundleConfig` deserializes
  * (`extensions/cart-transformer/src/config.rs`): `parentVariantId` and each
  * `sources` entry are `ProductVariant` GID strings, `price` is the merged
  * line's target price in DOLLARS (not cents), and `title` is optional.
@@ -205,8 +206,8 @@ export interface MergeBundleLike {
 }
 
 /**
- * Pure mapping from a `merge` bundle to its `checkout.merge_bundles` config
- * array entry. Shopify-independent (no network calls). `sources` is
+ * Pure mapping from a `merge` bundle to its `$app:cart-transform.merge_bundles`
+ * config array entry. Shopify-independent (no network calls). `sources` is
  * deduplicated by variant GID — Shopify's `linesMerge` operation rejects a
  * merge that references the same line twice, so a bundle whose `items` list
  * the same variant more than once (e.g. via qty edits that left a duplicate
@@ -234,7 +235,7 @@ const SHOP_MERGE_BUNDLES_QUERY = `
   query ShopMergeBundlesConfig {
     shop {
       id
-      metafield(namespace: "checkout", key: "merge_bundles") {
+      metafield(namespace: "$app:cart-transform", key: "merge_bundles") {
         id
         value
       }
@@ -249,7 +250,7 @@ interface ShopMergeBundlesQueryResponse {
   } | null;
 }
 
-/** Tolerant parse of the raw `checkout.merge_bundles` metafield value: missing/invalid/non-array -> `[]`. */
+/** Tolerant parse of the raw `$app:cart-transform.merge_bundles` metafield value: missing/invalid/non-array -> `[]`. */
 function parseMergeBundlesArray(raw: string | null | undefined): MergeBundleConfig[] {
   if (!raw) return [];
   try {
@@ -261,9 +262,9 @@ function parseMergeBundlesArray(raw: string | null | undefined): MergeBundleConf
 }
 
 /**
- * Reads the shop's own gid and the current `checkout.merge_bundles` array in
- * one round-trip — both `upsertMergeConfig` and `removeMergeConfig` need the
- * shop gid (the metafield's `ownerId`) plus the existing array to
+ * Reads the shop's own gid and the current `$app:cart-transform.merge_bundles`
+ * array in one round-trip — both `upsertMergeConfig` and `removeMergeConfig`
+ * need the shop gid (the metafield's `ownerId`) plus the existing array to
  * read-modify-write. Throws loudly on a transport error or a missing shop id
  * (never silently proceeds with an unknown owner).
  */
@@ -275,7 +276,7 @@ async function readShopMergeBundles(
 
   if (res.errors && res.errors.length > 0) {
     throw new Error(
-      `[mergeBundlesConfig] GraphQL errors reading checkout.merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+      `[mergeBundlesConfig] GraphQL errors reading merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
     );
   }
 
@@ -288,12 +289,12 @@ async function readShopMergeBundles(
 }
 
 /**
- * Read-modify-write the shop `checkout.merge_bundles` metafield (namespace
- * `checkout`, key `merge_bundles`, type `json`, owned by the shop itself) —
- * replaces any existing entry with the same `parentVariantId`, or appends
- * `entry` when none matches, then writes the whole array back. Fails loudly:
- * throws on a transport error, GraphQL `userErrors`, or a missing metafield
- * id in the response.
+ * Read-modify-write the shop `$app:cart-transform.merge_bundles` metafield
+ * (app-owned reserved namespace, key `merge_bundles`, type `json`, owned by
+ * the shop itself) — replaces any existing entry with the same
+ * `parentVariantId`, or appends `entry` when none matches, then writes the
+ * whole array back. Fails loudly: throws on a transport error, GraphQL
+ * `userErrors`, or a missing metafield id in the response.
  */
 export async function upsertMergeConfig(
   env: Env,
@@ -307,7 +308,7 @@ export async function upsertMergeConfig(
     metafields: [
       {
         ownerId: shopGid,
-        namespace: 'checkout',
+        namespace: '$app:cart-transform',
         key: 'merge_bundles',
         type: 'json',
         value: JSON.stringify(next),
@@ -339,13 +340,13 @@ export async function upsertMergeConfig(
 }
 
 /**
- * Removes a bundle's entry from the shop `checkout.merge_bundles` metafield
- * (matched by `parentVariantId`) — called when a `merge` bundle that had
- * written it is deleted. Writes the filtered array back, or clears the
- * metafield entirely (via `metafieldsDelete`) when no entries remain, rather
- * than leaving a stray `"[]"` behind. Throws loudly on failure; callers that
- * treat delete-time clearing as best-effort should catch/log rather than let
- * this mask other failures.
+ * Removes a bundle's entry from the shop `$app:cart-transform.merge_bundles`
+ * metafield (matched by `parentVariantId`) — called when a `merge` bundle
+ * that had written it is deleted. Writes the filtered array back, or clears
+ * the metafield entirely (via `metafieldsDelete`) when no entries remain,
+ * rather than leaving a stray `"[]"` behind. Throws loudly on failure;
+ * callers that treat delete-time clearing as best-effort should catch/log
+ * rather than let this mask other failures.
  */
 export async function removeMergeConfig(
   env: Env,
@@ -357,7 +358,7 @@ export async function removeMergeConfig(
 
   if (next.length === 0) {
     const res = await adminGraphql<MetafieldsDeleteResponse>(shopDomain, env, METAFIELDS_DELETE_MUTATION, {
-      metafields: [{ ownerId: shopGid, namespace: 'checkout', key: 'merge_bundles' }],
+      metafields: [{ ownerId: shopGid, namespace: '$app:cart-transform', key: 'merge_bundles' }],
     });
 
     if (res.errors && res.errors.length > 0) {
@@ -379,7 +380,7 @@ export async function removeMergeConfig(
     metafields: [
       {
         ownerId: shopGid,
-        namespace: 'checkout',
+        namespace: '$app:cart-transform',
         key: 'merge_bundles',
         type: 'json',
         value: JSON.stringify(next),

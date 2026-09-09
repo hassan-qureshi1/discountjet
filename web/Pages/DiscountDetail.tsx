@@ -17,9 +17,10 @@ const DESCRIPTIONS: Record<string, string> = {
 export default function DiscountDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { data, isLoading } = useDiscountQuery(id);
+  const { data, isLoading, error } = useDiscountQuery(id);
   const discount = data?.discount;
   const campaign = data?.campaign ?? undefined;
+  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
 
   if (isLoading) {
     return (
@@ -27,6 +28,14 @@ export default function DiscountDetail() {
         <div style={{ display: 'grid', placeItems: 'center', padding: 60 }}>
           <Spinner accessibilityLabel="Loading discount" />
         </div>
+      </Page>
+    );
+  }
+
+  if (error && !isNotFound) {
+    return (
+      <Page title="Discount" backAction={{ content: 'Discounts', onAction: () => navigate('/discounts') }}>
+        <Banner tone="critical">{error.message}</Banner>
       </Page>
     );
   }

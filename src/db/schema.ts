@@ -29,6 +29,14 @@ export const shopifyShop = sqliteTable('shopify_shop', {
 
   status: text('status', { enum: ['installed', 'uninstalled'] }),
 
+  // Plan-signal cache (E6-2) — populated on first `/api/shop/plan` read from
+  // Admin GraphQL `shop { plan { ... } } ` and served from cache thereafter.
+  // Booleans stored as 0/1 (SQLite has no native boolean type); null means
+  // "not yet queried".
+  shopifyPlus: integer('shopify_plus'),
+  partnerDevelopment: integer('partner_development'),
+  planName: text('plan_name'),
+
   createdAt: text('created_at'),
   updatedAt: text('updated_at'),
 });

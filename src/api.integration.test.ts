@@ -145,6 +145,82 @@ describe('GET /api/discounts/:id (protected by requireShop)', () => {
   });
 });
 
+describe('GET /api/shop/plan (protected by requireShop)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('queries adminGraphql and returns updateOpEligible=true for a Shopify Plus store', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    // requireShop's getCurrentShopId reads the shop row first (shopDb), then
+    // the route reads the shop row again (for the domain + cached columns),
+    // and finally updates the row to cache the plan (routeDb serves both).
+    const routeDb = mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', shopifyPlus: null, partnerDevelopment: null, planName: null });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { shop: { plan: { shopifyPlus: true, partnerDevelopment: false, displayName: 'Shopify Plus' } } },
+    });
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus' });
+    expect(adminGraphql).toHaveBeenCalledTimes(1);
+    expect(routeDb.update).toHaveBeenCalled();
+  });
+
+  it('queries adminGraphql and returns updateOpEligible=false for a Basic non-dev store', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', shopifyPlus: null, partnerDevelopment: null, planName: null });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { shop: { plan: { shopifyPlus: false, partnerDevelopment: false, displayName: 'Basic' } } },
+    });
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ updateOpEligible: false, planName: 'Basic' });
+    expect(adminGraphql).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns cached plan without calling adminGraphql when already cached', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', shopifyPlus: 1, partnerDevelopment: 0, planName: 'Shopify Plus' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus' });
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the shop row/domain is missing', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb(null);
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('Bundle CRUD API (protected by requireShop)', () => {
   beforeEach(() => vi.clearAllMocks());
 

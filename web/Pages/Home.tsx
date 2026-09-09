@@ -4,15 +4,15 @@ import {
   Avatar,
   Badge,
   Banner,
+  BlockStack,
   Card,
   DescriptionList,
-  HorizontalStack,
+  InlineStack,
   Layout,
   Link,
   Page,
   Spinner,
   Text,
-  VerticalStack,
 } from '@shopify/polaris';
 import { apiFetch, createAuthenticatedFetch } from '../api';
 
@@ -60,37 +60,37 @@ export default function Home() {
     <Page title="Shopify on Cloudflare">
       <Layout>
         <Layout.Section>
-          <Card sectioned>
+          <Card>
             {isLoading && (
-              <HorizontalStack align="center">
+              <InlineStack align="center">
                 <Spinner accessibilityLabel="Loading store" size="small" />
-              </HorizontalStack>
+              </InlineStack>
             )}
 
             {error && (
-              <Banner status="critical">
+              <Banner tone="critical">
                 {error instanceof Error ? error.message : 'Could not load your store'}
               </Banner>
             )}
 
             {shop && (
-              <VerticalStack gap="4">
-                <HorizontalStack align="space-between" blockAlign="center" wrap={false}>
-                  <HorizontalStack gap="3" blockAlign="center" wrap={false}>
+              <BlockStack gap="400">
+                <InlineStack align="space-between" blockAlign="center" wrap={false}>
+                  <InlineStack gap="300" blockAlign="center" wrap={false}>
                     <Avatar name={storeName} initials={initials(storeName)} />
-                    <VerticalStack gap="0">
+                    <BlockStack gap="0">
                       <Text as="h2" variant="headingMd">
                         {storeName}
                       </Text>
-                      <Text as="p" variant="bodySm" color="subdued">
+                      <Text as="p" variant="bodySm" tone="subdued">
                         {show(shop.myshopifyDomain)}
                       </Text>
-                    </VerticalStack>
-                  </HorizontalStack>
-                  <Badge status={shop.status === 'installed' ? 'success' : 'attention'}>
+                    </BlockStack>
+                  </InlineStack>
+                  <Badge tone={shop.status === 'installed' ? 'success' : 'attention'}>
                     {shop.status === 'installed' ? 'Installed' : 'Uninstalled'}
                   </Badge>
-                </HorizontalStack>
+                </InlineStack>
 
                 <DescriptionList
                   items={[
@@ -103,29 +103,29 @@ export default function Home() {
                     { term: 'Installed', description: asDate(shop.installedAt) },
                   ]}
                 />
-              </VerticalStack>
+              </BlockStack>
             )}
           </Card>
         </Layout.Section>
 
         <Layout.Section>
-          <Card sectioned>
-            <VerticalStack gap="2">
+          <Card>
+            <BlockStack gap="200">
               <Text as="h3" variant="headingSm">
                 Built by Devkind
               </Text>
-              <Text as="p" variant="bodyMd" color="subdued">
+              <Text as="p" variant="bodyMd" tone="subdued">
                 An open-source Shopify embedded-app starter for Cloudflare Workers.
               </Text>
-              <HorizontalStack gap="5">
-                <Link url={DEVKIND_URL} external>
+              <InlineStack gap="500">
+                <Link url={DEVKIND_URL} target="_blank">
                   devkind.com.au
                 </Link>
-                <Link url={REPO_URL} external>
+                <Link url={REPO_URL} target="_blank">
                   View source on GitHub
                 </Link>
-              </HorizontalStack>
-            </VerticalStack>
+              </InlineStack>
+            </BlockStack>
           </Card>
         </Layout.Section>
       </Layout>

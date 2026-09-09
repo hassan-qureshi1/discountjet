@@ -267,6 +267,20 @@ bundleRoutes.post('/api/bundles', async (c) => {
     return c.json({ error: 'An expand bundle needs at least one component item.' }, 400);
   }
 
+  // A merge bundle with no price would fall back to `?? 0` below, silently
+  // becoming a 100%-off (free) line on the Rust side — reject before any
+  // write. Likewise a merge bundle with no parent variant has nothing to
+  // merge into, and would otherwise create a row that never writes its
+  // `checkout.merge_bundles` entry with no indication anything is wrong.
+  if (body.operation === 'merge') {
+    if (typeof body.price !== 'number' || !Number.isFinite(body.price) || body.price <= 0) {
+      return c.json({ error: 'A merge bundle needs a price.' }, 400);
+    }
+    if (!body.parentVariantId) {
+      return c.json({ error: 'A merge bundle needs a parent variant.' }, 400);
+    }
+  }
+
   const shopId = c.get('shopId');
   const now = new Date().toISOString();
   const row: Row = {
@@ -310,7 +324,11 @@ bundleRoutes.post('/api/bundles', async (c) => {
   } else if (row.operation === 'merge' && row.parentVariantId) {
     try {
       const shopDomain = await requireShopDomain(db, shopId);
-      const entry = mergeConfigEntry({ parentVariantId: row.parentVariantId, price: body.price ?? 0, items: body.items, title: body.name });
+      // `body.price` is guaranteed a finite, positive number here — the
+      // merge guard above (`body.operation === 'merge'`) already rejected
+      // any request that reaches this branch (`row.operation === 'merge'`,
+      // copied straight from `body.operation`) without one.
+      const entry = mergeConfigEntry({ parentVariantId: row.parentVariantId, price: body.price!, items: body.items, title: body.name });
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
@@ -352,6 +370,23 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   const effectiveItems = body.items ?? (JSON.parse(existing.items) as BundleItem[]);
   if (effectiveOperation === 'expand' && effectiveItems.length === 0) {
     return c.json({ error: 'An expand bundle needs at least one component item.' }, 400);
+  }
+
+  // Mirrors the POST guard: a merge bundle with no price would fall back to
+  // `?? 0` in Phase 2 below, silently becoming a 100%-off (free) line on the
+  // Rust side, and a merge bundle with no parent variant has nothing to
+  // merge into. The effective value is whichever this PUT sets, or (if this
+  // PUT doesn't touch that field) whatever the existing row already has.
+  if (effectiveOperation === 'merge') {
+    const effectivePrice = body.price !== undefined ? body.price : toDollars(existing.price);
+    if (typeof effectivePrice !== 'number' || !Number.isFinite(effectivePrice) || effectivePrice <= 0) {
+      return c.json({ error: 'A merge bundle needs a price.' }, 400);
+    }
+    const effectiveParentVariantId =
+      body.parentVariantId !== undefined ? body.parentVariantId : existing.parentVariantId;
+    if (!effectiveParentVariantId) {
+      return c.json({ error: 'A merge bundle needs a parent variant.' }, 400);
+    }
   }
 
   const updatedAt = new Date().toISOString();
@@ -427,6 +462,32 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       .update(bundle)
       .set({ metafieldState: 'Cleared', metafieldGid: null })
       .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+  } else if (
+    prevOp === 'merge' &&
+    newOp === 'merge' &&
+    existing.metafieldState === 'Written' &&
+    existing.parentVariantId &&
+    merged.parentVariantId &&
+    existing.parentVariantId !== merged.parentVariantId
+  ) {
+    // A merge bundle whose parent variant changed still owns a
+    // `checkout.merge_bundles` entry keyed by the OLD parent variant.
+    // `upsertMergeConfig` (Phase 2, below) only replaces an entry matching
+    // the NEW parent's id, so without this the stale old-parent entry would
+    // survive alongside the new one — and since Pass 3 in the Rust
+    // cart-transform function matches by variant id, the stale entry can
+    // still win and merge into the wrong variant. Best-effort, like the
+    // other Phase 1 clears above: `metafieldState`/`metafieldGid` are left
+    // alone here (Phase 2 rewrites them for the new parent regardless).
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
+    } catch (err) {
+      console.error(
+        `[bundles] failed to remove stale merge_bundles entry for bundle ${id} on parent-variant change:`,
+        err,
+      );
+    }
   }
 
   // Phase 2 — write the NEW transport. A failure here surfaces as a 502
@@ -452,9 +513,12 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   } else if (newOp === 'merge' && merged.parentVariantId && (newOp !== prevOp || mergeInputsChanged)) {
     try {
       const shopDomain = await requireShopDomain(db, shopId);
+      // `merged.price` is guaranteed a finite, positive dollar value here —
+      // the merge guard above already rejected any request reaching this
+      // branch without one.
       const entry = mergeConfigEntry({
         parentVariantId: merged.parentVariantId,
-        price: toDollars(merged.price) ?? 0,
+        price: toDollars(merged.price)!,
         items: effectiveItems,
         title: merged.name,
       });

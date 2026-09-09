@@ -307,9 +307,13 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const insertDb = mockDb(null);
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(insertDb);
 
+    // `operation: 'update'` — this test is only about the cents<->dollars
+    // round-trip, not merge-specific validation, so it deliberately avoids
+    // the merge guards (which require a price + parentVariantId) and any
+    // metafield write.
     const body = {
       name: 'Camp Kit',
-      operation: 'merge',
+      operation: 'update',
       items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
       price: 29.99,
       sumOfItems: 39.99,
@@ -382,7 +386,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('PUT /api/bundles/:id updates and returns 200 with cents<->dollars round-trip', async () => {
-    const existing = bundleRow();
+    // `operation: 'update'` — this test is only about the cents<->dollars
+    // round-trip, not merge-specific validation, so it deliberately avoids
+    // the merge guards (which require a price + parentVariantId) and any
+    // metafield write.
+    const existing = bundleRow({ operation: 'update' });
     const shopDb = mockDb({ id: 'shop-abc' });
     const updateDb = mockDb(existing);
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(updateDb);
@@ -493,15 +501,22 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     });
   });
 
-  it('POST /api/bundles does not write composition_v2 for a merge bundle', async () => {
+  it('POST /api/bundles writes checkout.merge_bundles (never composition_v2) for a merge bundle', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
-    const insertDb = mockDb(null);
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(insertDb);
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
 
     const body = {
       name: 'Camp Kit',
       operation: 'merge',
       items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      price: 29.99,
     };
     const res = await app.request(
       '/api/bundles',
@@ -515,7 +530,66 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
     expect(res.status).toBe(201);
     const json = (await res.json()) as { bundle: { metafieldState: string } };
-    expect(json.bundle.metafieldState).toBe('NotYet');
+    expect(json.bundle.metafieldState).toBe('Written');
+
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(writeQuery).toContain('metafieldsSet');
+    expect(writeVars).toEqual({
+      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+    });
+    expect(writeVars).not.toEqual({
+      metafields: [expect.objectContaining({ namespace: 'bundle', key: 'composition_v2' })],
+    });
+  });
+
+  it('POST /api/bundles returns 400 with a JSON error when a merge bundle has no price', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+
+    const body = {
+      name: 'Camp Kit',
+      operation: 'merge',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe('A merge bundle needs a price.');
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles returns 400 with a JSON error when a merge bundle has no parentVariantId', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+
+    const body = {
+      name: 'Camp Kit',
+      operation: 'merge',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+      price: 29.99,
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe('A merge bundle needs a parent variant.');
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
@@ -801,6 +875,88 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[2];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
+      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+    });
+  });
+
+  it('PUT /api/bundles/:id merge -> merge with a changed parentVariantId: removes the OLD parent entry and writes the NEW one', async () => {
+    const OLD_PARENT = 'gid://shopify/ProductVariant/999';
+    const NEW_PARENT = 'gid://shopify/ProductVariant/111';
+    const existing = bundleRow({
+      operation: 'merge',
+      parentVariantId: OLD_PARENT,
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+      price: 2999, // $29.99
+    });
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const routeDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+
+    const oldEntry = {
+      parentVariantId: OLD_PARENT,
+      price: 29.99,
+      sources: ['gid://shopify/ProductVariant/1'],
+    };
+    // Call order: removeMergeConfig's read + write for the OLD parent (Phase
+    // 1, the fix under test), then upsertMergeConfig's read + write for the
+    // NEW parent (Phase 2).
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: {
+          shop: {
+            id: 'gid://shopify/Shop/1',
+            metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([oldEntry]) },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          metafieldsDelete: {
+            deletedMetafields: [{ key: 'merge_bundles', namespace: 'checkout', ownerId: 'gid://shopify/Shop/1' }],
+            userErrors: [],
+          },
+        },
+      })
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+    const body = { parentVariantId: NEW_PARENT };
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      bundle: { operation: string; parentVariantId?: string; metafieldState: string; metafieldGid?: string };
+    };
+    expect(json.bundle.operation).toBe('merge');
+    expect(json.bundle.parentVariantId).toBe(NEW_PARENT);
+    expect(json.bundle.metafieldState).toBe('Written');
+    expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/2');
+
+    // Phase 1 — the OLD parent's entry is removed (read + metafieldsDelete,
+    // since it was the only entry in the array).
+    expect(adminGraphql).toHaveBeenCalledTimes(4);
+    const [, , removeReadQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(removeReadQuery).toContain('merge_bundles');
+    const [, , removeWriteQuery] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(removeWriteQuery).toContain('metafieldsDelete');
+
+    // Phase 2 — the NEW parent's entry is written.
+    const [, , upsertReadQuery] = vi.mocked(adminGraphql).mock.calls[2];
+    expect(upsertReadQuery).toContain('merge_bundles');
+    const [, , upsertWriteQuery, upsertWriteVars] = vi.mocked(adminGraphql).mock.calls[3];
+    expect(upsertWriteQuery).toContain('metafieldsSet');
+    expect(upsertWriteVars).toEqual({
       metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
     });
   });

@@ -1,0 +1,1 @@
+ALTER TABLE `shopify_shop` ADD `cart_transform_gid` text;

@@ -37,6 +37,9 @@ export const shopifyShop = sqliteTable('shopify_shop', {
   partnerDevelopment: integer('partner_development'),
   planName: text('plan_name'),
 
+  // Cart Transform GID (E6) — Shopify Functions cart transform admin_graphql_api_id
+  cartTransformGid: text('cart_transform_gid'),
+
   createdAt: text('created_at'),
   updatedAt: text('updated_at'),
 });

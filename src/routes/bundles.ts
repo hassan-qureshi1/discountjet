@@ -120,10 +120,12 @@ bundleRoutes.get('/api/bundles/:id', async (c) => {
 bundleRoutes.post('/api/bundles', async (c) => {
   const body = await c.req.json<BundleInput>();
 
-  // Fail loudly on missing required fields — never mask with `?? ''`.
-  if (!body.name) throw new Error('Bundle name is required');
-  if (!body.operation) throw new Error('Bundle operation is required');
-  if (!body.items) throw new Error('Bundle items are required');
+  // Fail loudly on missing required fields — never mask with `?? ''`, but
+  // return a proper JSON 4xx (not a thrown Error, which Hono's default
+  // handler turns into a plain-text 500).
+  if (!body.name) return c.json({ error: 'Bundle name is required' }, 400);
+  if (!body.operation) return c.json({ error: 'Bundle operation is required' }, 400);
+  if (!body.items) return c.json({ error: 'Bundle items are required' }, 400);
 
   const now = new Date().toISOString();
   const row: Row = {

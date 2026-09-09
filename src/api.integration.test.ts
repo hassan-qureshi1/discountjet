@@ -252,4 +252,93 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.items).toEqual(body.items);
     expect(insertDb.insert).toHaveBeenCalled();
   });
+
+  it('POST /api/bundles returns 400 with a JSON error when name is missing', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+
+    const body = {
+      operation: 'merge',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toEqual(expect.any(String));
+  });
+
+  it('PUT /api/bundles/:id updates and returns 200 with cents<->dollars round-trip', async () => {
+    const existing = bundleRow();
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const updateDb = mockDb(existing);
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(updateDb);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ price: 19.99 }),
+      },
+      env('development'),
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { bundle: { id: string; price: number; updated: string } };
+    expect(json.bundle.id).toBe('bundle-1');
+    expect(json.bundle.price).toBe(19.99);
+    expect(json.bundle.updated).toBe('Just now');
+    expect(updateDb.update).toHaveBeenCalled();
+  });
+
+  it('PUT /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
+    vi.mocked(createDb)
+      .mockReturnValueOnce(mockDb({ id: 'shop-abc' }))
+      .mockReturnValueOnce(mockDb(null));
+
+    const res = await app.request(
+      '/api/bundles/ghost',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ price: 19.99 }),
+      },
+      env('development'),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE /api/bundles/:id deletes and returns 200 { ok: true }', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const deleteDb = mockDb(bundleRow());
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(deleteDb);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      { method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(deleteDb.delete).toHaveBeenCalled();
+  });
+
+  it('DELETE /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
+    vi.mocked(createDb)
+      .mockReturnValueOnce(mockDb({ id: 'shop-abc' }))
+      .mockReturnValueOnce(mockDb(null));
+
+    const res = await app.request(
+      '/api/bundles/ghost',
+      { method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+    expect(res.status).toBe(404);
+  });
 });

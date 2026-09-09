@@ -1,0 +1,656 @@
+// web/Pages/BundleEditor.tsx
+//
+// Create/edit screen for a bundle. Ported from
+// discount-engine-ui/src/pages/CartTransformEditor.tsx with two corrections:
+//   1. No app-tier concept — only the `update` operation is gated, and only
+//      by Shopify Plus eligibility (web/bundles/ops.ts gateOperation).
+//   2. Variant selection uses the real App Bridge ResourcePicker instead of
+//      the prototype's hardcoded CATALOGUE.
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useAppBridge } from '@shopify/app-bridge-react';
+import {
+  Badge,
+  Banner,
+  BlockStack,
+  Button,
+  Card,
+  Divider,
+  InlineGrid,
+  InlineStack,
+  List,
+  Page,
+  Spinner,
+  Tag,
+  Text,
+  TextField,
+} from '@shopify/polaris';
+import {
+  useBundleQuery, useCreateBundle, useShopPlanQuery, useUpdateBundle,
+} from '../bundles/hooks';
+import type { BundleInput } from '../bundles/api';
+import {
+  CART_TRANSFORM_LIMITS,
+  gateOperation,
+  getOp,
+  MAX_EXPAND_QTY,
+  OPERATIONS,
+  type GateResult,
+} from '../bundles/ops';
+import type { BundleItem, BundleOperation, BundleStatus } from '../types/bundles';
+
+const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
+  merge: 'info',
+  expand: 'magic',
+  update: 'warning',
+};
+
+/** `gid://shopify/ProductVariant/123` → `Variant #123`, used when a picked
+ * variant's title hasn't been captured yet (e.g. items loaded from an
+ * existing bundle, before the merchant re-opens the picker). */
+const shortVariantLabel = (variantId: string) => {
+  const match = variantId.match(/(\d+)$/);
+  return match ? `Variant #${match[1]}` : variantId;
+};
+
+/** Feature-detects the App Bridge ResourcePicker without crashing in local
+ * dev, where the app isn't embedded and `window.shopify` may be a throwing
+ * proxy or may not expose `resourcePicker` at all. */
+function isResourcePickerAvailable(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return typeof window.shopify?.resourcePicker === 'function';
+  } catch {
+    return false;
+  }
+}
+
+/** One selectable operation, disabled + badged when gated. */
+function OperationCard({
+  label,
+  description,
+  selected,
+  gate,
+  onSelect,
+}: {
+  label: string;
+  description: string;
+  selected: boolean;
+  gate: GateResult;
+  onSelect: () => void;
+}) {
+  const locked = !gate.enabled;
+  return (
+    <div
+      role="radio"
+      aria-checked={selected}
+      aria-disabled={locked}
+      tabIndex={locked ? -1 : 0}
+      onClick={() => !locked && onSelect()}
+      onKeyDown={(e) => {
+        if (locked) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      style={{
+        padding: '12px 14px',
+        borderRadius: 10,
+        border: '1px solid var(--p-color-border)',
+        cursor: locked ? 'not-allowed' : 'pointer',
+        opacity: locked ? 0.6 : 1,
+        boxShadow: selected && !locked ? 'inset 0 0 0 2px var(--p-color-border-brand)' : undefined,
+      }}
+    >
+      <InlineStack align="space-between" blockAlign="center" wrap={false}>
+        <InlineStack gap="150" blockAlign="center">
+          <div
+            aria-hidden
+            style={{
+              width: 16,
+              height: 16,
+              borderRadius: '50%',
+              flex: '0 0 auto',
+              border: `2px solid ${selected && !locked ? 'var(--p-color-border-brand)' : 'var(--p-color-border-strong)'}`,
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            {selected && !locked && (
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%', background: 'var(--p-color-bg-fill-brand)',
+              }}
+              />
+            )}
+          </div>
+          <Text as="span" variant="bodyMd" fontWeight="semibold">
+            {label}
+          </Text>
+        </InlineStack>
+        {locked && gate.reason && <Badge tone="warning">{gate.reason}</Badge>}
+      </InlineStack>
+      <div style={{ paddingLeft: 24, marginTop: 2 }}>
+        <Text as="span" variant="bodySm" tone="subdued">
+          {description}
+        </Text>
+      </div>
+    </div>
+  );
+}
+
+export default function BundleEditor() {
+  const { id } = useParams();
+  const isEdit = Boolean(id);
+  const navigate = useNavigate();
+  const shopify = useAppBridge();
+
+  const { data, isLoading, error } = useBundleQuery(id);
+  const bundle = data?.bundle;
+  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+
+  // CORRECTED gating: no app-tier concept, only `update` is Plus-gated.
+  // Defaults to false while the plan is loading (fail closed).
+  const { data: planData } = useShopPlanQuery();
+  const updateOpEligible = planData?.updateOpEligible ?? false;
+
+  const pickerAvailable = isResourcePickerAvailable();
+
+  const [name, setName] = useState('New bundle');
+  const [operation, setOperation] = useState<BundleOperation>('merge');
+  const [status, setStatus] = useState<BundleStatus>('Active');
+  const [priceStr, setPriceStr] = useState('0');
+  const [parentVariantId, setParentVariantId] = useState<string | undefined>(undefined);
+  const [parentTitle, setParentTitle] = useState<string | undefined>(undefined);
+  const [items, setItems] = useState<BundleItem[]>([]);
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [updatePriceAdjustment, setUpdatePriceAdjustment] = useState('');
+  const [updateTitleOverride, setUpdateTitleOverride] = useState('');
+  const [updateImageOverride, setUpdateImageOverride] = useState('');
+  const [bannerError, setBannerError] = useState<string | null>(null);
+
+  // Populate form state from the loaded bundle exactly once — react-query
+  // may hand us a new object reference on background refetch and we don't
+  // want to clobber in-progress edits.
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (!isEdit || !bundle || initializedRef.current) return;
+    setName(bundle.name);
+    setOperation(bundle.operation);
+    setStatus(bundle.status);
+    setPriceStr(bundle.price != null ? String(bundle.price) : '0');
+    setParentVariantId(bundle.parentVariantId);
+    setItems(bundle.items);
+    if (bundle.operation === 'update' && bundle.items[0]) {
+      const [override] = bundle.items;
+      setUpdatePriceAdjustment(override.priceAdjustment != null ? String(override.priceAdjustment) : '');
+      setUpdateTitleOverride(override.titleOverride ?? '');
+      setUpdateImageOverride(override.imageOverride ?? '');
+    }
+    initializedRef.current = true;
+  }, [isEdit, bundle]);
+
+  const createMutation = useCreateBundle();
+  const updateMutation = useUpdateBundle();
+  const isSaving = createMutation.isPending || updateMutation.isPending;
+
+  if (isEdit && isLoading) {
+    return (
+      <Page title="Bundle" backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}>
+        <div style={{ display: 'grid', placeItems: 'center', padding: 60 }}>
+          <Spinner accessibilityLabel="Loading bundle" />
+        </div>
+      </Page>
+    );
+  }
+
+  if (isEdit && error && !isNotFound) {
+    return (
+      <Page title="Bundle" backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}>
+        <Banner tone="critical">{error.message}</Banner>
+      </Page>
+    );
+  }
+
+  if (isEdit && !bundle) {
+    return (
+      <Page title="Bundle not found" backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}>
+        <Card><Text as="p">This bundle doesn’t exist. It may have been deleted.</Text></Card>
+      </Page>
+    );
+  }
+
+  const titleFor = (variantId: string) => titles[variantId] ?? shortVariantLabel(variantId);
+
+  /** Opens the multi-select variant picker for merge items / expand components. */
+  const pickItems = async () => {
+    if (!pickerAvailable) return;
+    try {
+      const result = await shopify.resourcePicker({
+        type: 'variant',
+        multiple: true,
+        selectionIds: items.map((it) => ({ id: it.variantId })),
+      });
+      if (!result) return;
+      setTitles((prev) => ({
+        ...prev,
+        ...Object.fromEntries(result.map((v) => [v.id, v.displayName || v.title])),
+      }));
+      setItems((prev) => result.map((v) => {
+        const existing = prev.find((p) => p.variantId === v.id);
+        return { variantId: v.id, qty: existing?.qty ?? 1, price: Number(v.price) };
+      }));
+    } catch (err) {
+      setBannerError(err instanceof Error ? err.message : 'Failed to open the variant picker.');
+    }
+  };
+
+  /** Opens the single-select variant picker for a bundle's parent/target variant. */
+  const pickParentVariant = async () => {
+    if (!pickerAvailable) return;
+    try {
+      const result = await shopify.resourcePicker({
+        type: 'variant',
+        multiple: false,
+        selectionIds: parentVariantId ? [{ id: parentVariantId }] : [],
+      });
+      if (!result || result.length === 0) return;
+      const [v] = result;
+      setParentVariantId(v.id);
+      setParentTitle(v.displayName || v.title);
+    } catch (err) {
+      setBannerError(err instanceof Error ? err.message : 'Failed to open the variant picker.');
+    }
+  };
+
+  const removeItem = (variantId: string) => setItems((prev) => prev.filter((it) => it.variantId !== variantId));
+
+  const updateItemQty = (variantId: string, qtyStr: string) => {
+    const parsed = parseInt(qtyStr, 10);
+    const qty = Number.isFinite(parsed) ? Math.max(1, Math.min(MAX_EXPAND_QTY, parsed)) : 1;
+    setItems((prev) => prev.map((it) => (it.variantId === variantId ? { ...it, qty } : it)));
+  };
+
+  const sumOfItems = items.reduce((sum, it) => sum + (it.price ?? 0) * it.qty, 0);
+  const priceNum = parseFloat(priceStr) || 0;
+  const save = Math.max(0, sumOfItems - priceNum);
+  const selectedOp = getOp(operation);
+
+  const updateGate = gateOperation('update', updateOpEligible);
+  const isUpdateLocked = operation === 'update' && !updateGate.enabled;
+
+  const canSave = name.trim().length > 0
+    && (operation === 'update' ? Boolean(parentVariantId) : Boolean(parentVariantId) && items.length > 0);
+
+  const buildInput = (nextStatus: BundleStatus): BundleInput => {
+    const trimmedName = name.trim();
+    if (operation === 'update') {
+      const overrideItem: BundleItem | undefined = parentVariantId
+        ? {
+          variantId: parentVariantId,
+          qty: 1,
+          priceAdjustment: updatePriceAdjustment ? parseFloat(updatePriceAdjustment) : undefined,
+          titleOverride: updateTitleOverride.trim() || undefined,
+          imageOverride: updateImageOverride.trim() || undefined,
+        }
+        : undefined;
+      return {
+        name: trimmedName,
+        operation,
+        items: overrideItem ? [overrideItem] : [],
+        status: nextStatus,
+      };
+    }
+    return {
+      name: trimmedName,
+      operation,
+      items,
+      parentVariantId,
+      price: operation === 'merge' ? priceNum : undefined,
+      sumOfItems,
+      status: nextStatus,
+    };
+  };
+
+  const handleSave = async () => {
+    setBannerError(null);
+    const nextStatus: BundleStatus = isUpdateLocked ? 'Draft' : status;
+    const input = buildInput(nextStatus);
+    try {
+      if (isEdit && id) {
+        await updateMutation.mutateAsync({ id, input });
+      } else {
+        await createMutation.mutateAsync(input);
+      }
+      navigate('/bundles');
+    } catch (err) {
+      setBannerError(err instanceof Error ? err.message : 'Failed to save bundle.');
+    }
+  };
+
+  const mutationError = createMutation.error ?? updateMutation.error;
+
+  let primaryActionLabel: string;
+  if (isUpdateLocked) primaryActionLabel = 'Save draft';
+  else if (isEdit) primaryActionLabel = 'Save bundle';
+  else primaryActionLabel = 'Create bundle';
+
+  return (
+    <Page
+      backAction={{ content: 'Bundles', onAction: () => navigate('/bundles') }}
+      title={isEdit ? 'Edit bundle' : 'Create bundle'}
+      subtitle="Define what the bundle is. Scheduling happens later in a bundle campaign."
+      primaryAction={{
+        content: primaryActionLabel,
+        onAction: handleSave,
+        loading: isSaving,
+        disabled: !canSave || isSaving,
+      }}
+      secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
+    >
+      <BlockStack gap="400">
+        {(bannerError || mutationError) && (
+          <Banner tone="critical" onDismiss={() => setBannerError(null)}>
+            {bannerError ?? mutationError?.message}
+          </Banner>
+        )}
+        {isUpdateLocked && (
+          <Banner tone="warning" title="This bundle can only be saved as a Draft">
+            <p>Overriding a cart line&apos;s price, title, or image requires Shopify Plus. It won&apos;t go live until this store is on Plus and the bundle is re-saved.</p>
+          </Banner>
+        )}
+
+        <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">
+          <BlockStack gap="400">
+            <Card>
+              <TextField
+                label="Bundle name"
+                value={name}
+                onChange={setName}
+                autoComplete="off"
+                requiredIndicator
+                helpText="Shown internally and used to label the bundle."
+              />
+            </Card>
+
+            {/* Operation selector — gated only by Shopify Plus eligibility (update) */}
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h3" variant="headingSm">
+                  Cart transform operation
+                </Text>
+                {OPERATIONS.map((op) => (
+                  <OperationCard
+                    key={op.id}
+                    label={op.label}
+                    description={op.description}
+                    selected={operation === op.id}
+                    gate={gateOperation(op.id, updateOpEligible)}
+                    onSelect={() => setOperation(op.id)}
+                  />
+                ))}
+              </BlockStack>
+            </Card>
+
+            {/* ── MERGE ── */}
+            {operation === 'merge' && (
+              <>
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">
+                      Bundle line variant
+                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      The variant that represents the merged line at checkout.
+                    </Text>
+                    <InlineStack gap="200" blockAlign="center">
+                      {parentVariantId ? (
+                        <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
+                          {parentTitle ?? titleFor(parentVariantId)}
+                        </Tag>
+                      ) : (
+                        <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
+                      )}
+                      <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
+                        {parentVariantId ? 'Change variant' : 'Choose variant'}
+                      </Button>
+                    </InlineStack>
+                    {!pickerAvailable && (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        Variant picker is available inside the Shopify admin.
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Card>
+
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">
+                      Merged variants
+                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      These cart lines are merged into one bundle line at checkout.
+                    </Text>
+                    {items.length > 0 ? (
+                      <InlineStack gap="150">
+                        {items.map((item) => (
+                          <Tag key={item.variantId} onRemove={() => removeItem(item.variantId)}>
+                            {titleFor(item.variantId)}
+                          </Tag>
+                        ))}
+                      </InlineStack>
+                    ) : (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        No variants yet.
+                      </Text>
+                    )}
+                    <InlineStack gap="200" blockAlign="center">
+                      <Button onClick={pickItems} disabled={!pickerAvailable}>
+                        Add variants
+                      </Button>
+                      {!pickerAvailable && (
+                        <Text as="span" variant="bodySm" tone="subdued">
+                          Variant picker is available inside the Shopify admin.
+                        </Text>
+                      )}
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">
+                      Price
+                    </Text>
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                      <TextField
+                        label="Bundle price"
+                        type="number"
+                        prefix="$"
+                        value={priceStr}
+                        onChange={setPriceStr}
+                        autoComplete="off"
+                        min={0}
+                      />
+                      <BlockStack gap="100">
+                        <Text as="span" variant="bodyMd">
+                          Sum of items
+                        </Text>
+                        <InlineStack gap="200" blockAlign="center">
+                          <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
+                            {money(sumOfItems)}
+                          </Text>
+                          {save > 0 && <Badge tone="success">{`Save ${money(save)}`}</Badge>}
+                        </InlineStack>
+                      </BlockStack>
+                    </InlineGrid>
+                  </BlockStack>
+                </Card>
+              </>
+            )}
+
+            {/* ── EXPAND ── */}
+            {operation === 'expand' && (
+              <>
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">
+                      Parent product
+                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      The line a shopper adds; it expands into the components below at checkout.
+                    </Text>
+                    <InlineStack gap="200" blockAlign="center">
+                      {parentVariantId ? (
+                        <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
+                          {parentTitle ?? titleFor(parentVariantId)}
+                        </Tag>
+                      ) : (
+                        <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
+                      )}
+                      <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
+                        {parentVariantId ? 'Change variant' : 'Choose variant'}
+                      </Button>
+                    </InlineStack>
+                    {!pickerAvailable && (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        Variant picker is available inside the Shopify admin.
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Card>
+
+                <Card>
+                  <BlockStack gap="300">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <Text as="h3" variant="headingSm">
+                        Components
+                      </Text>
+                      <Badge>{`${items.length} lines`}</Badge>
+                    </InlineStack>
+                    <Divider />
+                    {items.map((c) => (
+                      <InlineGrid key={c.variantId} columns={{ xs: 1, sm: 3 }} gap="300">
+                        <Text as="span" variant="bodyMd">{titleFor(c.variantId)}</Text>
+                        <TextField
+                          label="Quantity"
+                          type="number"
+                          value={String(c.qty)}
+                          onChange={(v) => updateItemQty(c.variantId, v)}
+                          min={1}
+                          max={MAX_EXPAND_QTY}
+                          autoComplete="off"
+                          helpText={`Max ${MAX_EXPAND_QTY.toLocaleString('en-US')}`}
+                        />
+                        <InlineStack gap="150" blockAlign="center">
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            {money(c.price ?? 0)}
+                            {' '}
+                            / unit
+                          </Text>
+                          <Button variant="tertiary" tone="critical" onClick={() => removeItem(c.variantId)}>
+                            Remove
+                          </Button>
+                        </InlineStack>
+                      </InlineGrid>
+                    ))}
+                    <InlineStack gap="200" blockAlign="center">
+                      <Button onClick={pickItems} disabled={!pickerAvailable}>
+                        Add components
+                      </Button>
+                      {!pickerAvailable && (
+                        <Text as="span" variant="bodySm" tone="subdued">
+                          Variant picker is available inside the Shopify admin.
+                        </Text>
+                      )}
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+              </>
+            )}
+
+            {/* ── UPDATE ── (Shopify Plus only; may still be saved as a Draft otherwise) ── */}
+            {operation === 'update' && (
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h3" variant="headingSm">
+                    Line override
+                  </Text>
+                  <InlineStack gap="200" blockAlign="center">
+                    {parentVariantId ? (
+                      <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
+                        {parentTitle ?? titleFor(parentVariantId)}
+                      </Tag>
+                    ) : (
+                      <Text as="span" variant="bodySm" tone="subdued">No target variant chosen.</Text>
+                    )}
+                    <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
+                      {parentVariantId ? 'Change variant' : 'Choose target variant'}
+                    </Button>
+                  </InlineStack>
+                  {!pickerAvailable && (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Variant picker is available inside the Shopify admin.
+                    </Text>
+                  )}
+                  <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
+                    <TextField
+                      label="New price"
+                      type="number"
+                      prefix="$"
+                      value={updatePriceAdjustment}
+                      onChange={setUpdatePriceAdjustment}
+                      autoComplete="off"
+                    />
+                    <TextField
+                      label="New title"
+                      value={updateTitleOverride}
+                      onChange={setUpdateTitleOverride}
+                      autoComplete="off"
+                    />
+                    <TextField
+                      label="New image URL"
+                      placeholder="https://…"
+                      value={updateImageOverride}
+                      onChange={setUpdateImageOverride}
+                      autoComplete="off"
+                    />
+                  </InlineGrid>
+                </BlockStack>
+              </Card>
+            )}
+          </BlockStack>
+
+          {/* Right rail — operation reference + real Shopify limits */}
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h3" variant="headingSm">
+                Operation
+              </Text>
+              <InlineStack gap="150" blockAlign="center">
+                <Badge tone={OP_TONE[operation]}>
+                  {selectedOp.label}
+                </Badge>
+                {operation === 'update' && !updateGate.enabled && <Badge tone="warning">{updateGate.reason}</Badge>}
+              </InlineStack>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {selectedOp.description}
+              </Text>
+              <Divider />
+              <Text as="span" variant="headingXs" tone="subdued">
+                CART TRANSFORM LIMITS
+              </Text>
+              <List>
+                {CART_TRANSFORM_LIMITS.map((l) => (
+                  <List.Item key={l}>{l}</List.Item>
+                ))}
+              </List>
+            </BlockStack>
+          </Card>
+        </InlineGrid>
+      </BlockStack>
+    </Page>
+  );
+}

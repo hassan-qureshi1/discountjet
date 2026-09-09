@@ -5,6 +5,7 @@ import Home from './Pages/Home';
 import Discounts from './Pages/Discounts';
 import DiscountDetail from './Pages/DiscountDetail';
 import Bundles from './Pages/Bundles';
+import BundleEditor from './Pages/BundleEditor';
 
 export default function App() {
   return (
@@ -14,6 +15,8 @@ export default function App() {
         <Route path="/discounts" element={<Discounts />} />
         <Route path="/discounts/:id" element={<DiscountDetail />} />
         <Route path="/bundles" element={<Bundles />} />
+        <Route path="/bundles/new" element={<BundleEditor />} />
+        <Route path="/bundles/:id/edit" element={<BundleEditor />} />
         <Route path="*" element={<Home />} />
       </Routes>
       <NavMenu>

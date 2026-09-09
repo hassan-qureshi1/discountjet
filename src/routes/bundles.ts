@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { createDb } from '../db/db';
-import { bundle } from '../db/schema';
+import { bundle, shopifyShop } from '../db/schema';
 import type { AppEnv } from '../types/env.d';
+import { writeComposition, clearComposition } from '../lib/bundleMetafields';
 
 export const bundleRoutes = new Hono<AppEnv>();
 
@@ -14,6 +15,11 @@ interface BundleItem {
   priceAdjustment?: number;
   titleOverride?: string;
   imageOverride?: string;
+  // Per-unit price in dollars, used to build the `bundle.composition_v2`
+  // metafield for `expand` bundles. Populated by the editor (later task)
+  // from the picked variant; no DB migration needed — `items` is stored as
+  // free-form JSON text.
+  price?: number;
 }
 
 interface BundleInput {
@@ -116,7 +122,25 @@ bundleRoutes.get('/api/bundles/:id', async (c) => {
   return c.json({ bundle: toDto(row) });
 });
 
+// Resolves the caller's shop domain (needed to call the Admin API) from its
+// app-internal shopId. Fails loudly rather than masking a missing domain.
+async function requireShopDomain(db: ReturnType<typeof createDb>, shopId: string): Promise<string> {
+  const shop = await db
+    .select({ domain: shopifyShop.myshopifyDomain })
+    .from(shopifyShop)
+    .where(eq(shopifyShop.id, shopId))
+    .get();
+  if (!shop?.domain) {
+    throw new Error(`[bundles] no myshopify domain on file for shopId=${shopId}`);
+  }
+  return shop.domain;
+}
+
 // POST /api/bundles — create a bundle in Draft with no metafield written yet.
+// For an `expand` bundle with a parent variant, immediately writes the
+// `bundle.composition_v2` metafield so the row and the Shopify-side data
+// stay in lockstep. A metafield-write failure surfaces as an error response
+// (the row is still created, but its `metafieldState` stays `NotYet`).
 bundleRoutes.post('/api/bundles', async (c) => {
   const body = await c.req.json<BundleInput>();
 
@@ -127,10 +151,11 @@ bundleRoutes.post('/api/bundles', async (c) => {
   if (!body.operation) return c.json({ error: 'Bundle operation is required' }, 400);
   if (!body.items) return c.json({ error: 'Bundle items are required' }, 400);
 
+  const shopId = c.get('shopId');
   const now = new Date().toISOString();
   const row: Row = {
     id: crypto.randomUUID(),
-    shopId: c.get('shopId'),
+    shopId,
     name: body.name,
     operation: body.operation,
     items: JSON.stringify(body.items),
@@ -149,6 +174,24 @@ bundleRoutes.post('/api/bundles', async (c) => {
 
   const db = createDb(c.env.DB);
   await db.insert(bundle).values(row);
+
+  if (row.operation === 'expand' && row.parentVariantId) {
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      const { metafieldGid } = await writeComposition(c.env, shopDomain, row.parentVariantId, body.items);
+      row.metafieldState = 'Written';
+      row.metafieldGid = metafieldGid;
+      await db
+        .update(bundle)
+        .set({ metafieldState: 'Written', metafieldGid })
+        .where(and(eq(bundle.id, row.id), eq(bundle.shopId, shopId)));
+    } catch (err) {
+      // The row is already created (metafieldState='NotYet') — surface the
+      // failure loudly instead of letting the client believe it succeeded.
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row) }, 502);
+    }
+  }
 
   return c.json({ bundle: toDto(row) }, 201);
 });
@@ -180,7 +223,32 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
   await db.update(bundle).set(patch).where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
 
-  return c.json({ bundle: toDto({ ...existing, ...patch }) });
+  const merged: Row = { ...existing, ...patch };
+
+  // `merge`/`update` bundles never write composition_v2 (the reference
+  // cart-transform function has no merge/update path) — only `expand`
+  // bundles with a parent variant do, mirroring POST.
+  if (merged.operation === 'expand' && merged.parentVariantId) {
+    const items = body.items ?? (JSON.parse(existing.items) as BundleItem[]);
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, items);
+      merged.metafieldState = 'Written';
+      merged.metafieldGid = metafieldGid;
+      await db
+        .update(bundle)
+        .set({ metafieldState: 'Written', metafieldGid })
+        .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json(
+        { error: `Bundle updated but composition_v2 write failed: ${message}`, bundle: toDto(merged) },
+        502,
+      );
+    }
+  }
+
+  return c.json({ bundle: toDto(merged) });
 });
 
 // DELETE /api/bundles/:id — scoped to the caller's shop (404 when missing).
@@ -195,6 +263,19 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
     .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)))
     .get();
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
+
+  // Best-effort: clearing the metafield is not fatal to the delete — the
+  // row is going away regardless, and a stale composition_v2 on an
+  // orphaned variant is a lesser problem than blocking delete on Shopify
+  // being reachable. Failures are logged, not surfaced to the client.
+  if (existing.metafieldState === 'Written' && existing.parentVariantId) {
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      await clearComposition(c.env, shopDomain, existing.parentVariantId);
+    } catch (err) {
+      console.error(`[bundles] failed to clear composition_v2 for bundle ${id}:`, err);
+    }
+  }
 
   await db.delete(bundle).where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
 

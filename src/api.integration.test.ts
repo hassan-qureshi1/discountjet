@@ -549,6 +549,64 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.error).toEqual(expect.any(String));
   });
 
+  it('GET /api/bundles/:id/admin-url resolves the parent variant\'s product into an admin URL', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const bundleDb = mockDb(bundleRow({ parentVariantId: 'gid://shopify/ProductVariant/999' }));
+    const shopDomainDb = mockDb({ domain: 'mystore.myshopify.com' });
+    // requireShop -> getCurrentShopId (1), route bundle lookup (2), requireShopDomain (3).
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(bundleDb).mockReturnValueOnce(shopDomainDb);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        productVariant: {
+          id: 'gid://shopify/ProductVariant/999',
+          product: { id: 'gid://shopify/Product/456' },
+        },
+      },
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1/admin-url',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { url: string };
+    expect(json.url).toBe('https://mystore.myshopify.com/admin/products/456');
+    expect(json.url).toContain('/admin/products/456');
+  });
+
+  it('GET /api/bundles/:id/admin-url returns 400 when the bundle has no parent variant', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    const bundleDb = mockDb(bundleRow({ parentVariantId: null }));
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(bundleDb);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1/admin-url',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe('This bundle has no parent variant to view.');
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/bundles/:id/admin-url returns 404 for missing/other-shop bundle', async () => {
+    vi.mocked(createDb)
+      .mockReturnValueOnce(mockDb({ id: 'shop-abc' }))
+      .mockReturnValueOnce(mockDb(null));
+
+    const res = await app.request(
+      '/api/bundles/ghost/admin-url',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(404);
+  });
+
   it('PUT /api/bundles/:id does not re-write composition_v2 on a rename-only update', async () => {
     // Already-Written expand bundle; a rename/status-only PUT (no `items` or
     // `parentVariantId` in the body) must not touch the metafield.

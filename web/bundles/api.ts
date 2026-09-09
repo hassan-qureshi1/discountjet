@@ -72,3 +72,7 @@ export function deleteBundle(f: AuthenticatedFetch, id: string): Promise<{ ok: t
 export function fetchShopPlan(f: AuthenticatedFetch): Promise<ShopPlanResponse> {
   return apiFetch<ShopPlanResponse>(f, '/api/shop/plan');
 }
+
+export function fetchBundleAdminUrl(f: AuthenticatedFetch, id: string): Promise<{ url: string }> {
+  return apiFetch<{ url: string }>(f, `/api/bundles/${encodeURIComponent(id)}/admin-url`);
+}

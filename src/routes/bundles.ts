@@ -4,6 +4,7 @@ import { createDb } from '../db/db';
 import { bundle, shopifyShop } from '../db/schema';
 import type { AppEnv } from '../types/env.d';
 import { writeComposition, clearComposition } from '../lib/bundleMetafields';
+import { adminGraphql } from '../lib/graphqlAdmin';
 
 export const bundleRoutes = new Hono<AppEnv>();
 
@@ -137,6 +138,82 @@ async function requireShopDomain(db: ReturnType<typeof createDb>, shopId: string
   }
   return shop.domain;
 }
+
+interface ProductVariantResponse {
+  productVariant: {
+    id: string;
+    product: { id: string } | null;
+  } | null;
+}
+
+const PRODUCT_VARIANT_QUERY = `
+  query BundleParentProduct($id: ID!) {
+    productVariant(id: $id) {
+      id
+      product { id }
+    }
+  }
+`;
+
+// GET /api/bundles/:id/admin-url — resolves the bundle's parent variant's
+// owning product and returns a deep link into the Shopify admin. Resolved
+// server-side (on click) rather than at list-load time — the client has no
+// Admin API access (the offline token lives server-side), and eagerly
+// resolving every row's product on list load would be an N+1 Admin API call.
+bundleRoutes.get('/api/bundles/:id/admin-url', async (c) => {
+  const db = createDb(c.env.DB);
+  const shopId = c.get('shopId');
+  const row = await db
+    .select()
+    .from(bundle)
+    .where(and(eq(bundle.id, c.req.param('id')), eq(bundle.shopId, shopId)))
+    .get();
+
+  if (!row) return c.json({ error: 'Bundle not found' }, 404);
+  if (!row.parentVariantId) {
+    return c.json({ error: 'This bundle has no parent variant to view.' }, 400);
+  }
+
+  // A fresh `createDb` call (rather than reusing `db` above) — the bundle
+  // lookup and the shop-domain lookup select different shapes off different
+  // tables, so they're kept as separate calls rather than threading one
+  // `db` through both (unlike the POST/PUT paths, which reuse a single `db`
+  // for insert/update calls that don't inspect row shape).
+  const shopDomain = await requireShopDomain(createDb(c.env.DB), shopId);
+
+  let result;
+  try {
+    result = await adminGraphql<ProductVariantResponse>(shopDomain, c.env, PRODUCT_VARIANT_QUERY, {
+      id: row.parentVariantId,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ error: `Failed to resolve the parent product: ${message}` }, 502);
+  }
+
+  if (result.errors && result.errors.length > 0) {
+    return c.json(
+      { error: `Failed to resolve the parent product: ${JSON.stringify(result.errors)}` },
+      502,
+    );
+  }
+
+  const productGid = result.data?.productVariant?.product?.id;
+  if (!productGid) {
+    return c.json(
+      { error: `Failed to resolve the parent product for variant ${row.parentVariantId}` },
+      502,
+    );
+  }
+
+  const match = productGid.match(/(\d+)$/);
+  if (!match) {
+    return c.json({ error: `Unexpected product id shape: ${productGid}` }, 502);
+  }
+  const productNumericId = match[1];
+
+  return c.json({ url: `https://${shopDomain}/admin/products/${productNumericId}` });
+});
 
 // POST /api/bundles — create a bundle in Draft with no metafield written yet.
 // For an `expand` bundle with a parent variant, immediately writes the

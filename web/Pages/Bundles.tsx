@@ -1,11 +1,15 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAppBridge } from '@shopify/app-bridge-react';
 import {
-  Badge, Banner, BlockStack, Box, Button, Card, IndexTable, InlineGrid, InlineStack, Page, Spinner, Text,
+  Badge, Banner, BlockStack, Box, Button, ButtonGroup, Card, IndexTable, InlineGrid, InlineStack, Page, Spinner, Text,
 } from '@shopify/polaris';
 import { useBundlesQuery } from '../bundles/hooks';
+import { fetchBundleAdminUrl } from '../bundles/api';
 import { getOp } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
 import { SymbolTile } from '../components/SymbolTile';
+import { createAuthenticatedFetch } from '../api';
 
 const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
   merge: 'info',
@@ -67,10 +71,24 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 export default function Bundles() {
   const navigate = useNavigate();
+  const shopify = useAppBridge();
+  const fetcher = createAuthenticatedFetch(shopify);
   const { data, isLoading, error } = useBundlesQuery();
+  const [viewError, setViewError] = useState<string | null>(null);
 
   const bundles = data?.bundles ?? [];
   const summary = data?.summary ?? { count: 0, inCampaigns: 0, avgSaving: 0 };
+
+  const handleViewInShopify = async (bundleId: string) => {
+    setViewError(null);
+    try {
+      const res = await fetchBundleAdminUrl(fetcher, bundleId);
+      window.open(res.url, '_blank', 'noopener');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setViewError(`Couldn't open this bundle in Shopify: ${message}`);
+    }
+  };
 
   return (
     <Page
@@ -80,6 +98,11 @@ export default function Bundles() {
     >
       <BlockStack gap="400">
         {error && <Banner tone="critical">{error.message}</Banner>}
+        {viewError && (
+          <Banner tone="critical" onDismiss={() => setViewError(null)}>
+            {viewError}
+          </Banner>
+        )}
 
         <Card padding="0">
           <InlineGrid columns={{ xs: 1, sm: 3 }}>
@@ -159,9 +182,18 @@ export default function Bundles() {
                       </Text>
                     </IndexTable.Cell>
                     <IndexTable.Cell>
-                      <Button variant="plain" onClick={() => navigate(`/bundles/${b.id}/edit`)}>
-                        Edit
-                      </Button>
+                      <ButtonGroup>
+                        <Button variant="plain" onClick={() => navigate(`/bundles/${b.id}/edit`)}>
+                          Edit
+                        </Button>
+                        <Button
+                          variant="plain"
+                          disabled={!b.parentVariantId}
+                          onClick={() => handleViewInShopify(b.id)}
+                        >
+                          View in Shopify
+                        </Button>
+                      </ButtonGroup>
                     </IndexTable.Cell>
                   </IndexTable.Row>
                 );

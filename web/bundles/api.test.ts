@@ -2,7 +2,7 @@ import {
   describe, expect, it, vi,
 } from 'vitest';
 import {
-  createBundle, deleteBundle, fetchBundle, fetchBundles, fetchShopPlan, updateBundle,
+  createBundle, deleteBundle, fetchBundle, fetchBundleAdminUrl, fetchBundles, fetchShopPlan, updateBundle,
 } from './api';
 import type { Bundle, BundleInput } from './api';
 
@@ -71,6 +71,13 @@ describe('bundle data layer', () => {
     expect(f.mock.calls[0][1]?.method).toBe('DELETE');
     expect(f.mock.calls[0][1]?.body).toBeUndefined();
     expect(res.ok).toBe(true);
+  });
+
+  it('fetchBundleAdminUrl requests /api/bundles/:id/admin-url', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ url: 'https://mystore.myshopify.com/admin/products/456' }));
+    const res = await fetchBundleAdminUrl(f, 'b1');
+    expect(f.mock.calls[0][0]).toBe('/api/bundles/b1/admin-url');
+    expect(res.url).toBe('https://mystore.myshopify.com/admin/products/456');
   });
 
   it('fetchShopPlan requests /api/shop/plan', async () => {

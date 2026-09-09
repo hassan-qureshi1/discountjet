@@ -12,6 +12,7 @@ import {
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
+import { ensureCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
 export const bundleRoutes = new Hono<AppEnv>();
 
@@ -131,10 +132,36 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
   try {
     const shopDomain = await requireShopDomain(db, shopId);
     const result = await ensureCartTransform(c.env, shopDomain, db, shopId);
-    if ('conflict' in result) {
-      return c.json({ active: false, conflict: true });
+
+    // Idempotently (re)creates the app's two `$app:cart-transform` metafield
+    // definitions — covers a store that installed before this endpoint
+    // existed and so never got them created at install time. A definition
+    // that already exists is a no-op. Best-effort: a failure here must never
+    // block activation (the underlying metafield reads/writes this app
+    // relies on work regardless of whether the definition — which only
+    // controls admin visibility/read-only-ness — exists).
+    try {
+      await ensureCartTransformMetafieldDefinitions(c.env, shopDomain);
+    } catch (err) {
+      console.error(`[bundles] ensureCartTransformMetafieldDefinitions threw for ${shopDomain}:`, err);
     }
-    return c.json({ active: true });
+
+    // Reports ground truth on whether the definitions (and the shop's
+    // merge_bundles value) actually exist, rather than assuming the create
+    // above succeeded. Best-effort: on failure `metafields` is simply
+    // omitted from the response (not fabricated as all-false) — the UI
+    // treats a missing `metafields` the same as "unknown, don't warn".
+    let metafields: Awaited<ReturnType<typeof getMetafieldSetupStatus>> | undefined;
+    try {
+      metafields = await getMetafieldSetupStatus(c.env, shopDomain);
+    } catch (err) {
+      console.error(`[bundles] getMetafieldSetupStatus threw for ${shopDomain}:`, err);
+    }
+
+    if ('conflict' in result) {
+      return c.json({ active: false, conflict: true, metafields });
+    }
+    return c.json({ active: true, metafields });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ active: false, error: message }, 500);

@@ -111,6 +111,15 @@ export default function Bundles() {
             {activation?.error ? ` (${activation.error})` : null}
           </Banner>
         )}
+        {activation?.active === true && activation.metafields && (
+          activation.metafields.compositionDef && activation.metafields.mergeBundlesDef ? (
+            <Banner tone="success">Bundles active — app metafields ready.</Banner>
+          ) : (
+            <Banner tone="warning">
+              Bundles active, but app metafields aren&apos;t fully set up yet — reload to retry.
+            </Banner>
+          )
+        )}
         {viewError && (
           <Banner tone="critical" onDismiss={() => setViewError(null)}>
             {viewError}

@@ -77,10 +77,17 @@ export function fetchBundleAdminUrl(f: AuthenticatedFetch, id: string): Promise<
   return apiFetch<{ url: string }>(f, `/api/bundles/${encodeURIComponent(id)}/admin-url`);
 }
 
+export interface ActivationMetafieldStatus {
+  compositionDef: boolean;
+  mergeBundlesDef: boolean;
+  mergeBundlesValuePresent: boolean;
+}
+
 export interface ActivationResponse {
   active: boolean;
   conflict?: boolean;
   error?: string;
+  metafields?: ActivationMetafieldStatus;
 }
 
 /**

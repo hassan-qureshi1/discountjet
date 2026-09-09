@@ -112,3 +112,70 @@ export async function ensureCartTransformMetafieldDefinitions(env: Env, shopDoma
     }
   }
 }
+
+const METAFIELD_SETUP_STATUS_QUERY = /* GraphQL */ `
+  query MetafieldSetupStatus {
+    compositionDef: metafieldDefinitions(
+      first: 1
+      ownerType: PRODUCTVARIANT
+      namespace: "$app:cart-transform"
+      key: "composition"
+    ) {
+      nodes {
+        id
+      }
+    }
+    mergeBundlesDef: metafieldDefinitions(
+      first: 1
+      ownerType: SHOP
+      namespace: "$app:cart-transform"
+      key: "merge_bundles"
+    ) {
+      nodes {
+        id
+      }
+    }
+    shop {
+      metafield(namespace: "$app:cart-transform", key: "merge_bundles") {
+        value
+      }
+    }
+  }
+`;
+
+interface MetafieldSetupStatusResponse {
+  compositionDef: { nodes: Array<{ id: string }> } | null;
+  mergeBundlesDef: { nodes: Array<{ id: string }> } | null;
+  shop: { metafield: { value: string } | null } | null;
+}
+
+export interface MetafieldSetupStatus {
+  compositionDef: boolean;
+  mergeBundlesDef: boolean;
+  mergeBundlesValuePresent: boolean;
+}
+
+/**
+ * Checks whether the two `$app:cart-transform` metafield definitions exist,
+ * and whether the shop-level `merge_bundles` metafield actually has a
+ * (non-empty) value written. Read-only — pairs with
+ * `ensureCartTransformMetafieldDefinitions` (which creates the definitions)
+ * so the activation endpoint can report ground truth rather than assuming
+ * success. Throws on a transport/GraphQL-level failure — the caller decides
+ * how to degrade (e.g. report `metafieldsReady:false`).
+ */
+export async function getMetafieldSetupStatus(env: Env, shopDomain: string): Promise<MetafieldSetupStatus> {
+  const res = await adminGraphql<MetafieldSetupStatusResponse>(shopDomain, env, METAFIELD_SETUP_STATUS_QUERY);
+
+  if (res.errors && res.errors.length > 0) {
+    throw new Error(`[getMetafieldSetupStatus] GraphQL errors for ${shopDomain}: ${JSON.stringify(res.errors)}`);
+  }
+
+  const data = res.data;
+  const compositionDef = (data?.compositionDef?.nodes.length ?? 0) > 0;
+  const mergeBundlesDef = (data?.mergeBundlesDef?.nodes.length ?? 0) > 0;
+  const value = data?.shop?.metafield?.value;
+  const mergeBundlesValuePresent = value != null && value !== '' && value !== '[]';
+
+  return { compositionDef, mergeBundlesDef, mergeBundlesValuePresent };
+}

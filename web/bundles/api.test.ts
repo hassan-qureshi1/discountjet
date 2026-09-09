@@ -107,4 +107,20 @@ describe('bundle data layer', () => {
     expect(res.active).toBe(false);
     expect(res.error).toBe('function not deployed');
   });
+
+  it('fetchActivation passes through the metafields status object when present', async () => {
+    const f = vi.fn().mockResolvedValue(
+      jsonResponse({
+        active: true,
+        metafields: { compositionDef: true, mergeBundlesDef: false, mergeBundlesValuePresent: false },
+      }),
+    );
+    const res = await fetchActivation(f);
+    expect(res.active).toBe(true);
+    expect(res.metafields).toEqual({
+      compositionDef: true,
+      mergeBundlesDef: false,
+      mergeBundlesValuePresent: false,
+    });
+  });
 });

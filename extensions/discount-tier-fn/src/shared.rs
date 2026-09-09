@@ -1,7 +1,7 @@
 //! Shared cart-input helpers, ported from the `utils` object built in
 //! `shopify-discount-applier.js`. Pure functions — no Shopify types.
 
-use crate::config::{PlatformCfg, PriorityCode, Selector, SelectionStrategy, SelectorType};
+use crate::config::{PlatformCfg, SelectionStrategy, SelectorType};
 use std::collections::BTreeSet;
 
 /// Numeric tail of a `gid://shopify/.../<id>`. `None` if the tail isn't an int.
@@ -44,29 +44,6 @@ pub fn platform_allowed(cfg: PlatformCfg, current: PlatformCfg) -> bool {
             (cfg, current),
             (PlatformCfg::Pos, PlatformCfg::Pos) | (PlatformCfg::Checkout, PlatformCfg::Checkout)
         )
-}
-
-/// Faithful to `shouldYieldToDiscountCode`: a code-triggered run never yields;
-/// an automatic run yields when the cart code matches any priority code.
-pub fn should_yield(
-    triggering_code: Option<&str>,
-    cart_code: Option<&str>,
-    codes: &[PriorityCode],
-) -> bool {
-    if let Some(t) = triggering_code {
-        if !t.is_empty() {
-            return false;
-        }
-    }
-    let cart = match cart_code {
-        Some(c) if !c.is_empty() => c,
-        _ => return false,
-    };
-    codes.iter().any(|c| match c.selector {
-        Selector::Prefix => cart.starts_with(&c.code),
-        Selector::Suffix => cart.ends_with(&c.code),
-        Selector::Exact => cart == c.code,
-    })
 }
 
 pub fn strategy_enum(s: SelectionStrategy) -> &'static str {

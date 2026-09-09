@@ -1,10 +1,6 @@
 query Input {
-  triggeringDiscountCode
   cart {
     platform: attribute(key: "platform_source") {
-      value
-    }
-    discountCode: attribute(key: "discountCode") {
       value
     }
     lines {
@@ -35,11 +31,6 @@ query Input {
   discount {
     discountClasses
     metafield(namespace: "$app:discount-bundle", key: "config") {
-      value
-    }
-  }
-  shop {
-    metafield(namespace: "checkout", key: "priority_codes") {
       value
     }
   }

@@ -1,7 +1,7 @@
 use super::schema;
-use discount_tier::config::{parse_tier_config, PriorityCode, SelectionStrategy};
+use discount_tier::config::{parse_tier_config, SelectionStrategy};
 use discount_tier::engine::{build_candidates, DiscountValue, Line};
-use discount_tier::shared::{current_platform, id_from_gid, platform_allowed, should_yield};
+use discount_tier::shared::{current_platform, id_from_gid, platform_allowed};
 use shopify_function::prelude::*;
 use shopify_function::Result;
 use std::collections::HashMap;
@@ -31,22 +31,6 @@ fn cart_lines_discounts_generate_run(
         Some(c) => c,
         None => return Ok(empty()),
     };
-
-    // Discount-code yield (automatic-vs-code-triggered; prefix/suffix/exact).
-    let triggering = input.triggering_discount_code().map(|s| s.as_str());
-    let cart_code = input
-        .cart()
-        .discount_code()
-        .and_then(|a| a.value())
-        .map(|s| s.as_str());
-    let codes: Vec<PriorityCode> = input
-        .shop()
-        .metafield()
-        .and_then(|m| serde_json::from_str(m.value()).ok())
-        .unwrap_or_default();
-    if should_yield(triggering, cart_code, &codes) {
-        return Ok(empty());
-    }
 
     // Platform gate.
     let platform_attr = input

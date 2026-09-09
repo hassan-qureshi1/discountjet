@@ -1,4 +1,6 @@
-import { Badge, BlockStack, InlineStack, Modal, Text } from '@shopify/polaris';
+import {
+  Badge, BlockStack, InlineStack, Modal, Text,
+} from '@shopify/polaris';
 import type { DiscountEngineKind } from '../types/discounts';
 
 interface TypeRowProps {
@@ -9,7 +11,9 @@ interface TypeRowProps {
   brand?: boolean;
 }
 
-function TypeRow({ symbol, title, description, onClick, brand }: TypeRowProps) {
+function TypeRow({
+  symbol, title, description, onClick, brand,
+}: TypeRowProps) {
   const interactive = Boolean(onClick);
   return (
     <button
@@ -49,7 +53,10 @@ function TypeRow({ symbol, title, description, onClick, brand }: TypeRowProps) {
         {symbol}
       </span>
       <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: 'block', fontWeight: 600, fontSize: 13.5, color: 'var(--p-color-text)' }}>
+        <span style={{
+          display: 'block', fontWeight: 600, fontSize: 13.5, color: 'var(--p-color-text)',
+        }}
+        >
           {title}
         </span>
         <span style={{ display: 'block', fontSize: 12.5, color: 'var(--p-color-text-secondary)' }}>
@@ -69,9 +76,15 @@ const NATIVE = [
 ];
 
 const ENGINE: { kind: DiscountEngineKind; symbol: string; title: string; description: string }[] = [
-  { kind: 'Tier', symbol: '%', title: 'Volume discount', description: 'Buy more, save more — a bigger discount as shoppers add more of the same products.' },
-  { kind: 'Bundle', symbol: '◱', title: 'Buy X, get Y', description: 'Buying the qualifying products discounts the products you choose.' },
-  { kind: 'Split', symbol: '◨', title: 'Buy X, discount both', description: 'Discount both the qualifying products and the ones they unlock.' },
+  {
+    kind: 'Tier', symbol: '%', title: 'Volume discount', description: 'Buy more, save more — a bigger discount as shoppers add more of the same products.',
+  },
+  {
+    kind: 'Bundle', symbol: '◱', title: 'Buy X, get Y', description: 'Buying the qualifying products discounts the products you choose.',
+  },
+  {
+    kind: 'Split', symbol: '◨', title: 'Buy X, discount both', description: 'Discount both the qualifying products and the ones they unlock.',
+  },
 ];
 
 export function DiscountTypeModal({

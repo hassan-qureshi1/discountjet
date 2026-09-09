@@ -26,7 +26,9 @@ export default function Discounts() {
   const { data, isLoading, error } = useDiscountsQuery();
 
   const discounts = data?.discounts ?? [];
-  const counts = data?.counts ?? { all: 0, tier: 0, bundle: 0, special: 0, inactive: 0 };
+  const counts = data?.counts ?? {
+    all: 0, tier: 0, bundle: 0, special: 0, inactive: 0,
+  };
 
   const filters: { id: FilterId; label: string }[] = [
     { id: 'all', label: 'All' },

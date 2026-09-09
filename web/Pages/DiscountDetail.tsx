@@ -55,12 +55,12 @@ export default function DiscountDetail() {
     <Page
       backAction={{ content: 'Discounts', onAction: () => navigate('/discounts') }}
       title={discount.name}
-      titleMetadata={
+      titleMetadata={(
         <InlineStack gap="150">
           <Badge tone="magic">{DISCOUNT_TYPE_LABEL[discount.type]}</Badge>
           {locked && <Badge tone="info">Campaign-owned</Badge>}
         </InlineStack>
-      }
+      )}
       subtitle={locked ? 'Created by a campaign · read-only' : 'Synced from Shopify via webhook · read-only'}
       secondaryActions={[{ content: 'View in Shopify' }]}
     >

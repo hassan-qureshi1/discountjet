@@ -2,7 +2,7 @@ import type { Env } from '../types/env';
 import { registerWebhooks } from './webhooks';
 import { backfillDiscounts } from './discountSync';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
-import { ensureCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
+import { removeCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
 import { createDb } from '../db/db';
 import { shopifyShop } from '../db/schema';
 import { eq } from 'drizzle-orm';
@@ -112,13 +112,15 @@ export async function onShopInstall(
     console.error(`[install] cart transform registration failed for ${shopDomain}:`, err);
   }
 
-  // 6. Create the `$app:cart-transform` metafield definitions (E6). Non-fatal:
-  // a definition only controls admin visibility/read-only-ness — the
-  // underlying metafield reads/writes work regardless of whether it exists —
-  // so a failure here must never fail install.
+  // 6. Remove the `$app:cart-transform` metafield definitions (E6) if any
+  // exist — a definition with `access.admin: MERCHANT_READ` causes Shopify to
+  // reject this app's own `metafieldsSet` writes to that namespace/key, so
+  // this app never creates them; this call only cleans up ones a prior
+  // version of the app may have created. Non-fatal: a failure here must never
+  // fail install.
   try {
-    await ensureCartTransformMetafieldDefinitions(env, shopDomain);
+    await removeCartTransformMetafieldDefinitions(env, shopDomain);
   } catch (err) {
-    console.error(`[install] cart-transform metafield definition creation failed for ${shopDomain}:`, err);
+    console.error(`[install] cart-transform metafield definition removal failed for ${shopDomain}:`, err);
   }
 }

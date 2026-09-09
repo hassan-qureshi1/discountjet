@@ -78,8 +78,6 @@ export function fetchBundleAdminUrl(f: AuthenticatedFetch, id: string): Promise<
 }
 
 export interface ActivationMetafieldStatus {
-  compositionDef: boolean;
-  mergeBundlesDef: boolean;
   mergeBundlesValuePresent: boolean;
 }
 

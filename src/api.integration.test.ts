@@ -18,7 +18,7 @@ vi.mock('./lib/cartTransformRegistration', () => ({
   ensureCartTransform: vi.fn(),
 }));
 vi.mock('./lib/metafieldDefinitions', () => ({
-  ensureCartTransformMetafieldDefinitions: vi.fn(),
+  removeCartTransformMetafieldDefinitions: vi.fn(),
   getMetafieldSetupStatus: vi.fn(),
 }));
 
@@ -26,7 +26,7 @@ import { app } from './index';
 import { createDb } from './db/db';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
-import { ensureCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
+import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
 
 // Minimal chainable Drizzle stand-in: `.select().from().where().get()` resolves
 // to the given row (or null), and `.where().all()` resolves to an array (or
@@ -789,15 +789,13 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.error).toContain('cart-transform function not deployed');
   });
 
-  it('GET /api/bundles/activation ensures the app metafield definitions and reports fully-ready status', async () => {
+  it('GET /api/bundles/activation removes the app metafield definitions and reports the merge_bundles value status', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
-    vi.mocked(ensureCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
+    vi.mocked(removeCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
     vi.mocked(getMetafieldSetupStatus).mockResolvedValueOnce({
-      compositionDef: true,
-      mergeBundlesDef: true,
       mergeBundlesValuePresent: true,
     });
 
@@ -810,21 +808,19 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       active: true,
-      metafields: { compositionDef: true, mergeBundlesDef: true, mergeBundlesValuePresent: true },
+      metafields: { mergeBundlesValuePresent: true },
     });
-    expect(ensureCartTransformMetafieldDefinitions).toHaveBeenCalledWith(expect.anything(), 'mystore.myshopify.com');
+    expect(removeCartTransformMetafieldDefinitions).toHaveBeenCalledWith(expect.anything(), 'mystore.myshopify.com');
     expect(getMetafieldSetupStatus).toHaveBeenCalledWith(expect.anything(), 'mystore.myshopify.com');
   });
 
-  it('GET /api/bundles/activation reports a missing definition when only one metafield definition exists', async () => {
+  it('GET /api/bundles/activation reports mergeBundlesValuePresent false when no merge config has been written', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
-    vi.mocked(ensureCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
+    vi.mocked(removeCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
     vi.mocked(getMetafieldSetupStatus).mockResolvedValueOnce({
-      compositionDef: false,
-      mergeBundlesDef: true,
       mergeBundlesValuePresent: false,
     });
 
@@ -837,19 +833,17 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       active: true,
-      metafields: { compositionDef: false, mergeBundlesDef: true, mergeBundlesValuePresent: false },
+      metafields: { mergeBundlesValuePresent: false },
     });
   });
 
-  it('GET /api/bundles/activation stays non-fatal when ensureCartTransformMetafieldDefinitions throws', async () => {
+  it('GET /api/bundles/activation stays non-fatal when removeCartTransformMetafieldDefinitions throws', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
-    vi.mocked(ensureCartTransformMetafieldDefinitions).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(removeCartTransformMetafieldDefinitions).mockRejectedValueOnce(new Error('boom'));
     vi.mocked(getMetafieldSetupStatus).mockResolvedValueOnce({
-      compositionDef: true,
-      mergeBundlesDef: true,
       mergeBundlesValuePresent: true,
     });
 
@@ -862,7 +856,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       active: true,
-      metafields: { compositionDef: true, mergeBundlesDef: true, mergeBundlesValuePresent: true },
+      metafields: { mergeBundlesValuePresent: true },
     });
   });
 
@@ -871,7 +865,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
     vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
-    vi.mocked(ensureCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
+    vi.mocked(removeCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
     vi.mocked(getMetafieldSetupStatus).mockRejectedValueOnce(new Error('boom'));
 
     const res = await app.request(

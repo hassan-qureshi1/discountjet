@@ -112,14 +112,12 @@ describe('bundle data layer', () => {
     const f = vi.fn().mockResolvedValue(
       jsonResponse({
         active: true,
-        metafields: { compositionDef: true, mergeBundlesDef: false, mergeBundlesValuePresent: false },
+        metafields: { mergeBundlesValuePresent: false },
       }),
     );
     const res = await fetchActivation(f);
     expect(res.active).toBe(true);
     expect(res.metafields).toEqual({
-      compositionDef: true,
-      mergeBundlesDef: false,
       mergeBundlesValuePresent: false,
     });
   });

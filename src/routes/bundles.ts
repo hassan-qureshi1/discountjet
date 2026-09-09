@@ -12,7 +12,7 @@ import {
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
-import { ensureCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
+import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
 export const bundleRoutes = new Hono<AppEnv>();
 
@@ -133,22 +133,22 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
     const shopDomain = await requireShopDomain(db, shopId);
     const result = await ensureCartTransform(c.env, shopDomain, db, shopId);
 
-    // Idempotently (re)creates the app's two `$app:cart-transform` metafield
-    // definitions — covers a store that installed before this endpoint
-    // existed and so never got them created at install time. A definition
-    // that already exists is a no-op. Best-effort: a failure here must never
-    // block activation (the underlying metafield reads/writes this app
-    // relies on work regardless of whether the definition — which only
-    // controls admin visibility/read-only-ness — exists).
+    // Idempotently removes the app's two `$app:cart-transform` metafield
+    // definitions if present — covers a store that had them created by a
+    // prior version of this app (before we learned a `MERCHANT_READ`
+    // definition on this namespace/key causes Shopify to reject this app's
+    // own `metafieldsSet` writes). A definition that's already absent is a
+    // no-op. Best-effort: a failure here must never block activation (the
+    // underlying metafield reads/writes this app relies on work regardless
+    // of whether a definition exists).
     try {
-      await ensureCartTransformMetafieldDefinitions(c.env, shopDomain);
+      await removeCartTransformMetafieldDefinitions(c.env, shopDomain);
     } catch (err) {
-      console.error(`[bundles] ensureCartTransformMetafieldDefinitions threw for ${shopDomain}:`, err);
+      console.error(`[bundles] removeCartTransformMetafieldDefinitions threw for ${shopDomain}:`, err);
     }
 
-    // Reports ground truth on whether the definitions (and the shop's
-    // merge_bundles value) actually exist, rather than assuming the create
-    // above succeeded. Best-effort: on failure `metafields` is simply
+    // Reports ground truth on whether the shop's merge_bundles value has
+    // actually been written. Best-effort: on failure `metafields` is simply
     // omitted from the response (not fabricated as all-false) — the UI
     // treats a missing `metafields` the same as "unknown, don't warn".
     let metafields: Awaited<ReturnType<typeof getMetafieldSetupStatus>> | undefined;

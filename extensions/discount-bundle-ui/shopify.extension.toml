@@ -1,0 +1,14 @@
+api_version = "2026-01"
+[[extensions]]
+name = "Buy-X-Get-Y Discount"
+description = "Configure bundle (Buy-X-Get-Y) product discounts"
+handle = "discount-bundle-ui"
+uid = "7f4d2149-57e3-5c55-60e1-a8a000152cd30136cc32"
+type = "ui_extension"
+[[extensions.targeting]]
+module = "./src/DiscountBundleSettings.tsx"
+target = "admin.discount-details.function-settings.render"
+
+[[extensions.metafields]]
+namespace = "$app:discount-bundle"
+key = "config"

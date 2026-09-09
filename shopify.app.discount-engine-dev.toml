@@ -1,0 +1,27 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "29769b19e8565a72d5e08c9f61ed4c44"
+name = "Discount Engine (Dev)"
+application_url = "https://harry-estimated-corrections-humanity.trycloudflare.com/shopify/install"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  topics = [ "discounts/create", "discounts/update", "discounts/delete" ]
+  uri = "https://harry-estimated-corrections-humanity.trycloudflare.com/shopify/webhooks"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "https://harry-estimated-corrections-humanity.trycloudflare.com/shopify/webhooks"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_discounts,read_orders,read_price_rules,read_products,write_discounts,write_price_rules"
+
+[auth]
+redirect_urls = [ "https://harry-estimated-corrections-humanity.trycloudflare.com/shopify/callback" ]

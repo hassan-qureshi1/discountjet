@@ -1,0 +1,7 @@
+{
+  "candidates": [
+    { "message": "Source 10% OFF", "targets": ["src"], "value": { "percentage": 10.0 } },
+    { "message": "Group1 20% OFF", "targets": ["tgt1"], "value": { "percentage": 20.0 } },
+    { "message": "Group2 15% OFF", "targets": ["tgt2"], "value": { "percentage": 15.0 } }
+  ]
+}

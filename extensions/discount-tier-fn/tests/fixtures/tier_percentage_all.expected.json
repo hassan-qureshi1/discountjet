@@ -1,0 +1,5 @@
+{
+  "candidates": [
+    { "message": "20% OFF", "targets": ["line1", "line2"], "value": { "percentage": 20.0 } }
+  ]
+}

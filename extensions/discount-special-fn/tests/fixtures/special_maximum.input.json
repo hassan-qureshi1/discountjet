@@ -1,0 +1,9 @@
+{
+  "label": "source + two target groups, MAXIMUM strategy picks higher-magnitude group (special_discount.test.js ~749)",
+  "config": "{\"platform\":\"BOTH\",\"special_discounts\":[{\"source_selector_type\":\"variant_id\",\"source_variants\":[111],\"source_operator\":\"percentage\",\"source_value\":20,\"source_message\":\"Source Deal\",\"product_discount_selection_strategy\":\"MAXIMUM\",\"targets\":[{\"target_selector_type\":\"variant_id\",\"target_variants\":[222],\"target_operator\":\"percentage\",\"target_value\":30,\"target_message\":\"Target A\"},{\"target_selector_type\":\"variant_id\",\"target_variants\":[333],\"target_operator\":\"percentage\",\"target_value\":15,\"target_message\":\"Target B\"}]}]}",
+  "lines": [
+    { "id": "line1", "quantity": 2, "amountPerQuantity": "50", "subtotal": "100", "compareAt": "75", "variantGid": "gid://shopify/ProductVariant/111", "productGid": "gid://shopify/Product/11" },
+    { "id": "line2", "quantity": 1, "amountPerQuantity": "30", "subtotal": "30", "compareAt": "40", "variantGid": "gid://shopify/ProductVariant/222", "productGid": "gid://shopify/Product/22" },
+    { "id": "line3", "quantity": 3, "amountPerQuantity": "20", "subtotal": "60", "compareAt": "25", "variantGid": "gid://shopify/ProductVariant/333", "productGid": "gid://shopify/Product/33" }
+  ]
+}

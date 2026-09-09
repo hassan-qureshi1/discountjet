@@ -1,0 +1,9 @@
+{
+  "label": "fixed_ratios counts target qty across all groups; pool 3 covers both (special_discount.test.js ~1913)",
+  "config": "{\"platform\":\"BOTH\",\"special_discounts\":[{\"source_selector_type\":\"variant_id\",\"source_variants\":[111],\"source_operator\":\"percentage\",\"source_value\":10,\"source_message\":\"Source\",\"quantity_dependent\":true,\"fixed_ratio\":true,\"min_qty\":1,\"target_per_source\":3,\"product_discount_selection_strategy\":\"ALL\",\"targets\":[{\"target_selector_type\":\"variant_id\",\"target_variants\":[222],\"target_operator\":\"percentage\",\"target_value\":20,\"target_message\":\"Group1\"},{\"target_selector_type\":\"variant_id\",\"target_variants\":[333],\"target_operator\":\"percentage\",\"target_value\":15,\"target_message\":\"Group2\"}]}]}",
+  "lines": [
+    { "id": "src", "quantity": 1, "amountPerQuantity": "100", "subtotal": "100", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/111", "productGid": "gid://shopify/Product/11" },
+    { "id": "tgt1", "quantity": 2, "amountPerQuantity": "50", "subtotal": "100", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/222", "productGid": "gid://shopify/Product/22" },
+    { "id": "tgt2", "quantity": 1, "amountPerQuantity": "60", "subtotal": "60", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/333", "productGid": "gid://shopify/Product/33" }
+  ]
+}

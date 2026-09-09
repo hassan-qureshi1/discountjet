@@ -33,6 +33,7 @@ export function TierCard({
 
         <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
           <TextField
+            requiredIndicator
             label={discountType === 'percentage' ? 'Discount percentage' : 'Discount amount'}
             type="number"
             value={tier.value}
@@ -70,6 +71,7 @@ export function TierCard({
 
         <ProductPicker
           label="Choose products"
+          requiredIndicator
           selectorType={tier.selectorType}
           json={tier.targets}
           onChange={(json) => onUpdate('targets', json)}

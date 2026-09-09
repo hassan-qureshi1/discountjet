@@ -1,0 +1,5 @@
+{
+  "candidates": [
+    { "message": "10% OFF", "targets": ["line1"], "value": { "fixedAmountStr": "20" } }
+  ]
+}

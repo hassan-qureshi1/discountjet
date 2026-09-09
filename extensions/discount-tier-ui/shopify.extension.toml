@@ -1,0 +1,15 @@
+api_version = "2026-01"
+[[extensions]]
+name = "Volume Discount"
+description = "Configure tier/volume product discounts"
+handle = "discount-tier-ui"
+uid = "4be40e2b-27a0-b76a-c671-17ec11f9d245cf939bb2"
+type = "ui_extension"
+# Only 1 target can be specified for each Admin block extension
+[[extensions.targeting]]
+module = "./src/DiscountTierSettings.tsx"
+target = "admin.discount-details.function-settings.render"
+
+[[extensions.metafields]]
+namespace = "$app:discount-tier"
+key = "config"

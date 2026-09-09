@@ -1,0 +1,9 @@
+{
+  "label": "message-only source + non-qd target (bundle_discount.test.js ~1024)",
+  "config": "{\"platform\":\"BOTH\",\"bundle_discounts\":[{\"source_selector_type\":\"variant_id\",\"source_variants\":[100],\"target_selector_type\":\"variant_id\",\"target_variants\":[300,400],\"operator\":\"percentage\",\"value\":20,\"message\":\"Buy 2 Get 1\",\"quantity_dependent\":false}]}",
+  "lines": [
+    { "id": "line1", "quantity": 1, "amountPerQuantity": "10", "subtotal": "10", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/100", "productGid": "gid://shopify/Product/1" },
+    { "id": "line2", "quantity": 1, "amountPerQuantity": "50", "subtotal": "50", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/300", "productGid": "gid://shopify/Product/3" },
+    { "id": "line3", "quantity": 1, "amountPerQuantity": "30", "subtotal": "30", "compareAt": null, "variantGid": "gid://shopify/ProductVariant/400", "productGid": "gid://shopify/Product/4" }
+  ]
+}

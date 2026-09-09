@@ -30,7 +30,7 @@ query Input {
           ) {
             jsonValue
           }
-          composition: metafield(namespace: "bundle", key: "composition_v2") {
+          composition: metafield(namespace: "$app:cart-transform", key: "composition") {
             value
           }
         }
@@ -48,7 +48,7 @@ query Input {
     priority_codes: metafield(namespace: "checkout", key: "priority_codes") {
       value
     }
-    merge_bundles: metafield(namespace: "checkout", key: "merge_bundles") {
+    merge_bundles: metafield(namespace: "$app:cart-transform", key: "merge_bundles") {
       value
     }
   }

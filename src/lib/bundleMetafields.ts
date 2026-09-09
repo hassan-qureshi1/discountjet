@@ -181,3 +181,222 @@ export async function clearComposition(
     );
   }
 }
+
+/**
+ * The `checkout.merge_bundles` metafield entry shape the Rust cart-transform
+ * function's `MergeBundleConfig` deserializes
+ * (`extensions/cart-transformer/src/config.rs`): `parentVariantId` and each
+ * `sources` entry are `ProductVariant` GID strings, `price` is the merged
+ * line's target price in DOLLARS (not cents), and `title` is optional.
+ */
+export interface MergeBundleConfig {
+  parentVariantId: string;
+  price: number;
+  sources: string[];
+  title?: string;
+}
+
+/** Minimal shape `mergeConfigEntry` needs from a bundle. */
+export interface MergeBundleLike {
+  parentVariantId: string;
+  price: number; // dollars
+  items: BundleItemLike[];
+  title?: string;
+}
+
+/**
+ * Pure mapping from a `merge` bundle to its `checkout.merge_bundles` config
+ * array entry. Shopify-independent (no network calls). `sources` is
+ * deduplicated by variant GID — Shopify's `linesMerge` operation rejects a
+ * merge that references the same line twice, so a bundle whose `items` list
+ * the same variant more than once (e.g. via qty edits that left a duplicate
+ * row) must still only appear once in `sources`.
+ */
+export function mergeConfigEntry(bundle: MergeBundleLike): MergeBundleConfig {
+  const seen = new Set<string>();
+  const sources: string[] = [];
+  for (const item of bundle.items) {
+    const gid = toVariantGid(item.variantId);
+    if (seen.has(gid)) continue;
+    seen.add(gid);
+    sources.push(gid);
+  }
+
+  return {
+    parentVariantId: toVariantGid(bundle.parentVariantId),
+    price: bundle.price,
+    sources,
+    ...(bundle.title ? { title: bundle.title } : {}),
+  };
+}
+
+const SHOP_MERGE_BUNDLES_QUERY = `
+  query ShopMergeBundlesConfig {
+    shop {
+      id
+      metafield(namespace: "checkout", key: "merge_bundles") {
+        id
+        value
+      }
+    }
+  }
+`;
+
+interface ShopMergeBundlesQueryResponse {
+  shop: {
+    id: string;
+    metafield: { id: string; value: string } | null;
+  } | null;
+}
+
+/** Tolerant parse of the raw `checkout.merge_bundles` metafield value: missing/invalid/non-array -> `[]`. */
+function parseMergeBundlesArray(raw: string | null | undefined): MergeBundleConfig[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as MergeBundleConfig[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reads the shop's own gid and the current `checkout.merge_bundles` array in
+ * one round-trip — both `upsertMergeConfig` and `removeMergeConfig` need the
+ * shop gid (the metafield's `ownerId`) plus the existing array to
+ * read-modify-write. Throws loudly on a transport error or a missing shop id
+ * (never silently proceeds with an unknown owner).
+ */
+async function readShopMergeBundles(
+  env: Env,
+  shopDomain: string,
+): Promise<{ shopGid: string; entries: MergeBundleConfig[] }> {
+  const res = await adminGraphql<ShopMergeBundlesQueryResponse>(shopDomain, env, SHOP_MERGE_BUNDLES_QUERY);
+
+  if (res.errors && res.errors.length > 0) {
+    throw new Error(
+      `[mergeBundlesConfig] GraphQL errors reading checkout.merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+    );
+  }
+
+  const shopGid = res.data?.shop?.id;
+  if (!shopGid) {
+    throw new Error(`[mergeBundlesConfig] no shop id returned for ${shopDomain}: ${JSON.stringify(res)}`);
+  }
+
+  return { shopGid, entries: parseMergeBundlesArray(res.data?.shop?.metafield?.value ?? null) };
+}
+
+/**
+ * Read-modify-write the shop `checkout.merge_bundles` metafield (namespace
+ * `checkout`, key `merge_bundles`, type `json`, owned by the shop itself) —
+ * replaces any existing entry with the same `parentVariantId`, or appends
+ * `entry` when none matches, then writes the whole array back. Fails loudly:
+ * throws on a transport error, GraphQL `userErrors`, or a missing metafield
+ * id in the response.
+ */
+export async function upsertMergeConfig(
+  env: Env,
+  shopDomain: string,
+  entry: MergeBundleConfig,
+): Promise<{ metafieldGid: string }> {
+  const { shopGid, entries } = await readShopMergeBundles(env, shopDomain);
+  const next = [...entries.filter((e) => e.parentVariantId !== entry.parentVariantId), entry];
+
+  const res = await adminGraphql<MetafieldsSetResponse>(shopDomain, env, METAFIELDS_SET_MUTATION, {
+    metafields: [
+      {
+        ownerId: shopGid,
+        namespace: 'checkout',
+        key: 'merge_bundles',
+        type: 'json',
+        value: JSON.stringify(next),
+      },
+    ],
+  });
+
+  if (res.errors && res.errors.length > 0) {
+    throw new Error(
+      `[upsertMergeConfig] GraphQL errors writing merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+    );
+  }
+
+  const userErrors = res.data?.metafieldsSet?.userErrors ?? [];
+  if (userErrors.length > 0) {
+    throw new Error(
+      `[upsertMergeConfig] metafieldsSet userErrors for ${shopDomain}: ${JSON.stringify(userErrors)}`,
+    );
+  }
+
+  const metafieldGid = res.data?.metafieldsSet?.metafields?.[0]?.id;
+  if (!metafieldGid) {
+    throw new Error(
+      `[upsertMergeConfig] metafieldsSet returned no metafield id for ${shopDomain}: ${JSON.stringify(res)}`,
+    );
+  }
+
+  return { metafieldGid };
+}
+
+/**
+ * Removes a bundle's entry from the shop `checkout.merge_bundles` metafield
+ * (matched by `parentVariantId`) — called when a `merge` bundle that had
+ * written it is deleted. Writes the filtered array back, or clears the
+ * metafield entirely (via `metafieldsDelete`) when no entries remain, rather
+ * than leaving a stray `"[]"` behind. Throws loudly on failure; callers that
+ * treat delete-time clearing as best-effort should catch/log rather than let
+ * this mask other failures.
+ */
+export async function removeMergeConfig(
+  env: Env,
+  shopDomain: string,
+  parentVariantId: string,
+): Promise<void> {
+  const { shopGid, entries } = await readShopMergeBundles(env, shopDomain);
+  const next = entries.filter((e) => e.parentVariantId !== parentVariantId);
+
+  if (next.length === 0) {
+    const res = await adminGraphql<MetafieldsDeleteResponse>(shopDomain, env, METAFIELDS_DELETE_MUTATION, {
+      metafields: [{ ownerId: shopGid, namespace: 'checkout', key: 'merge_bundles' }],
+    });
+
+    if (res.errors && res.errors.length > 0) {
+      throw new Error(
+        `[removeMergeConfig] GraphQL errors clearing merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+      );
+    }
+
+    const userErrors = res.data?.metafieldsDelete?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      throw new Error(
+        `[removeMergeConfig] metafieldsDelete userErrors for ${shopDomain}: ${JSON.stringify(userErrors)}`,
+      );
+    }
+    return;
+  }
+
+  const res = await adminGraphql<MetafieldsSetResponse>(shopDomain, env, METAFIELDS_SET_MUTATION, {
+    metafields: [
+      {
+        ownerId: shopGid,
+        namespace: 'checkout',
+        key: 'merge_bundles',
+        type: 'json',
+        value: JSON.stringify(next),
+      },
+    ],
+  });
+
+  if (res.errors && res.errors.length > 0) {
+    throw new Error(
+      `[removeMergeConfig] GraphQL errors writing merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+    );
+  }
+
+  const userErrors = res.data?.metafieldsSet?.userErrors ?? [];
+  if (userErrors.length > 0) {
+    throw new Error(
+      `[removeMergeConfig] metafieldsSet userErrors for ${shopDomain}: ${JSON.stringify(userErrors)}`,
+    );
+  }
+}

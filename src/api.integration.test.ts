@@ -519,6 +519,53 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
+  it('POST /api/bundles writes checkout.merge_bundles for a merge bundle with a parentVariantId', async () => {
+    const shopDb = mockDb({ id: 'shop-abc' });
+    // Reused inside the route for the insert, the shopDomain lookup, and the
+    // post-write metafieldState update — a single row shape covers all three.
+    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
+    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
+      .mockResolvedValueOnce({
+        data: {
+          metafieldsSet: {
+            metafields: [{ id: 'gid://shopify/Metafield/2' }],
+            userErrors: [],
+          },
+        },
+      });
+
+    const body = {
+      name: 'Camp Kit',
+      operation: 'merge',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      price: 49.99,
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    const json = (await res.json()) as { bundle: { metafieldState: string; metafieldGid?: string } };
+    expect(json.bundle.metafieldState).toBe('Written');
+    expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/2');
+
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(writeQuery).toContain('metafieldsSet');
+    expect(writeVars).toEqual({
+      metafields: [expect.objectContaining({ namespace: 'checkout', key: 'merge_bundles' })],
+    });
+  });
+
   it('POST /api/bundles returns a 502 JSON error when the metafield write fails', async () => {
     const shopDb = mockDb({ id: 'shop-abc' });
     const routeDb = mockDb({ domain: 'mystore.myshopify.com' });

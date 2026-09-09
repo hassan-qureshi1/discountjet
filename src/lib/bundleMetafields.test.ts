@@ -5,7 +5,14 @@ vi.mock('./graphqlAdmin', () => ({
 }));
 
 import { adminGraphql } from './graphqlAdmin';
-import { compositionFromItems, writeComposition, clearComposition } from './bundleMetafields';
+import {
+  compositionFromItems,
+  writeComposition,
+  clearComposition,
+  mergeConfigEntry,
+  upsertMergeConfig,
+  removeMergeConfig,
+} from './bundleMetafields';
 import type { Env } from '../types/env';
 
 describe('compositionFromItems', () => {
@@ -177,5 +184,211 @@ describe('clearComposition', () => {
     });
 
     await expect(clearComposition(env, shopDomain, parentVariantGid)).rejects.toThrow(/userErrors/);
+  });
+});
+
+describe('mergeConfigEntry', () => {
+  it('builds an entry with a normalized parentVariantId and GID sources', () => {
+    const result = mergeConfigEntry({
+      parentVariantId: '999',
+      price: 49.99,
+      items: [
+        { variantId: '1', qty: 1 },
+        { variantId: 'gid://shopify/ProductVariant/2', qty: 1 },
+      ],
+    });
+    expect(result).toEqual({
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      price: 49.99,
+      sources: ['gid://shopify/ProductVariant/1', 'gid://shopify/ProductVariant/2'],
+    });
+  });
+
+  it('dedupes items that repeat the same variantId into a single source entry', () => {
+    const result = mergeConfigEntry({
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      price: 10,
+      items: [
+        { variantId: '1', qty: 1 },
+        { variantId: '1', qty: 2 },
+        { variantId: 'gid://shopify/ProductVariant/1', qty: 1 }, // same variant, GID form
+        { variantId: '2', qty: 1 },
+      ],
+    });
+    expect(result.sources).toEqual(['gid://shopify/ProductVariant/1', 'gid://shopify/ProductVariant/2']);
+  });
+
+  it('includes title only when present on the bundle', () => {
+    const withTitle = mergeConfigEntry({
+      parentVariantId: '999',
+      price: 10,
+      items: [{ variantId: '1', qty: 1 }],
+      title: 'Camp Kit',
+    });
+    expect(withTitle.title).toBe('Camp Kit');
+
+    const withoutTitle = mergeConfigEntry({ parentVariantId: '999', price: 10, items: [{ variantId: '1', qty: 1 }] });
+    expect(withoutTitle).not.toHaveProperty('title');
+  });
+});
+
+describe('upsertMergeConfig', () => {
+  const env = {} as Env;
+  const shopDomain = 'test-shop.myshopify.com';
+  const shopGid = 'gid://shopify/Shop/1';
+  const entry = {
+    parentVariantId: 'gid://shopify/ProductVariant/999',
+    price: 49.99,
+    sources: ['gid://shopify/ProductVariant/1'],
+  };
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('reads the current array, appends the entry (no prior match), and writes it back', async () => {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: shopGid, metafield: null } } })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+      });
+
+    const result = await upsertMergeConfig(env, shopDomain, entry);
+
+    expect(result).toEqual({ metafieldGid: 'gid://shopify/Metafield/1' });
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+
+    const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(readQuery).toContain('merge_bundles');
+
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(writeQuery).toContain('metafieldsSet');
+    expect(writeVars).toEqual({
+      metafields: [
+        {
+          ownerId: shopGid,
+          namespace: 'checkout',
+          key: 'merge_bundles',
+          type: 'json',
+          value: JSON.stringify([entry]),
+        },
+      ],
+    });
+  });
+
+  it('replaces an existing entry with the same parentVariantId rather than duplicating it', async () => {
+    const staleEntry = { parentVariantId: entry.parentVariantId, price: 39.99, sources: ['gid://shopify/ProductVariant/1'] };
+    const otherEntry = { parentVariantId: 'gid://shopify/ProductVariant/111', price: 5, sources: [] };
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shop: { id: shopGid, metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([staleEntry, otherEntry]) } } },
+      })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+      });
+
+    await upsertMergeConfig(env, shopDomain, entry);
+
+    const [, , , writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    const value = JSON.parse((writeVars as { metafields: Array<{ value: string }> }).metafields[0].value);
+    expect(value).toEqual([otherEntry, entry]);
+  });
+
+  it('treats a missing/invalid existing metafield value as an empty array', async () => {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shop: { id: shopGid, metafield: { id: 'gid://shopify/Metafield/1', value: 'not json' } } },
+      })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+      });
+
+    await upsertMergeConfig(env, shopDomain, entry);
+
+    const [, , , writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    const value = JSON.parse((writeVars as { metafields: Array<{ value: string }> }).metafields[0].value);
+    expect(value).toEqual([entry]);
+  });
+
+  it('throws loudly when the read has no shop id', async () => {
+    vi.mocked(adminGraphql).mockResolvedValueOnce({ data: { shop: null } });
+    await expect(upsertMergeConfig(env, shopDomain, entry)).rejects.toThrow(/no shop id/);
+  });
+
+  it('throws loudly on read GraphQL errors', async () => {
+    vi.mocked(adminGraphql).mockResolvedValueOnce({ errors: [{ message: 'boom' }] });
+    await expect(upsertMergeConfig(env, shopDomain, entry)).rejects.toThrow(/GraphQL errors/);
+  });
+
+  it('throws loudly on write metafieldsSet userErrors', async () => {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: shopGid, metafield: null } } })
+      .mockResolvedValueOnce({
+        data: {
+          metafieldsSet: { metafields: null, userErrors: [{ field: ['metafields', '0', 'value'], message: 'bad value' }] },
+        },
+      });
+    await expect(upsertMergeConfig(env, shopDomain, entry)).rejects.toThrow(/userErrors/);
+  });
+});
+
+describe('removeMergeConfig', () => {
+  const env = {} as Env;
+  const shopDomain = 'test-shop.myshopify.com';
+  const shopGid = 'gid://shopify/Shop/1';
+  const parentVariantId = 'gid://shopify/ProductVariant/999';
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('filters the matching entry out and writes the remaining array back', async () => {
+    const remaining = { parentVariantId: 'gid://shopify/ProductVariant/111', price: 5, sources: [] };
+    const removed = { parentVariantId, price: 49.99, sources: ['gid://shopify/ProductVariant/1'] };
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shop: { id: shopGid, metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([removed, remaining]) } } },
+      })
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+      });
+
+    await removeMergeConfig(env, shopDomain, parentVariantId);
+
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(writeQuery).toContain('metafieldsSet');
+    const value = JSON.parse((writeVars as { metafields: Array<{ value: string }> }).metafields[0].value);
+    expect(value).toEqual([remaining]);
+  });
+
+  it('clears the metafield via metafieldsDelete when no entries remain', async () => {
+    const removed = { parentVariantId, price: 49.99, sources: ['gid://shopify/ProductVariant/1'] };
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shop: { id: shopGid, metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([removed]) } } },
+      })
+      .mockResolvedValueOnce({
+        data: { metafieldsDelete: { deletedMetafields: [{ key: 'merge_bundles', namespace: 'checkout', ownerId: shopGid }], userErrors: [] } },
+      });
+
+    await removeMergeConfig(env, shopDomain, parentVariantId);
+
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , deleteQuery, deleteVars] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(deleteQuery).toContain('metafieldsDelete');
+    expect(deleteVars).toEqual({
+      metafields: [{ ownerId: shopGid, namespace: 'checkout', key: 'merge_bundles' }],
+    });
+  });
+
+  it('throws loudly on metafieldsDelete userErrors', async () => {
+    const removed = { parentVariantId, price: 49.99, sources: [] };
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shop: { id: shopGid, metafield: { id: 'gid://shopify/Metafield/1', value: JSON.stringify([removed]) } } },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          metafieldsDelete: { deletedMetafields: null, userErrors: [{ field: ['metafields', '0'], message: 'not found' }] },
+        },
+      });
+    await expect(removeMergeConfig(env, shopDomain, parentVariantId)).rejects.toThrow(/userErrors/);
   });
 });

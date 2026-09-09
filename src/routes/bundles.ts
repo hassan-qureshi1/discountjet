@@ -3,7 +3,13 @@ import { and, eq } from 'drizzle-orm';
 import { createDb } from '../db/db';
 import { bundle, shopifyShop } from '../db/schema';
 import type { AppEnv } from '../types/env.d';
-import { writeComposition, clearComposition } from '../lib/bundleMetafields';
+import {
+  writeComposition,
+  clearComposition,
+  mergeConfigEntry,
+  upsertMergeConfig,
+  removeMergeConfig,
+} from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 
@@ -301,6 +307,23 @@ bundleRoutes.post('/api/bundles', async (c) => {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row) }, 502);
     }
+  } else if (row.operation === 'merge' && row.parentVariantId) {
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      const entry = mergeConfigEntry({ parentVariantId: row.parentVariantId, price: body.price ?? 0, items: body.items, title: body.name });
+      const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
+      row.metafieldState = 'Written';
+      row.metafieldGid = metafieldGid;
+      await db
+        .update(bundle)
+        .set({ metafieldState: 'Written', metafieldGid })
+        .where(and(eq(bundle.id, row.id), eq(bundle.shopId, shopId)));
+    } catch (err) {
+      // The row is already created (metafieldState='NotYet') — surface the
+      // failure loudly instead of letting the client believe it succeeded.
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(row) }, 502);
+    }
   }
 
   return c.json({ bundle: toDto(row) }, 201);
@@ -346,13 +369,20 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
   const merged: Row = { ...existing, ...patch };
 
-  // `merge`/`update` bundles never write composition_v2 (the reference
-  // cart-transform function has no merge/update path) — only `expand`
-  // bundles with a parent variant do, mirroring POST. And only when this
-  // PUT actually changed a composition input (`items`/`parentVariantId`) —
-  // a plain rename/status-change PUT on an already-expand bundle must not
-  // trigger an extra Admin API round-trip (or a spurious 502 if it fails).
+  // `update` bundles never write a metafield (the reference cart-transform
+  // function has no update path) — only `expand` (composition_v2, on the
+  // parent variant) and `merge` (merge_bundles, on the shop) bundles with a
+  // parent variant do, mirroring POST. And only when this PUT actually
+  // changed an input that feeds the written config — a plain rename/
+  // status-change PUT on an already-written bundle must not trigger an
+  // extra Admin API round-trip (or a spurious 502 if it fails).
   const compositionInputsChanged = body.items !== undefined || body.parentVariantId !== undefined;
+  const mergeInputsChanged =
+    body.items !== undefined ||
+    body.parentVariantId !== undefined ||
+    body.price !== undefined ||
+    body.name !== undefined;
+
   if (merged.operation === 'expand' && merged.parentVariantId && compositionInputsChanged) {
     try {
       const shopDomain = await requireShopDomain(db, shopId);
@@ -367,6 +397,29 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
         { error: `Bundle updated but composition_v2 write failed: ${message}`, bundle: toDto(merged) },
+        502,
+      );
+    }
+  } else if (merged.operation === 'merge' && merged.parentVariantId && mergeInputsChanged) {
+    try {
+      const shopDomain = await requireShopDomain(db, shopId);
+      const entry = mergeConfigEntry({
+        parentVariantId: merged.parentVariantId,
+        price: toDollars(merged.price) ?? 0,
+        items: effectiveItems,
+        title: merged.name,
+      });
+      const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
+      merged.metafieldState = 'Written';
+      merged.metafieldGid = metafieldGid;
+      await db
+        .update(bundle)
+        .set({ metafieldState: 'Written', metafieldGid })
+        .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json(
+        { error: `Bundle updated but merge_bundles write failed: ${message}`, bundle: toDto(merged) },
         502,
       );
     }
@@ -389,15 +442,19 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   // Best-effort: clearing the metafield is not fatal to the delete — the
-  // row is going away regardless, and a stale composition_v2 on an
-  // orphaned variant is a lesser problem than blocking delete on Shopify
-  // being reachable. Failures are logged, not surfaced to the client.
+  // row is going away regardless, and a stale composition_v2/merge_bundles
+  // entry is a lesser problem than blocking delete on Shopify being
+  // reachable. Failures are logged, not surfaced to the client.
   if (existing.metafieldState === 'Written' && existing.parentVariantId) {
     try {
       const shopDomain = await requireShopDomain(db, shopId);
-      await clearComposition(c.env, shopDomain, existing.parentVariantId);
+      if (existing.operation === 'expand') {
+        await clearComposition(c.env, shopDomain, existing.parentVariantId);
+      } else if (existing.operation === 'merge') {
+        await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
+      }
     } catch (err) {
-      console.error(`[bundles] failed to clear composition_v2 for bundle ${id}:`, err);
+      console.error(`[bundles] failed to clear metafield for bundle ${id}:`, err);
     }
   }
 

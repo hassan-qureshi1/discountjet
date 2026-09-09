@@ -153,6 +153,14 @@ bundleRoutes.post('/api/bundles', async (c) => {
   if (!body.operation) return c.json({ error: 'Bundle operation is required' }, 400);
   if (!body.items) return c.json({ error: 'Bundle items are required' }, 400);
 
+  // An expand bundle with zero items would write `bundle.composition_v2 =
+  // "[]"` below — the Rust cart-transform function treats an empty
+  // composition as a hard error and aborts the whole cart-transform
+  // invocation. Reject before any write happens.
+  if (body.operation === 'expand' && body.items.length === 0) {
+    return c.json({ error: 'An expand bundle needs at least one component item.' }, 400);
+  }
+
   const shopId = c.get('shopId');
   const now = new Date().toISOString();
   const row: Row = {
@@ -212,6 +220,17 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   const body = await c.req.json<Partial<BundleInput>>();
+
+  // Effective operation/items after this PUT is applied — reject before any
+  // write if the result would be an expand bundle with zero items (see the
+  // matching guard in POST for why: an empty composition_v2 aborts the
+  // Rust cart-transform function entirely).
+  const effectiveOperation = body.operation ?? existing.operation;
+  const effectiveItems = body.items ?? (JSON.parse(existing.items) as BundleItem[]);
+  if (effectiveOperation === 'expand' && effectiveItems.length === 0) {
+    return c.json({ error: 'An expand bundle needs at least one component item.' }, 400);
+  }
+
   const updatedAt = new Date().toISOString();
 
   const patch: Partial<Row> = { updatedAt };
@@ -235,10 +254,9 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // trigger an extra Admin API round-trip (or a spurious 502 if it fails).
   const compositionInputsChanged = body.items !== undefined || body.parentVariantId !== undefined;
   if (merged.operation === 'expand' && merged.parentVariantId && compositionInputsChanged) {
-    const items = body.items ?? (JSON.parse(existing.items) as BundleItem[]);
     try {
       const shopDomain = await requireShopDomain(db, shopId);
-      const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, items);
+      const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, effectiveItems);
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
       await db

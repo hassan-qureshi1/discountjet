@@ -13,7 +13,7 @@ const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
   update: 'warning',
 };
 
-const money = (n: number) => `$${n.toLocaleString('en-US')}`;
+const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** A small row of generic package tiles standing in for a bundle's items (no product names available). */
 function ItemThumbs({ count }: { count: number }) {

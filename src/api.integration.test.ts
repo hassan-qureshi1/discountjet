@@ -354,6 +354,29 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.error).toEqual(expect.any(String));
   });
 
+  it('POST /api/bundles returns 400 with a JSON error when an expand bundle has no items', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+
+    const body = {
+      name: 'Camp Kit',
+      operation: 'expand',
+      items: [],
+      parentVariantId: 'gid://shopify/ProductVariant/1',
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toEqual(expect.any(String));
+  });
+
   it('PUT /api/bundles/:id updates and returns 200 with cents<->dollars round-trip', async () => {
     const existing = bundleRow();
     const shopDb = mockDb({ id: 'shop-abc' });

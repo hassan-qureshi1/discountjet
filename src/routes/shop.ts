@@ -7,6 +7,11 @@ import type { AppEnv } from '../types/env.d';
 
 export const shopRoutes = new Hono<AppEnv>();
 
+interface ShopPlanDto {
+  updateOpEligible: boolean;
+  planName: string | null;
+}
+
 interface ShopPlanQueryResult {
   shop: {
     plan: {
@@ -41,10 +46,11 @@ shopRoutes.get('/api/shop/plan', async (c) => {
   if (!shop?.myshopifyDomain) return c.json({ error: 'Shop domain not found' }, 404);
 
   if (shop.shopifyPlus !== null && shop.partnerDevelopment !== null) {
-    return c.json({
+    const dto: ShopPlanDto = {
       updateOpEligible: shop.shopifyPlus === 1 || shop.partnerDevelopment === 1,
       planName: shop.planName,
-    });
+    };
+    return c.json(dto);
   }
 
   const result = await adminGraphql<ShopPlanQueryResult>(shop.myshopifyDomain, c.env, SHOP_PLAN_QUERY);
@@ -64,8 +70,9 @@ shopRoutes.get('/api/shop/plan', async (c) => {
     })
     .where(eq(shopifyShop.id, shopId));
 
-  return c.json({
+  const dto: ShopPlanDto = {
     updateOpEligible: plan.shopifyPlus || plan.partnerDevelopment,
     planName: plan.displayName,
-  });
+  };
+  return c.json(dto);
 });

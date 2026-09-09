@@ -34,7 +34,7 @@ export interface BundleDetailResponse {
 
 export interface ShopPlanResponse {
   updateOpEligible: boolean;
-  planName: string;
+  planName: string | null;
 }
 
 export function fetchBundles(f: AuthenticatedFetch): Promise<BundlesResponse> {

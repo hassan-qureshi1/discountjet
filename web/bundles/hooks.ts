@@ -10,6 +10,7 @@ import { createAuthenticatedFetch } from '../api';
 import {
   createBundle,
   deleteBundle,
+  fetchActivation,
   fetchBundle,
   fetchBundles,
   fetchShopPlan,
@@ -42,6 +43,24 @@ export function useShopPlanQuery() {
   return useQuery({
     queryKey: ['shop-plan'],
     queryFn: () => fetchShopPlan(fetcher),
+  });
+}
+
+/**
+ * Fires once on mount to trigger the Worker's `ensureCartTransform` side
+ * effect (registers/adopts the store's cart-transform slot for already-
+ * installed stores that never went through app install). `staleTime` keeps
+ * it from re-firing on every remount within the window; `retry: false`
+ * avoids hammering a genuinely broken (e.g. undeployed function) endpoint.
+ */
+export function useActivationQuery() {
+  const shopify = useAppBridge();
+  const fetcher = createAuthenticatedFetch(shopify);
+  return useQuery({
+    queryKey: ['bundle-activation'],
+    queryFn: () => fetchActivation(fetcher),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
   });
 }
 

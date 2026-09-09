@@ -76,3 +76,21 @@ export function fetchShopPlan(f: AuthenticatedFetch): Promise<ShopPlanResponse> 
 export function fetchBundleAdminUrl(f: AuthenticatedFetch, id: string): Promise<{ url: string }> {
   return apiFetch<{ url: string }>(f, `/api/bundles/${encodeURIComponent(id)}/admin-url`);
 }
+
+export interface ActivationResponse {
+  active: boolean;
+  conflict?: boolean;
+  error?: string;
+}
+
+/**
+ * Triggers the Worker's `ensureCartTransform` side effect (registers/adopts
+ * the store's cart-transform slot). This endpoint can return a 500 with a
+ * meaningful JSON body (`{ active: false, error }`) so, unlike the other
+ * calls above, we read the JSON regardless of status instead of using
+ * apiFetch (which throws on non-2xx). Only a network/parse failure throws.
+ */
+export async function fetchActivation(f: AuthenticatedFetch): Promise<ActivationResponse> {
+  const res = await f('/api/bundles/activation');
+  return res.json() as Promise<ActivationResponse>;
+}

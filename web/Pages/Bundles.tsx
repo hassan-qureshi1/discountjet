@@ -4,7 +4,7 @@ import { useAppBridge } from '@shopify/app-bridge-react';
 import {
   Badge, Banner, BlockStack, Box, Button, ButtonGroup, Card, IndexTable, InlineGrid, InlineStack, Page, Spinner, Text,
 } from '@shopify/polaris';
-import { useBundlesQuery } from '../bundles/hooks';
+import { useActivationQuery, useBundlesQuery } from '../bundles/hooks';
 import { fetchBundleAdminUrl } from '../bundles/api';
 import { getOp } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
@@ -74,6 +74,7 @@ export default function Bundles() {
   const shopify = useAppBridge();
   const fetcher = createAuthenticatedFetch(shopify);
   const { data, isLoading, error } = useBundlesQuery();
+  const { data: activation, error: activationError } = useActivationQuery();
   const [viewError, setViewError] = useState<string | null>(null);
 
   const bundles = data?.bundles ?? [];
@@ -98,6 +99,18 @@ export default function Bundles() {
     >
       <BlockStack gap="400">
         {error && <Banner tone="critical">{error.message}</Banner>}
+        {activation?.conflict && (
+          <Banner tone="warning">
+            Another app already controls this store&apos;s cart transform, so bundles can&apos;t be activated.
+            Remove the other app&apos;s cart transform to use bundles.
+          </Banner>
+        )}
+        {!activation?.conflict && (activationError || (activation && activation.active === false && activation.error)) && (
+          <Banner tone="warning">
+            Couldn&apos;t activate bundles automatically. Make sure the cart-transform function is deployed.
+            {activation?.error ? ` (${activation.error})` : null}
+          </Banner>
+        )}
         {viewError && (
           <Banner tone="critical" onDismiss={() => setViewError(null)}>
             {viewError}

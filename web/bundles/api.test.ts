@@ -2,7 +2,7 @@ import {
   describe, expect, it, vi,
 } from 'vitest';
 import {
-  createBundle, deleteBundle, fetchBundle, fetchBundleAdminUrl, fetchBundles, fetchShopPlan, updateBundle,
+  createBundle, deleteBundle, fetchActivation, fetchBundle, fetchBundleAdminUrl, fetchBundles, fetchShopPlan, updateBundle,
 } from './api';
 import type { Bundle, BundleInput } from './api';
 
@@ -86,5 +86,25 @@ describe('bundle data layer', () => {
     expect(f.mock.calls[0][0]).toBe('/api/shop/plan');
     expect(res.updateOpEligible).toBe(true);
     expect(res.planName).toBe('Shopify Plus');
+  });
+
+  it('fetchActivation requests /api/bundles/activation and returns the body on success', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ active: true }));
+    const res = await fetchActivation(f);
+    expect(f.mock.calls[0][0]).toBe('/api/bundles/activation');
+    expect(res.active).toBe(true);
+  });
+
+  it('fetchActivation parses the JSON body even on a non-2xx (e.g. 500) response', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ active: false, error: 'function not deployed' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const res = await fetchActivation(f);
+    expect(f.mock.calls[0][0]).toBe('/api/bundles/activation');
+    expect(res.active).toBe(false);
+    expect(res.error).toBe('function not deployed');
   });
 });

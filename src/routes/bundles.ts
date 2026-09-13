@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { createDb } from '../db/db';
-import { bundle, shopifyShop } from '../db/schema';
+import { bundle } from '../db/schema';
 import type { AppEnv } from '../types/env.d';
 import {
   writeComposition,
@@ -11,6 +11,7 @@ import {
   removeMergeConfig,
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
+import { requireShopDomain } from '../lib/shopDomain';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
@@ -180,20 +181,6 @@ bundleRoutes.get('/api/bundles/:id', async (c) => {
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
   return c.json({ bundle: toDto(row) });
 });
-
-// Resolves the caller's shop domain (needed to call the Admin API) from its
-// app-internal shopId. Fails loudly rather than masking a missing domain.
-async function requireShopDomain(db: ReturnType<typeof createDb>, shopId: string): Promise<string> {
-  const shop = await db
-    .select({ domain: shopifyShop.myshopifyDomain })
-    .from(shopifyShop)
-    .where(eq(shopifyShop.id, shopId))
-    .get();
-  if (!shop?.domain) {
-    throw new Error(`[bundles] no myshopify domain on file for shopId=${shopId}`);
-  }
-  return shop.domain;
-}
 
 interface ProductVariantResponse {
   productVariant: {

@@ -18,17 +18,19 @@ import {
   Divider,
   InlineGrid,
   InlineStack,
+  Link,
   List,
   Page,
   Spinner,
   Tag,
   Text,
   TextField,
+  Thumbnail,
 } from '@shopify/polaris';
 import {
-  useBundleQuery, useCreateBundle, useShopPlanQuery, useUpdateBundle,
+  useBundleQuery, useCreateBundle, useShopPlanQuery, useUpdateBundle, useVariantsQuery,
 } from '../bundles/hooks';
-import type { BundleInput } from '../bundles/api';
+import type { BundleInput, ResolvedVariant } from '../bundles/api';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
@@ -54,6 +56,95 @@ const shortVariantLabel = (variantId: string) => {
   const match = variantId.match(/(\d+)$/);
   return match ? `Variant #${match[1]}` : variantId;
 };
+
+/** Shopify's placeholder title for a product with no variant options — never
+ * worth showing next to the product name. */
+const DEFAULT_VARIANT_TITLE = 'Default Title';
+
+/**
+ * Renders a picked variant as its real product name (linked into the Shopify
+ * admin) with the variant title beneath. Names are resolved fresh on page load
+ * via `useVariantsQuery` and never stored app-side, so a rename in Shopify
+ * shows up on the next load.
+ *
+ * Degrades in two steps rather than blanking: an unresolved variant (still
+ * loading, or the lookup failed) falls back to the `Variant #123` label, and
+ * one Shopify no longer knows about is called out as deleted — a silently
+ * missing component is how a bundle quietly stops expanding at checkout.
+ *
+ * `layout="inline"` is the single-line form used inside a Polaris `Tag`,
+ * which can't hold a stacked block — it carries an extra-small thumbnail,
+ * where the stacked form gets a small one.
+ */
+function VariantLabel({
+  resolved,
+  fallback,
+  layout = 'stacked',
+}: {
+  resolved: ResolvedVariant | undefined;
+  fallback: string;
+  layout?: 'stacked' | 'inline';
+}) {
+  if (!resolved) {
+    return <Text as="span" variant="bodyMd">{fallback}</Text>;
+  }
+
+  if (!resolved.exists) {
+    return (
+      <Text as="span" variant="bodyMd" tone="critical">
+        {`${fallback} · no longer exists in Shopify`}
+      </Text>
+    );
+  }
+
+  const productTitle = resolved.productTitle ?? fallback;
+  const variantTitle = resolved.variantTitle && resolved.variantTitle !== DEFAULT_VARIANT_TITLE
+    ? resolved.variantTitle
+    : undefined;
+
+  // No placeholder when a product has no imagery — an empty Thumbnail box is
+  // noisier than just the name. Alt text falls back to the product name so the
+  // image is never announced as an unlabelled graphic.
+  const thumbnail = resolved.imageUrl ? (
+    <Thumbnail
+      source={resolved.imageUrl}
+      alt={resolved.imageAlt ?? productTitle}
+      size={layout === 'inline' ? 'extraSmall' : 'small'}
+    />
+  ) : null;
+
+  // `target="_blank"` matters inside the embedded admin: navigating the app
+  // iframe to an admin URL breaks out of the app rather than opening the page.
+  const link = (
+    <Link url={resolved.adminUrl} target="_blank" removeUnderline>
+      {productTitle}
+    </Link>
+  );
+
+  if (layout === 'inline') {
+    return (
+      <InlineStack gap="100" blockAlign="center">
+        {thumbnail}
+        {link}
+        {variantTitle && (
+          <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
+        )}
+      </InlineStack>
+    );
+  }
+
+  return (
+    <InlineStack gap="200" blockAlign="center" wrap={false}>
+      {thumbnail}
+      <BlockStack gap="050">
+        {link}
+        {variantTitle && (
+          <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
+        )}
+      </BlockStack>
+    </InlineStack>
+  );
+}
 
 /** Feature-detects the App Bridge ResourcePicker without crashing in local
  * dev, where the app isn't embedded and `window.shopify` may be a throwing
@@ -191,6 +282,16 @@ export default function BundleEditor() {
     }
     initializedRef.current = true;
   }, [isEdit, bundle]);
+
+  // Every variant currently on screen — parent plus components — resolved in
+  // one Admin round trip. Deliberately not persisted: the app stores ids, and
+  // Shopify stays the source of truth for names.
+  const variantIds = [parentVariantId, ...items.map((it) => it.variantId)]
+    .filter((v): v is string => Boolean(v));
+  const { data: variantData, isError: variantsUnresolved } = useVariantsQuery(variantIds);
+  const resolvedVariants = new Map<string, ResolvedVariant>(
+    (variantData?.variants ?? []).map((v) => [v.id, v]),
+  );
 
   const createMutation = useCreateBundle();
   const updateMutation = useUpdateBundle();
@@ -356,6 +457,12 @@ export default function BundleEditor() {
             {bannerError ?? mutationError?.message}
           </Banner>
         )}
+        {variantsUnresolved && (
+          <Banner tone="warning">
+            Couldn&apos;t load product names from Shopify, so variants are shown by id. Editing and
+            saving still work.
+          </Banner>
+        )}
         {isUpdateLocked && (
           <Banner tone="warning" title="This bundle can only be saved as a Draft">
             <p>Overriding a cart line&apos;s price, title, or image requires Shopify Plus. It won&apos;t go live until this store is on Plus and the bundle is re-saved.</p>
@@ -408,7 +515,11 @@ export default function BundleEditor() {
                     <InlineStack gap="200" blockAlign="center">
                       {parentVariantId ? (
                         <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
-                          {parentTitle ?? titleFor(parentVariantId)}
+                          <VariantLabel
+                            resolved={resolvedVariants.get(parentVariantId)}
+                            fallback={parentTitle ?? titleFor(parentVariantId)}
+                            layout="inline"
+                          />
                         </Tag>
                       ) : (
                         <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
@@ -437,7 +548,11 @@ export default function BundleEditor() {
                       <InlineStack gap="150">
                         {items.map((item) => (
                           <Tag key={item.variantId} onRemove={() => removeItem(item.variantId)}>
-                            {titleFor(item.variantId)}
+                            <VariantLabel
+                              resolved={resolvedVariants.get(item.variantId)}
+                              fallback={titleFor(item.variantId)}
+                              layout="inline"
+                            />
                           </Tag>
                         ))}
                       </InlineStack>
@@ -505,7 +620,11 @@ export default function BundleEditor() {
                     <InlineStack gap="200" blockAlign="center">
                       {parentVariantId ? (
                         <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
-                          {parentTitle ?? titleFor(parentVariantId)}
+                          <VariantLabel
+                            resolved={resolvedVariants.get(parentVariantId)}
+                            fallback={parentTitle ?? titleFor(parentVariantId)}
+                            layout="inline"
+                          />
                         </Tag>
                       ) : (
                         <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
@@ -533,7 +652,10 @@ export default function BundleEditor() {
                     <Divider />
                     {items.map((c) => (
                       <InlineGrid key={c.variantId} columns={{ xs: 1, sm: 3 }} gap="300">
-                        <Text as="span" variant="bodyMd">{titleFor(c.variantId)}</Text>
+                        <VariantLabel
+                          resolved={resolvedVariants.get(c.variantId)}
+                          fallback={titleFor(c.variantId)}
+                        />
                         <TextField
                           label="Quantity"
                           type="number"

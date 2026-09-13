@@ -4,6 +4,7 @@ import { authRoutes } from './routes/auth';
 import { exampleRoutes } from './routes/example';
 import { discountRoutes } from './routes/discounts';
 import { bundleRoutes } from './routes/bundles';
+import { variantRoutes } from './routes/variants';
 import { shopRoutes } from './routes/shop';
 import { previewRoutes } from './routes/preview';
 import { webhookRoutes } from './lifecycle/webhooks';
@@ -27,6 +28,7 @@ app.route('/', webhookRoutes);
 app.route('/', exampleRoutes);
 app.route('/', discountRoutes);
 app.route('/', bundleRoutes);
+app.route('/', variantRoutes);
 app.route('/', shopRoutes);
 
 // Public template preview page (no auth) — see routes/preview.ts.

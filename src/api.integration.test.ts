@@ -1146,3 +1146,230 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(deleteQuery).toContain('metafieldsDelete');
   });
 });
+
+describe('GET /api/variants (batch variant name + admin URL resolution)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const V1 = 'gid://shopify/ProductVariant/111';
+  const V2 = 'gid://shopify/ProductVariant/222';
+
+  /** requireShop -> getCurrentShopId (1), route's requireShopDomain (2). */
+  const mockShopChain = () => {
+    vi.mocked(createDb)
+      .mockReturnValueOnce(mockDb({ id: 'shop-abc' }))
+      .mockReturnValueOnce(mockDb({ domain: 'mystore.myshopify.com' }));
+  };
+
+  const request = (qs: string) =>
+    app.request(
+      `/api/variants${qs}`,
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+  it('resolves product + variant titles and a variant-level admin URL in one Admin call', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        nodes: [
+          {
+            id: V1,
+            title: 'Large / Blue',
+            image: { url: 'https://cdn.shopify.com/hoodie-blue.jpg', altText: 'Blue hoodie' },
+            product: {
+              id: 'gid://shopify/Product/456',
+              title: 'Merino Hoodie',
+              featuredImage: { url: 'https://cdn.shopify.com/hoodie.jpg', altText: 'Hoodie' },
+            },
+          },
+          {
+            id: V2,
+            title: 'Default Title',
+            image: null,
+            product: {
+              id: 'gid://shopify/Product/789',
+              title: 'Wool Socks',
+              featuredImage: { url: 'https://cdn.shopify.com/socks.jpg', altText: 'Socks' },
+            },
+          },
+        ],
+      },
+    });
+
+    const res = await request(`?ids=${encodeURIComponent(`${V1},${V2}`)}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      variants: [
+        {
+          id: V1,
+          exists: true,
+          productTitle: 'Merino Hoodie',
+          variantTitle: 'Large / Blue',
+          adminUrl: 'https://mystore.myshopify.com/admin/products/456/variants/111',
+          // The variant's own image wins over the product's featured image.
+          imageUrl: 'https://cdn.shopify.com/hoodie-blue.jpg',
+          imageAlt: 'Blue hoodie',
+        },
+        {
+          id: V2,
+          exists: true,
+          productTitle: 'Wool Socks',
+          variantTitle: 'Default Title',
+          adminUrl: 'https://mystore.myshopify.com/admin/products/789/variants/222',
+          // No variant image -> falls back to the product's featured image.
+          imageUrl: 'https://cdn.shopify.com/socks.jpg',
+          imageAlt: 'Socks',
+        },
+      ],
+    });
+    expect(adminGraphql).toHaveBeenCalledTimes(1);
+    const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(query).toContain('nodes');
+    expect(query).toContain('featuredImage');
+    expect(variables).toEqual({ ids: [V1, V2] });
+  });
+
+  it('flags a deleted variant as exists:false instead of dropping it', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        nodes: [
+          null,
+          { id: V2, title: 'Default Title', product: { id: 'gid://shopify/Product/789', title: 'Wool Socks' } },
+        ],
+      },
+    });
+
+    const res = await request(`?ids=${encodeURIComponent(`${V1},${V2}`)}`);
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { variants: Array<Record<string, unknown>> };
+    expect(json.variants).toHaveLength(2);
+    expect(json.variants[0]).toEqual({ id: V1, exists: false });
+    expect(json.variants[1]).toMatchObject({ id: V2, exists: true });
+  });
+
+  it('returns 400 when ids is missing or empty, without calling the Admin API', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+    const res = await request('');
+
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toEqual(expect.any(String));
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a non-ProductVariant gid', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+    const res = await request(`?ids=${encodeURIComponent('gid://shopify/Product/456')}`);
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when more than 50 ids are requested', async () => {
+    vi.mocked(createDb).mockReturnValueOnce(mockDb({ id: 'shop-abc' }));
+    const ids = Array.from({ length: 51 }, (_, i) => `gid://shopify/ProductVariant/${i}`).join(',');
+    const res = await request(`?ids=${encodeURIComponent(ids)}`);
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('de-duplicates repeated ids before calling the Admin API', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        nodes: [{ id: V1, title: 'Large / Blue', product: { id: 'gid://shopify/Product/456', title: 'Merino Hoodie' } }],
+      },
+    });
+
+    const res = await request(`?ids=${encodeURIComponent(`${V1},${V1}`)}`);
+
+    expect(res.status).toBe(200);
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(variables).toEqual({ ids: [V1] });
+  });
+
+  it('returns 502 when the Admin API reports GraphQL errors', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: null,
+      errors: [{ message: 'Throttled' }],
+    } as unknown as Awaited<ReturnType<typeof adminGraphql>>);
+
+    const res = await request(`?ids=${encodeURIComponent(V1)}`);
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toContain('Throttled');
+  });
+
+  it('returns 502 when the Admin call throws', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockRejectedValueOnce(new Error('network down'));
+
+    const res = await request(`?ids=${encodeURIComponent(V1)}`);
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toContain('network down');
+  });
+
+  it('is protected by requireShop', async () => {
+    vi.mocked(createDb).mockReturnValue(mockDb(null));
+    const res = await app.request(`/api/variants?ids=${encodeURIComponent(V1)}`, {}, env('development'));
+    expect(res.status).toBe(401);
+  });
+
+  it('omits image fields entirely when neither the variant nor its product has one', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        nodes: [
+          {
+            id: V1,
+            title: 'Large / Blue',
+            image: null,
+            product: { id: 'gid://shopify/Product/456', title: 'Merino Hoodie', featuredImage: null },
+          },
+        ],
+      },
+    });
+
+    const res = await request(`?ids=${encodeURIComponent(V1)}`);
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { variants: Array<Record<string, unknown>> };
+    expect(json.variants[0]).toEqual({
+      id: V1,
+      exists: true,
+      productTitle: 'Merino Hoodie',
+      variantTitle: 'Large / Blue',
+      adminUrl: 'https://mystore.myshopify.com/admin/products/456/variants/111',
+    });
+  });
+
+  it('keeps a missing altText out of the response rather than emitting null', async () => {
+    mockShopChain();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        nodes: [
+          {
+            id: V1,
+            title: 'Large / Blue',
+            image: { url: 'https://cdn.shopify.com/hoodie-blue.jpg', altText: null },
+            product: { id: 'gid://shopify/Product/456', title: 'Merino Hoodie', featuredImage: null },
+          },
+        ],
+      },
+    });
+
+    const res = await request(`?ids=${encodeURIComponent(V1)}`);
+
+    const json = (await res.json()) as { variants: Array<Record<string, unknown>> };
+    expect(json.variants[0]).toMatchObject({ imageUrl: 'https://cdn.shopify.com/hoodie-blue.jpg' });
+    expect(json.variants[0]).not.toHaveProperty('imageAlt');
+  });
+});

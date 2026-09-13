@@ -73,6 +73,39 @@ export function fetchShopPlan(f: AuthenticatedFetch): Promise<ShopPlanResponse> 
   return apiFetch<ShopPlanResponse>(f, '/api/shop/plan');
 }
 
+/**
+ * One entry per requested variant gid, in the order requested. `exists:false`
+ * means the variant (or its product) no longer resolves in Shopify — the
+ * editor renders those as "no longer exists" rather than a silent blank.
+ */
+export interface ResolvedVariant {
+  id: string;
+  exists: boolean;
+  productTitle?: string;
+  variantTitle?: string;
+  adminUrl?: string;
+  /** The variant's own image, falling back to the product's featured image.
+   * Absent when the product has no imagery at all. */
+  imageUrl?: string;
+  imageAlt?: string;
+}
+
+export interface VariantsResponse {
+  variants: ResolvedVariant[];
+}
+
+/**
+ * Resolves product + variant names and admin deep links for a set of variant
+ * gids in ONE request. Names are never persisted app-side — they're resolved
+ * on page load so a rename in Shopify shows up immediately.
+ */
+export function fetchVariants(f: AuthenticatedFetch, ids: string[]): Promise<VariantsResponse> {
+  // No ids means nothing to ask Shopify about; skip the round trip entirely
+  // (a `/bundles/new` page with no variants picked yet hits this path).
+  if (ids.length === 0) return Promise.resolve({ variants: [] });
+  return apiFetch<VariantsResponse>(f, `/api/variants?ids=${encodeURIComponent(ids.join(','))}`);
+}
+
 export function fetchBundleAdminUrl(f: AuthenticatedFetch, id: string): Promise<{ url: string }> {
   return apiFetch<{ url: string }>(f, `/api/bundles/${encodeURIComponent(id)}/admin-url`);
 }

@@ -2,7 +2,7 @@ import {
   describe, expect, it, vi,
 } from 'vitest';
 import {
-  createBundle, deleteBundle, fetchActivation, fetchBundle, fetchBundleAdminUrl, fetchBundles, fetchShopPlan, updateBundle,
+  createBundle, deleteBundle, fetchActivation, fetchBundle, fetchBundleAdminUrl, fetchBundles, fetchShopPlan, fetchVariants, updateBundle,
 } from './api';
 import type { Bundle, BundleInput } from './api';
 
@@ -120,5 +120,45 @@ describe('bundle data layer', () => {
     expect(res.metafields).toEqual({
       mergeBundlesValuePresent: false,
     });
+  });
+});
+
+describe('variant name resolution', () => {
+  const V1 = 'gid://shopify/ProductVariant/111';
+  const V2 = 'gid://shopify/ProductVariant/222';
+
+  it('fetchVariants requests /api/variants with the ids comma-joined and encoded', async () => {
+    const payload = {
+      variants: [
+        {
+          id: V1,
+          exists: true,
+          productTitle: 'Merino Hoodie',
+          variantTitle: 'Large / Blue',
+          adminUrl: 'https://mystore.myshopify.com/admin/products/456/variants/111',
+        },
+      ],
+    };
+    const f = vi.fn().mockResolvedValue(jsonResponse(payload));
+    const res = await fetchVariants(f, [V1]);
+
+    expect(f.mock.calls[0][0]).toBe(`/api/variants?ids=${encodeURIComponent(V1)}`);
+    expect(res.variants[0].productTitle).toBe('Merino Hoodie');
+  });
+
+  it('fetchVariants joins multiple ids into one request', async () => {
+    const f = vi.fn().mockResolvedValue(jsonResponse({ variants: [] }));
+    await fetchVariants(f, [V1, V2]);
+
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(f.mock.calls[0][0]).toBe(`/api/variants?ids=${encodeURIComponent(`${V1},${V2}`)}`);
+  });
+
+  it('fetchVariants short-circuits on an empty id list without calling the API', async () => {
+    const f = vi.fn();
+    const res = await fetchVariants(f, []);
+
+    expect(f).not.toHaveBeenCalled();
+    expect(res).toEqual({ variants: [] });
   });
 });

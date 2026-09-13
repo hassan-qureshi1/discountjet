@@ -14,6 +14,7 @@ import {
   fetchBundle,
   fetchBundles,
   fetchShopPlan,
+  fetchVariants,
   updateBundle,
   type BundleInput,
 } from './api';
@@ -61,6 +62,26 @@ export function useActivationQuery() {
     queryFn: () => fetchActivation(fetcher),
     staleTime: 5 * 60 * 1000,
     retry: false,
+  });
+}
+
+/**
+ * Resolves product/variant names + admin links for the variants currently on
+ * screen. The key is the SORTED id list, so the query is shared between two
+ * renders that hold the same variants in a different order, and refetches
+ * only when the set itself changes (e.g. after the resource picker returns).
+ */
+export function useVariantsQuery(ids: string[]) {
+  const shopify = useAppBridge();
+  const fetcher = createAuthenticatedFetch(shopify);
+  const sorted = [...new Set(ids)].sort();
+  return useQuery({
+    queryKey: ['variants', sorted],
+    queryFn: () => fetchVariants(fetcher, sorted),
+    enabled: sorted.length > 0,
+    // Catalogue names change rarely; this keeps re-entering the editor from
+    // re-hitting the Admin API on every mount.
+    staleTime: 5 * 60 * 1000,
   });
 }
 

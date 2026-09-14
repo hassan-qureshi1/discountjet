@@ -1204,6 +1204,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
         {
           id: V1,
           exists: true,
+          productId: 'gid://shopify/Product/456',
           productTitle: 'Merino Hoodie',
           variantTitle: 'Large / Blue',
           adminUrl: 'https://mystore.myshopify.com/admin/products/456/variants/111',
@@ -1214,6 +1215,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
         {
           id: V2,
           exists: true,
+          productId: 'gid://shopify/Product/789',
           productTitle: 'Wool Socks',
           variantTitle: 'Default Title',
           adminUrl: 'https://mystore.myshopify.com/admin/products/789/variants/222',
@@ -1345,6 +1347,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
     expect(json.variants[0]).toEqual({
       id: V1,
       exists: true,
+      productId: 'gid://shopify/Product/456',
       productTitle: 'Merino Hoodie',
       variantTitle: 'Large / Blue',
       adminUrl: 'https://mystore.myshopify.com/admin/products/456/variants/111',

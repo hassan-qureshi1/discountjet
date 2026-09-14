@@ -31,6 +31,7 @@ import {
   useBundleQuery, useCreateBundle, useShopPlanQuery, useUpdateBundle, useVariantsQuery,
 } from '../bundles/hooks';
 import type { BundleInput, ResolvedVariant } from '../bundles/api';
+import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
@@ -325,44 +326,88 @@ export default function BundleEditor() {
 
   const titleFor = (variantId: string) => titles[variantId] ?? shortVariantLabel(variantId);
 
-  /** Opens the multi-select variant picker for merge items / expand components. */
+  /**
+   * Opens the product picker (variants grouped under their product, as in the
+   * admin's own "Select products" dialog) for merge items / expand components.
+   *
+   * The current items are pre-checked, which means the picker's result is the
+   * merchant's full intent — unchecking there removes the item. That only
+   * holds when every item could be pre-selected; when some couldn't (names
+   * still resolving, or a variant deleted in Shopify) the result is merged in
+   * instead, so an item the picker never showed as checked isn't silently
+   * dropped.
+   */
   const pickItems = async () => {
     if (!pickerAvailable) return;
     try {
+      const { selectionIds, complete } = selectionIdsFromVariants(
+        items.map((it) => it.variantId),
+        resolvedVariants,
+      );
       const result = await shopify.resourcePicker({
-        type: 'variant',
+        type: 'product',
         multiple: true,
-        selectionIds: items.map((it) => ({ id: it.variantId })),
+        action: 'select',
+        selectionIds,
       });
       if (!result) return;
+
+      const picked = flattenPickerSelection(result);
       setTitles((prev) => ({
         ...prev,
-        ...Object.fromEntries(result.map((v) => [v.id, v.displayName || v.title])),
+        ...Object.fromEntries(picked.map((v) => [v.variantId, v.title])),
       }));
-      setItems((prev) => result.map((v) => {
-        const existing = prev.find((p) => p.variantId === v.id);
-        return { variantId: v.id, qty: existing?.qty ?? 1, price: Number(v.price) };
-      }));
+      setItems((prev) => {
+        const next = picked.map((v) => {
+          const existing = prev.find((p) => p.variantId === v.variantId);
+          // Keep the quantity the merchant already typed for a variant that
+          // was already in the bundle.
+          return { variantId: v.variantId, qty: existing?.qty ?? 1, price: v.price };
+        });
+        if (complete) return next;
+        const keptIds = new Set(next.map((it) => it.variantId));
+        return [...prev.filter((it) => !keptIds.has(it.variantId)), ...next];
+      });
     } catch (err) {
-      setBannerError(err instanceof Error ? err.message : 'Failed to open the variant picker.');
+      setBannerError(err instanceof Error ? err.message : 'Failed to open the product picker.');
     }
   };
 
-  /** Opens the single-select variant picker for a bundle's parent/target variant. */
+  /**
+   * Opens the product picker for the bundle's single parent/target variant.
+   *
+   * `multiple: false` still lets a merchant tick several variants of one
+   * product (App Bridge documents this), and a bundle has exactly one parent —
+   * so extra ticks are dropped and called out rather than silently ignored.
+   */
   const pickParentVariant = async () => {
     if (!pickerAvailable) return;
     try {
+      const { selectionIds } = selectionIdsFromVariants(
+        parentVariantId ? [parentVariantId] : [],
+        resolvedVariants,
+      );
       const result = await shopify.resourcePicker({
-        type: 'variant',
+        type: 'product',
         multiple: false,
-        selectionIds: parentVariantId ? [{ id: parentVariantId }] : [],
+        action: 'select',
+        selectionIds,
       });
-      if (!result || result.length === 0) return;
-      const [v] = result;
-      setParentVariantId(v.id);
-      setParentTitle(v.displayName || v.title);
+      if (!result) return;
+
+      const picked = flattenPickerSelection(result);
+      if (picked.length === 0) return;
+
+      const [parent] = picked;
+      setParentVariantId(parent.variantId);
+      setParentTitle(parent.title);
+      if (picked.length > 1) {
+        setBannerError(
+          `A bundle has one parent variant — kept “${parent.title}” and ignored the other ${picked.length - 1} selected.`,
+        );
+      }
     } catch (err) {
-      setBannerError(err instanceof Error ? err.message : 'Failed to open the variant picker.');
+      setBannerError(err instanceof Error ? err.message : 'Failed to open the product picker.');
     }
   };
 
@@ -530,7 +575,7 @@ export default function BundleEditor() {
                     </InlineStack>
                     {!pickerAvailable && (
                       <Text as="span" variant="bodySm" tone="subdued">
-                        Variant picker is available inside the Shopify admin.
+                        Product picker is available inside the Shopify admin.
                       </Text>
                     )}
                   </BlockStack>
@@ -567,7 +612,7 @@ export default function BundleEditor() {
                       </Button>
                       {!pickerAvailable && (
                         <Text as="span" variant="bodySm" tone="subdued">
-                          Variant picker is available inside the Shopify admin.
+                          Product picker is available inside the Shopify admin.
                         </Text>
                       )}
                     </InlineStack>
@@ -635,7 +680,7 @@ export default function BundleEditor() {
                     </InlineStack>
                     {!pickerAvailable && (
                       <Text as="span" variant="bodySm" tone="subdued">
-                        Variant picker is available inside the Shopify admin.
+                        Product picker is available inside the Shopify admin.
                       </Text>
                     )}
                   </BlockStack>
@@ -684,7 +729,7 @@ export default function BundleEditor() {
                       </Button>
                       {!pickerAvailable && (
                         <Text as="span" variant="bodySm" tone="subdued">
-                          Variant picker is available inside the Shopify admin.
+                          Product picker is available inside the Shopify admin.
                         </Text>
                       )}
                     </InlineStack>

@@ -81,6 +81,8 @@ export function fetchShopPlan(f: AuthenticatedFetch): Promise<ShopPlanResponse> 
 export interface ResolvedVariant {
   id: string;
   exists: boolean;
+  /** Owning product gid, used to pre-select the product resource picker. */
+  productId?: string;
   productTitle?: string;
   variantTitle?: string;
   adminUrl?: string;

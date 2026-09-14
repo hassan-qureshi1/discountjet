@@ -63,6 +63,9 @@ const VARIANT_NODES_QUERY = `
 export interface ResolvedVariant {
   id: string;
   exists: boolean;
+  /** Owning product gid — the resource picker pre-selects by product, so the
+   * editor needs it to reopen the picker with the current items checked. */
+  productId?: string;
   productTitle?: string;
   variantTitle?: string;
   adminUrl?: string;
@@ -145,6 +148,7 @@ variantRoutes.get('/api/variants', async (c) => {
     return {
       id,
       exists: true,
+      productId: node.product.id,
       productTitle: node.product.title,
       variantTitle: node.title,
       adminUrl: `https://${shopDomain}/admin/products/${numericId(node.product.id)}/variants/${numericId(id)}`,

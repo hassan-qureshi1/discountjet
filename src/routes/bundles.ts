@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/db';
-import { BundleRepository, type BundleRow } from '../db/repos/bundleRepo';
+import type { BundleRow } from '../db/repos/bundleRepo';
 import type { AppEnv } from '../types/env.d';
 import {
   writeComposition,
@@ -98,7 +98,7 @@ function toDto(row: Row): BundleDto {
 // `inCampaigns` is 0 until bundle campaigns land (E7). `avgSaving` is the mean
 // per-bundle (sumOfItems - price), in dollars, over bundles with both set.
 bundleRoutes.get('/api/bundles', async (c) => {
-  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const bundleRepo = c.get('repos').bundles;
   const rows = await bundleRepo.list(c.get('shopId'));
 
   const bundles = rows.map(toDto);
@@ -166,7 +166,7 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
 
 // GET /api/bundles/:id — single row scoped to the caller's shop (404 when missing).
 bundleRoutes.get('/api/bundles/:id', async (c) => {
-  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const bundleRepo = c.get('repos').bundles;
   const row = await bundleRepo.find(c.get('shopId'), c.req.param('id'));
 
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
@@ -195,7 +195,7 @@ const PRODUCT_VARIANT_QUERY = `
 // Admin API access (the offline token lives server-side), and eagerly
 // resolving every row's product on list load would be an N+1 Admin API call.
 bundleRoutes.get('/api/bundles/:id/admin-url', async (c) => {
-  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const bundleRepo = c.get('repos').bundles;
   const row = await bundleRepo.find(c.get('shopId'), c.req.param('id'));
 
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
@@ -297,7 +297,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
     updatedAt: now,
   };
 
-  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const bundleRepo = c.get('repos').bundles;
   await bundleRepo.insert(row);
 
   if (row.operation === 'expand' && row.parentVariantId) {
@@ -338,7 +338,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
 
 // PUT /api/bundles/:id — partial update, scoped to the caller's shop (404 when missing).
 bundleRoutes.put('/api/bundles/:id', async (c) => {
-  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const bundleRepo = c.get('repos').bundles;
   const id = c.req.param('id');
   const shopId = c.get('shopId');
 
@@ -516,7 +516,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
 // DELETE /api/bundles/:id — scoped to the caller's shop (404 when missing).
 bundleRoutes.delete('/api/bundles/:id', async (c) => {
-  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const bundleRepo = c.get('repos').bundles;
   const id = c.req.param('id');
   const shopId = c.get('shopId');
 

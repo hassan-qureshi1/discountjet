@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/db';
-import { DiscountRepository, type DiscountRow } from '../db/repos/discountRepo';
+import type { DiscountRow } from '../db/repos/discountRepo';
 import { getSyncHealth, reconcileDiscounts } from '../lifecycle/discountSync';
 import type { AppEnv } from '../types/env.d';
 
@@ -70,7 +70,7 @@ const MATCHERS: Record<FilterId, (d: UiDiscount) => boolean> = {
 // Returns the caller's shop's non-tombstoned discounts in the UI `Discount`
 // shape plus per-tab counts, so the tab badges render without a second call.
 discountRoutes.get('/api/discounts', async (c) => {
-  const discounts = new DiscountRepository(createDb(c.env.DB));
+  const discounts = c.get('repos').discounts;
   const rows = await discounts.listLive(c.get('shopId'));
 
   const all = rows.map(toUi);
@@ -111,7 +111,7 @@ discountRoutes.post('/api/discounts/reconcile', async (c) => {
 
 // GET /api/discounts/:id — single row (404 when missing or tombstoned).
 discountRoutes.get('/api/discounts/:id', async (c) => {
-  const discounts = new DiscountRepository(createDb(c.env.DB));
+  const discounts = c.get('repos').discounts;
   const row = await discounts.find(c.get('shopId'), c.req.param('id'));
 
   if (!row || row.deletedAt) return c.json({ error: 'Discount not found' }, 404);

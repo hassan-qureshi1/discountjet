@@ -37,11 +37,36 @@ export type ShopProfileDto = {
 };
 
 /**
- * Queries against `shopify_shop`. Construct one per request from `createDb`
- * — never cache one at module scope, since a Worker isolate is reused across
+ * The contract handlers depend on. They receive it off the request context
+ * (`c.get('repos').shops`) and never name the concrete class, so tests can
+ * hand them an in-memory implementation instead of a D1-backed one.
+ */
+export interface ShopStore {
+  findInstalledByDomain(myshopifyDomain: string): Promise<ShopIdentity | null>;
+  findIdByDomain(myshopifyDomain: string): Promise<string | null>;
+  findById(shopId: string): Promise<ShopRow | null>;
+  findProfile(shopId: string): Promise<ShopProfileDto | null>;
+  upsertInstalled(row: {
+    id: string;
+    myshopifyDomain: string;
+    createdAt: string;
+    updatedAt: string;
+  }): Promise<void>;
+  markInstalled(myshopifyDomain: string, profile: ShopProfile, now: string): Promise<void>;
+  markUninstalled(myshopifyDomain: string, now: string): Promise<void>;
+  updatePlanCache(
+    shopId: string,
+    plan: { shopifyPlus: boolean; partnerDevelopment: boolean; planName: string },
+  ): Promise<void>;
+  setCartTransformGid(shopId: string, gid: string): Promise<void>;
+}
+
+/**
+ * The D1-backed `ShopStore`. Construct one per request from `createDb` —
+ * never cache one at module scope, since a Worker isolate is reused across
  * requests from different shops.
  */
-export class ShopRepository {
+export class ShopRepository implements ShopStore {
   constructor(private readonly db: Db) {}
 
   /**

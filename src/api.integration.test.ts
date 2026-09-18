@@ -3,9 +3,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Run the real Hono app in-process with the data + Shopify layers mocked, so
 // the protected-route flow is exercised end-to-end with no real bindings or
 // credentials (mirrors the mocking style of the other unit tests).
+//
+// The data layer is swapped at ONE seam: `createRepos`, which `requireShop`
+// calls once per request to build the stores it puts on the context. Tests
+// seed in-memory implementations of those stores and then assert on the rows
+// that end up in them. Nothing here stubs a Drizzle query chain, so a handler
+// can be refactored — different number of queries, different order — without
+// touching a test, as long as its observable behaviour holds.
 vi.mock('./db/db', () => ({
-  setDb: vi.fn(),
   createDb: vi.fn(),
+}));
+vi.mock('./db/repos', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./db/repos')>()),
+  createRepos: vi.fn(),
 }));
 vi.mock('./shopify', () => ({
   createShopify: vi.fn(),
@@ -23,55 +33,73 @@ vi.mock('./lib/metafieldDefinitions', () => ({
 }));
 
 import { app } from './index';
-import { createDb } from './db/db';
+import { createRepos } from './db/repos';
+import { createInMemoryRepos, shopRow, type InMemoryRepos } from './db/repos/inMemory';
+import type { ShopRow } from './db/repos/shopRepo';
+import type { BundleRow } from './db/repos/bundleRepo';
+import type { DiscountRow } from './db/repos/discountRepo';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
 
-// Minimal chainable Drizzle stand-in: `.select().from().where().get()` resolves
-// to the given row (or null), and `.where().all()` resolves to an array (or
-// `[row]` when a single non-null row was given). Also stubs `.insert().values()`,
-// `.update().set().where()`, and `.delete().where()` so callers can assert they
-// were invoked. Typed as the createDb return so call sites need no cast.
-function mockDb(
-  row: Record<string, unknown> | Record<string, unknown>[] | null,
-): ReturnType<typeof createDb> & { insert: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> } {
-  const rows = Array.isArray(row) ? row : row ? [row] : [];
-  const single = Array.isArray(row) ? (row[0] ?? null) : row;
-
-  const insertFn = vi.fn(() => ({
-    values: vi.fn(() => Promise.resolve(undefined)),
-  }));
-  const updateFn = vi.fn(() => ({
-    set: vi.fn(() => ({
-      where: vi.fn(() => Promise.resolve(undefined)),
-    })),
-  }));
-  const deleteFn = vi.fn(() => ({
-    where: vi.fn(() => Promise.resolve(undefined)),
-  }));
-
-  return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          get: () => Promise.resolve(single),
-          all: () => Promise.resolve(rows),
-        }),
-      }),
-    }),
-    insert: insertFn,
-    update: updateFn,
-    delete: deleteFn,
-  } as unknown as ReturnType<typeof createDb> & { insert: typeof insertFn; update: typeof updateFn; delete: typeof deleteFn };
-}
+/** The installed shop every request in this file authenticates as. */
+const SHOP = { id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com' };
 
 /**
- * The row `requireShop` resolves during auth. It carries the myshopify domain
- * as well as the id — `requireShop` stashes both on the context, so routes
- * needing the domain for an Admin API call no longer re-query for it.
+ * Installs an in-memory data layer for the next request and hands it back so
+ * the test can read the resulting rows. Seeded with `SHOP` unless a test
+ * supplies its own shops (the plan-cache tests need extra columns set).
  */
-const authDb = () => mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com' });
+function seed(rows: {
+  shops?: ShopRow[];
+  bundles?: BundleRow[];
+  discounts?: DiscountRow[];
+} = {}): InMemoryRepos {
+  const repos = createInMemoryRepos({
+    shops: [shopRow({ ...SHOP, status: 'installed' })],
+    ...rows,
+  });
+  vi.mocked(createRepos).mockReturnValue(repos);
+  return repos;
+}
+
+/** A complete `bundle` row; override only what the test is about. */
+const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
+  id: 'bundle-1',
+  shopId: SHOP.id,
+  name: 'Camp Kit',
+  operation: 'merge',
+  items: JSON.stringify([{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }]),
+  parentVariantId: null,
+  price: 2999, // cents => $29.99
+  sumOfItems: 3999, // cents => $39.99
+  metafieldState: 'NotYet',
+  metafieldGid: null,
+  scheduleStart: null,
+  scheduleEnd: null,
+  status: 'Draft',
+  blockOnFailure: 0,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-20T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `discount` mirror row. */
+const discountRow = (overrides: Partial<DiscountRow> = {}): DiscountRow => ({
+  id: 'disc-1',
+  shopId: SHOP.id,
+  shopifyGid: 'gid://shopify/DiscountNode/1',
+  name: 'Summer Volume',
+  type: 'tier',
+  method: 'automatic',
+  status: 'active',
+  products: 3,
+  campaignId: null,
+  deletedAt: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-20T00:00:00.000Z',
+  ...overrides,
+});
 
 // The DB/KV/R2 bindings are mocked above and never read on this path, so we
 // pass only the variable the auth fallback actually checks.
@@ -81,21 +109,16 @@ describe('GET /api/example (protected by requireShop)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns 401 for unauthenticated requests', async () => {
-    vi.mocked(createDb).mockReturnValue(mockDb(null));
+    seed({ shops: [] }); // no installed shop -> auth cannot resolve one
     const res = await app.request('/api/example', {}, env('development'));
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
   it('returns the shop profile for an installed shop via the dev header fallback', async () => {
-    vi.mocked(createDb).mockReturnValue(
-      mockDb({
-        id: 'shop-abc',
-        name: 'Test Store',
-        owner: 'Jane Merchant',
-        status: 'installed',
-      }),
-    );
+    seed({
+      shops: [shopRow({ ...SHOP, name: 'Test Store', shopOwner: 'Jane Merchant', status: 'installed' })],
+    });
     const res = await app.request(
       '/api/example',
       { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
@@ -111,7 +134,7 @@ describe('GET /api/example (protected by requireShop)', () => {
   });
 
   it('ignores the dev header fallback when ENVIRONMENT is not development', async () => {
-    vi.mocked(createDb).mockReturnValue(authDb());
+    seed();
     const res = await app.request(
       '/api/example',
       { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
@@ -125,16 +148,7 @@ describe('GET /api/discounts/:id (protected by requireShop)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns the discount plus a null campaign summary', async () => {
-    const row = {
-      id: 'disc-1', shopId: 'shop-abc', shopifyGid: 'gid://shopify/DiscountNode/1',
-      name: 'Summer Volume', type: 'tier', method: 'automatic', status: 'active',
-      products: 3, campaignId: null, deletedAt: null,
-      createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
-    };
-    // requireShop -> getCurrentShopId reads the shop row first, then the route reads the discount row.
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(row));
+    seed({ discounts: [discountRow()] });
     const res = await app.request(
       '/api/discounts/disc-1',
       { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
@@ -149,9 +163,7 @@ describe('GET /api/discounts/:id (protected by requireShop)', () => {
   });
 
   it('returns 404 for a tombstoned/missing discount', async () => {
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(null));
+    seed(); // no discounts seeded
     const res = await app.request(
       '/api/discounts/ghost',
       { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
@@ -165,12 +177,8 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('queries adminGraphql and returns updateOpEligible=true for a Shopify Plus store', async () => {
-    const shopDb = authDb();
-    // requireShop's getCurrentShopId reads the shop row first (shopDb), then
-    // the route reads the shop row again (for the domain + cached columns),
-    // and finally updates the row to cache the plan (routeDb serves both).
-    const routeDb = mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', shopifyPlus: null, partnerDevelopment: null, planName: null });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    // Plan columns unset -> the route must hit the Admin API and cache them.
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: { shop: { plan: { shopifyPlus: true, partnerDevelopment: false, displayName: 'Shopify Plus' } } },
     });
@@ -184,13 +192,16 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus' });
     expect(adminGraphql).toHaveBeenCalledTimes(1);
-    expect(routeDb.update).toHaveBeenCalled();
+    // The plan signals are cached back onto the shop row, not just returned.
+    expect(repos.shops.rows[0]).toMatchObject({
+      shopifyPlus: 1,
+      partnerDevelopment: 0,
+      planName: 'Shopify Plus',
+    });
   });
 
   it('queries adminGraphql and returns updateOpEligible=false for a Basic non-dev store', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', shopifyPlus: null, partnerDevelopment: null, planName: null });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed({ shops: [shopRow({ ...SHOP })] });
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: { shop: { plan: { shopifyPlus: false, partnerDevelopment: false, displayName: 'Basic' } } },
     });
@@ -207,9 +218,9 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
   });
 
   it('returns cached plan without calling adminGraphql when already cached', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', shopifyPlus: 1, partnerDevelopment: 0, planName: 'Shopify Plus' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed({
+      shops: [shopRow({ ...SHOP, shopifyPlus: 1, partnerDevelopment: 0, planName: 'Shopify Plus' })],
+    });
 
     const res = await app.request(
       '/api/shop/plan',
@@ -223,9 +234,10 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
   });
 
   it('returns 404 when the shop row/domain is missing', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb(null);
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    // The row is gone between auth resolving it and the route reading it —
+    // the only way this 404 is reachable, since auth matched on its domain.
+    const repos = seed();
+    repos.shops.findById = async () => null;
 
     const res = await app.request(
       '/api/shop/plan',
@@ -240,34 +252,13 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
 describe('Bundle CRUD API (protected by requireShop)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  const bundleRow = (overrides: Record<string, unknown> = {}) => ({
-    id: 'bundle-1',
-    shopId: 'shop-abc',
-    name: 'Camp Kit',
-    operation: 'merge',
-    items: JSON.stringify([{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }]),
-    parentVariantId: null,
-    price: 2999, // cents => $29.99
-    sumOfItems: 3999, // cents => $39.99
-    metafieldState: 'NotYet',
-    metafieldGid: null,
-    scheduleStart: null,
-    scheduleEnd: null,
-    status: 'Draft',
-    blockOnFailure: 0,
-    createdAt: '2026-08-01T00:00:00.000Z',
-    updatedAt: '2026-08-20T00:00:00.000Z',
-    ...overrides,
-  });
 
   it('GET /api/bundles returns bundles + summary with correct avgSaving math', async () => {
     const rows = [
       bundleRow({ id: 'bundle-1', price: 2999, sumOfItems: 3999 }), // saving $10.00
       bundleRow({ id: 'bundle-2', price: 1000, sumOfItems: 1500 }), // saving $5.00
     ];
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(rows));
+    seed({ bundles: rows });
 
     const res = await app.request(
       '/api/bundles',
@@ -286,9 +277,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles returns zeroed summary when empty', async () => {
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb([]));
+    seed({ bundles: [] });
 
     const res = await app.request(
       '/api/bundles',
@@ -302,9 +291,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(null));
+    seed({ bundles: [bundleRow({ id: 'bundle-1', shopId: 'other-shop' })] });
 
     const res = await app.request(
       '/api/bundles/ghost',
@@ -315,9 +302,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles inserts and returns 201 with cents<->dollars round-trip', async () => {
-    const shopDb = authDb();
-    const insertDb = mockDb(null);
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(insertDb);
+    const repos = seed();
 
     // `operation: 'update'` — this test is only about the cents<->dollars
     // round-trip, not merge-specific validation, so it deliberately avoids
@@ -350,11 +335,13 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.status).toBe('Draft');
     expect(json.bundle.metafieldState).toBe('NotYet');
     expect(json.bundle.items).toEqual(body.items);
-    expect(insertDb.insert).toHaveBeenCalled();
+    // The row is really in the store, scoped to the caller's shop.
+    expect(repos.bundles.rows).toHaveLength(1);
+    expect(repos.bundles.rows[0]).toMatchObject({ shopId: SHOP.id, name: 'Camp Kit', price: 2999 });
   });
 
   it('POST /api/bundles returns 400 with a JSON error when name is missing', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
 
     const body = {
       operation: 'merge',
@@ -375,7 +362,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles returns 400 with a JSON error when an expand bundle has no items', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
 
     const body = {
       name: 'Camp Kit',
@@ -402,10 +389,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // round-trip, not merge-specific validation, so it deliberately avoids
     // the merge guards (which require a price + parentVariantId) and any
     // metafield write.
-    const existing = bundleRow({ operation: 'update' });
-    const shopDb = authDb();
-    const updateDb = mockDb(existing);
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(updateDb);
+    const repos = seed({ bundles: [bundleRow({ operation: 'update' })] });
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -421,13 +405,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.id).toBe('bundle-1');
     expect(json.bundle.price).toBe(19.99);
     expect(json.bundle.updated).toBe('Just now');
-    expect(updateDb.update).toHaveBeenCalled();
+    expect(repos.bundles.rows[0].price).toBe(1999); // persisted in cents
   });
 
   it('PUT /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(null));
+    seed({ bundles: [bundleRow({ id: 'bundle-1', shopId: 'other-shop' })] });
 
     const res = await app.request(
       '/api/bundles/ghost',
@@ -442,9 +424,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('DELETE /api/bundles/:id deletes and returns 200 { ok: true }', async () => {
-    const shopDb = authDb();
-    const deleteDb = mockDb(bundleRow());
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(deleteDb);
+    const repos = seed({ bundles: [bundleRow()] });
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -453,13 +433,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    expect(deleteDb.delete).toHaveBeenCalled();
+    expect(repos.bundles.rows).toHaveLength(0);
   });
 
   it('DELETE /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(null));
+    seed({ bundles: [bundleRow({ id: 'bundle-1', shopId: 'other-shop' })] });
 
     const res = await app.request(
       '/api/bundles/ghost',
@@ -470,11 +448,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles writes composition for an expand bundle with a parentVariantId', async () => {
-    const shopDb = authDb();
-    // Reused inside the route for the insert, the shopDomain lookup, and the
-    // post-write metafieldState update — a single row shape covers all three.
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed();
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         metafieldsSet: {
@@ -504,6 +478,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const json = (await res.json()) as { bundle: { metafieldState: string; metafieldGid?: string } };
     expect(json.bundle.metafieldState).toBe('Written');
     expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/1');
+    // The response and the stored row agree — the post-write update landed.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+    });
 
     expect(adminGraphql).toHaveBeenCalledTimes(1);
     const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[0];
@@ -514,9 +493,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles writes $app:cart-transform.merge_bundles (never composition) for a merge bundle', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed();
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
       .mockResolvedValueOnce({
@@ -543,6 +520,10 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(201);
     const json = (await res.json()) as { bundle: { metafieldState: string } };
     expect(json.bundle.metafieldState).toBe('Written');
+    expect(repos.bundles.rows[0]).toMatchObject({
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/2',
+    });
 
     expect(adminGraphql).toHaveBeenCalledTimes(2);
     const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
@@ -556,7 +537,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles returns 400 with a JSON error when a merge bundle has no price', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
 
     const body = {
       name: 'Camp Kit',
@@ -581,7 +562,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles returns 400 with a JSON error when a merge bundle has no parentVariantId', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
 
     const body = {
       name: 'Camp Kit',
@@ -606,11 +587,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles writes $app:cart-transform.merge_bundles for a merge bundle with a parentVariantId', async () => {
-    const shopDb = authDb();
-    // Reused inside the route for the insert, the shopDomain lookup, and the
-    // post-write metafieldState update — a single row shape covers all three.
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed();
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
       .mockResolvedValueOnce({
@@ -643,6 +620,10 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const json = (await res.json()) as { bundle: { metafieldState: string; metafieldGid?: string } };
     expect(json.bundle.metafieldState).toBe('Written');
     expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/2');
+    expect(repos.bundles.rows[0]).toMatchObject({
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/2',
+    });
 
     expect(adminGraphql).toHaveBeenCalledTimes(2);
     const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
@@ -653,9 +634,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles returns a 502 JSON error when the metafield write fails', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed();
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         metafieldsSet: {
@@ -684,14 +663,14 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(502);
     const json = (await res.json()) as { error: string };
     expect(json.error).toEqual(expect.any(String));
+    // The row is created even though the metafield write failed, and its
+    // state still says nothing was written — never a false `Written`.
+    expect(repos.bundles.rows).toHaveLength(1);
+    expect(repos.bundles.rows[0]).toMatchObject({ metafieldState: 'NotYet', metafieldGid: null });
   });
 
   it('GET /api/bundles/:id/admin-url resolves the parent variant\'s product into an admin URL', async () => {
-    const shopDb = authDb();
-    const bundleDb = mockDb(bundleRow({ parentVariantId: 'gid://shopify/ProductVariant/999' }));
-    // requireShop -> getCurrentShop (1), route bundle lookup (2). The shop
-    // domain comes off the context, so there is no third lookup.
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(bundleDb);
+    seed({ bundles: [bundleRow({ parentVariantId: 'gid://shopify/ProductVariant/999' })] });
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         productVariant: {
@@ -714,9 +693,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/:id/admin-url returns 400 when the bundle has no parent variant', async () => {
-    const shopDb = authDb();
-    const bundleDb = mockDb(bundleRow({ parentVariantId: null }));
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(bundleDb);
+    seed({ bundles: [bundleRow({ parentVariantId: null })] });
 
     const res = await app.request(
       '/api/bundles/bundle-1/admin-url',
@@ -731,9 +708,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/:id/admin-url returns 404 for missing/other-shop bundle', async () => {
-    vi.mocked(createDb)
-      .mockReturnValueOnce(authDb())
-      .mockReturnValueOnce(mockDb(null));
+    seed({ bundles: [bundleRow({ id: 'bundle-1', shopId: 'other-shop' })] });
 
     const res = await app.request(
       '/api/bundles/ghost/admin-url',
@@ -745,10 +720,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation returns {active:true} when ensureCartTransform resolves a gid', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    // requireShop -> getCurrentShop (1); the route's own db client (2).
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: true });
 
     const res = await app.request(
@@ -763,9 +735,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation returns {active:false, conflict:true} on a foreign transform', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ conflict: true });
 
     const res = await app.request(
@@ -779,9 +749,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation returns 500 { active:false, error } when ensureCartTransform throws', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockRejectedValueOnce(new Error('cart-transform function not deployed'));
 
     const res = await app.request(
@@ -797,9 +765,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation removes the app metafield definitions and reports the merge_bundles value status', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
     vi.mocked(removeCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
     vi.mocked(getMetafieldSetupStatus).mockResolvedValueOnce({
@@ -822,9 +788,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation reports mergeBundlesValuePresent false when no merge config has been written', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
     vi.mocked(removeCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
     vi.mocked(getMetafieldSetupStatus).mockResolvedValueOnce({
@@ -845,9 +809,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation stays non-fatal when removeCartTransformMetafieldDefinitions throws', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
     vi.mocked(removeCartTransformMetafieldDefinitions).mockRejectedValueOnce(new Error('boom'));
     vi.mocked(getMetafieldSetupStatus).mockResolvedValueOnce({
@@ -868,9 +830,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('GET /api/bundles/activation omits metafields (rather than fabricating false) when the status check throws', async () => {
-    const shopDb = authDb();
-    const routeDb = mockDb({ domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    seed();
     vi.mocked(ensureCartTransform).mockResolvedValueOnce({ gid: 'gid://shopify/CartTransform/1', created: false });
     vi.mocked(removeCartTransformMetafieldDefinitions).mockResolvedValueOnce(undefined);
     vi.mocked(getMetafieldSetupStatus).mockRejectedValueOnce(new Error('boom'));
@@ -894,9 +854,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
     });
-    const shopDb = authDb();
-    const updateDb = mockDb(existing);
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(updateDb);
+    const repos = seed({ bundles: [existing] });
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -912,6 +870,12 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const json = (await res.json()) as { bundle: { name: string; metafieldState: string } };
     expect(json.bundle.name).toBe('Renamed Kit');
     expect(json.bundle.metafieldState).toBe('Written');
+    // The rename persisted; the metafield bookkeeping was left untouched.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      name: 'Renamed Kit',
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/1',
+    });
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
@@ -923,13 +887,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldGid: 'gid://shopify/Metafield/1',
       price: 4999,
     });
-    const shopDb = authDb();
-    // Same reuse pattern as the other PUT tests: this single row shape covers
-    // the existing-bundle select AND the requireShopDomain select AND both
-    // post-write updates (`.domain` for the latter, the bundle fields for the
-    // former).
-    const routeDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed({ bundles: [existing] });
 
     // Call order: clearComposition (metafieldsDelete) for the OLD transport,
     // then upsertMergeConfig's read + write for the NEW transport.
@@ -967,6 +925,12 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.operation).toBe('merge');
     expect(json.bundle.metafieldState).toBe('Written');
     expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/2');
+    // The stored row tracks exactly one live transport — the new one.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      operation: 'merge',
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/2',
+    });
 
     expect(adminGraphql).toHaveBeenCalledTimes(3);
     const [, , clearQuery] = vi.mocked(adminGraphql).mock.calls[0];
@@ -990,9 +954,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldGid: 'gid://shopify/Metafield/1',
       price: 2999, // $29.99
     });
-    const shopDb = authDb();
-    const routeDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed({ bundles: [existing] });
 
     const oldEntry = {
       parentVariantId: OLD_PARENT,
@@ -1043,6 +1005,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.parentVariantId).toBe(NEW_PARENT);
     expect(json.bundle.metafieldState).toBe('Written');
     expect(json.bundle.metafieldGid).toBe('gid://shopify/Metafield/2');
+    expect(repos.bundles.rows[0]).toMatchObject({
+      parentVariantId: NEW_PARENT,
+      metafieldState: 'Written',
+      metafieldGid: 'gid://shopify/Metafield/2',
+    });
 
     // Phase 1 — the OLD parent's entry is removed (read + metafieldsDelete,
     // since it was the only entry in the array).
@@ -1069,9 +1036,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
     });
-    const shopDb = authDb();
-    const routeDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(routeDb);
+    const repos = seed({ bundles: [existing] });
 
     const removedEntry = {
       parentVariantId: existing.parentVariantId,
@@ -1113,6 +1078,12 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.operation).toBe('update');
     expect(json.bundle.metafieldState).toBe('Cleared');
     expect(json.bundle.metafieldGid).toBeUndefined();
+    // The row no longer claims a metafield it has given up.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      operation: 'update',
+      metafieldState: 'Cleared',
+      metafieldGid: null,
+    });
 
     expect(adminGraphql).toHaveBeenCalledTimes(2);
     const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[0];
@@ -1128,9 +1099,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
     });
-    const shopDb = authDb();
-    const deleteDb = mockDb({ ...existing, domain: 'mystore.myshopify.com' });
-    vi.mocked(createDb).mockReturnValueOnce(shopDb).mockReturnValueOnce(deleteDb);
+    const repos = seed({ bundles: [existing] });
 
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
@@ -1144,7 +1113,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
-    expect(deleteDb.delete).toHaveBeenCalled();
+    expect(repos.bundles.rows).toHaveLength(0);
 
     expect(adminGraphql).toHaveBeenCalledTimes(2);
     const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[0];
@@ -1160,10 +1129,9 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
   const V1 = 'gid://shopify/ProductVariant/111';
   const V2 = 'gid://shopify/ProductVariant/222';
 
-  /** requireShop -> getCurrentShop (1). The route reads the domain off the
-   *  context, so it makes no db call of its own. */
+  /** The route reads the shop domain off the context — no db call of its own. */
   const mockShopChain = () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
   };
 
   const request = (qs: string) =>
@@ -1259,7 +1227,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
   });
 
   it('returns 400 when ids is missing or empty, without calling the Admin API', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
     const res = await request('');
 
     expect(res.status).toBe(400);
@@ -1269,7 +1237,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
   });
 
   it('returns 400 for a non-ProductVariant gid', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
     const res = await request(`?ids=${encodeURIComponent('gid://shopify/Product/456')}`);
 
     expect(res.status).toBe(400);
@@ -1277,7 +1245,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
   });
 
   it('returns 400 when more than 50 ids are requested', async () => {
-    vi.mocked(createDb).mockReturnValueOnce(authDb());
+    seed();
     const ids = Array.from({ length: 51 }, (_, i) => `gid://shopify/ProductVariant/${i}`).join(',');
     const res = await request(`?ids=${encodeURIComponent(ids)}`);
 
@@ -1326,7 +1294,7 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
   });
 
   it('is protected by requireShop', async () => {
-    vi.mocked(createDb).mockReturnValue(mockDb(null));
+    seed({ shops: [] });
     const res = await app.request(`/api/variants?ids=${encodeURIComponent(V1)}`, {}, env('development'));
     expect(res.status).toBe(401);
   });

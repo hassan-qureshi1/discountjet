@@ -1,6 +1,4 @@
 import { Hono } from 'hono';
-import { createDb } from '../db/db';
-import { ShopRepository } from '../db/repos/shopRepo';
 import type { AppEnv } from '../types/env.d';
 
 export const exampleRoutes = new Hono<AppEnv>();
@@ -10,7 +8,7 @@ export const exampleRoutes = new Hono<AppEnv>();
 // token and sets `shopId`; here we return that shop's profile. The column
 // projection is deliberate: the response never exposes internal columns.
 exampleRoutes.get('/api/example', async (c) => {
-  const shops = new ShopRepository(createDb(c.env.DB));
+  const shops = c.get('repos').shops;
   const shop = await shops.findProfile(c.get('shopId'));
 
   if (!shop) {

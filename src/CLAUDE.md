@@ -49,13 +49,17 @@ To make a route public, add it to `PUBLIC_API_PATHS` in `requireShop.ts` with a 
 
 - `src/db/schema.ts` — Drizzle tables
 - `src/db/db.ts` — `createDb(d1)` factory. Not a connection (no handshake, no pool), so calling it once per handler is free; pass the client down rather than re-deriving it.
-- `src/db/repos/` — **every** query lives here, one repository class per table: `ShopRepository`, `BundleRepository`, `DiscountRepository`, `WebhookEventRepository`. Handlers and lifecycle code call these methods; they never build Drizzle queries themselves.
+- `src/db/repos/` — **every** query lives here. Each table has a store *interface* (`ShopStore`, `BundleStore`, …) and a D1-backed class implementing it (`ShopRepository`, `BundleRepository`, …). Handlers and lifecycle code call these methods; they never build Drizzle queries themselves.
+- `src/db/repos/index.ts` — `createRepos(db)` builds the whole set; `Repos` is the interface bundle handlers see.
+- `src/db/repos/inMemory.ts` — in-memory implementations of the same interfaces, **test-only** (nothing in the Worker imports it).
 - `src/db/repos/_example.repository.ts` — annotated skeleton to copy when adding a table.
 - Use Drizzle ORM — never raw SQL strings outside migrations
 
 **Repository rules**
 
-- Construct one per request from the handler: `const bundleRepo = new BundleRepository(createDb(c.env.DB));`. `createDb` is not a connection (no handshake, no pool), so this is free.
+- Handlers take stores off the context — `const bundleRepo = c.get('repos').bundles;` — and never construct one. `requireShop` builds the set once per request via `createRepos(createDb(c.env.DB))`.
+- That single seam is what tests replace: they mock `createRepos` and hand back `createInMemoryRepos({ ... })`, then assert on the rows left in the fakes. No test stubs a Drizzle query chain, so handlers can change how many queries they run without breaking tests.
+- Code outside the request path (lifecycle hooks, webhooks, `discountSync`) constructs repositories directly from a `Db`, since it has no Hono context.
 - **Never** hold a repository or `Db` at module scope. A Worker isolate is reused across requests from different shops, so a shared client is how a cross-tenant bug gets in.
 - Shop-scoped reads/writes filter on `shopId` **inside** the repository (see the private `scoped()` in `BundleRepository`). That pairing is the tenant boundary; keeping it in one place means a handler cannot leak another shop's row by forgetting a clause.
 - Return `null`, never `undefined`, for a miss — Drizzle's `.get()` yields `undefined`, and normalising once stops every call site from guessing which to check.

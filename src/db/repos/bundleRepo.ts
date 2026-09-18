@@ -4,8 +4,23 @@ import { bundle } from '../schema';
 
 export type BundleRow = typeof bundle.$inferSelect;
 
-/** Queries against `bundle`. One instance per request — see `ShopRepository`. */
-export class BundleRepository {
+/** The contract handlers depend on — see `ShopStore` for why it exists. */
+export interface BundleStore {
+  list(shopId: string): Promise<BundleRow[]>;
+  find(shopId: string, id: string): Promise<BundleRow | null>;
+  insert(row: BundleRow): Promise<void>;
+  update(shopId: string, id: string, patch: Partial<BundleRow>): Promise<void>;
+  setMetafieldState(
+    shopId: string,
+    id: string,
+    state: BundleRow['metafieldState'],
+    metafieldGid: string | null,
+  ): Promise<void>;
+  delete(shopId: string, id: string): Promise<void>;
+}
+
+/** The D1-backed `BundleStore`. One instance per request. */
+export class BundleRepository implements BundleStore {
   constructor(private readonly db: Db) {}
 
   /**

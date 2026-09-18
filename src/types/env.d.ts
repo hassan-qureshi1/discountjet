@@ -9,9 +9,14 @@ export interface Env {
   HOST: string;
 }
 
+import type { Repos } from '../db/repos';
+
 export type AppEnv = {
   Bindings: Env;
   Variables: {
+    // The request's data layer, as interfaces. Handlers use these instead of
+    // constructing a repository, which is the seam tests inject fakes through.
+    repos: Repos;
     shopId: string;
     // The caller's `*.myshopify.com` domain, read once by `requireShop`.
     // Nullable because the column is — use `requireShopDomain(c)` to read it

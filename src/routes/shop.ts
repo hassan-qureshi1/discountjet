@@ -1,6 +1,4 @@
 import { Hono } from 'hono';
-import { createDb } from '../db/db';
-import { ShopRepository } from '../db/repos/shopRepo';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import type { AppEnv } from '../types/env.d';
 
@@ -38,7 +36,7 @@ const SHOP_PLAN_QUERY = /* GraphQL */ `
 // GraphQL lookup. `bundlesEligible`/`BundlesFeature` is deferred (E6 later
 // slice) — this endpoint assumes bundles are eligible.
 shopRoutes.get('/api/shop/plan', async (c) => {
-  const shops = new ShopRepository(createDb(c.env.DB));
+  const shops = c.get('repos').shops;
   const shopId = c.get('shopId');
 
   const shop = await shops.findById(shopId);

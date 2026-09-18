@@ -5,12 +5,27 @@ import { discount } from '../schema';
 export type DiscountRow = typeof discount.$inferSelect;
 export type DiscountInsert = typeof discount.$inferInsert;
 
+/** The contract handlers depend on — see `ShopStore` for why it exists. */
+export interface DiscountStore {
+  listLive(shopId: string): Promise<DiscountRow[]>;
+  find(shopId: string, id: string): Promise<DiscountRow | null>;
+  findVersionByGid(
+    shopId: string,
+    shopifyGid: string,
+  ): Promise<{ id: string; updatedAt: string | null } | null>;
+  insert(row: DiscountInsert): Promise<void>;
+  updateById(id: string, patch: Partial<DiscountRow>): Promise<void>;
+  tombstoneByGid(shopId: string, shopifyGid: string, deletedAt: string): Promise<void>;
+  listLiveGids(shopId: string): Promise<string[]>;
+  countUnknownType(shopId: string): Promise<number>;
+}
+
 /**
- * Queries against `discount` — the app-owned mirror of Shopify discounts.
+ * The D1-backed `DiscountStore` — the app-owned mirror of Shopify discounts.
  * Shopify is the source of truth; these rows are a queryable copy kept in
  * sync by the `discounts/*` webhooks and the reconcile pass.
  */
-export class DiscountRepository {
+export class DiscountRepository implements DiscountStore {
   constructor(private readonly db: Db) {}
 
   /** The tenant boundary for id-addressed rows — see `BundleRepository`. */

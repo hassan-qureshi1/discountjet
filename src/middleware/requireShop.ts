@@ -1,5 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import type { AppEnv } from '../types/env.d';
+import { createDb } from '../db/db';
+import { createRepos } from '../db/repos';
 import { getCurrentShop } from './shopAuth';
 
 // Routes under /api/* that are intentionally public (no shop auth required).
@@ -10,12 +12,17 @@ const PUBLIC_API_PATHS = new Set<string>([
 ]);
 
 export const requireShop: MiddlewareHandler<AppEnv> = async (c, next) => {
+  // Built before the auth check so public routes get a data layer too, and so
+  // auth itself goes through the same (swappable) stores the handlers use.
+  const repos = createRepos(createDb(c.env.DB));
+  c.set('repos', repos);
+
   if (PUBLIC_API_PATHS.has(c.req.path)) {
     await next();
     return;
   }
 
-  const shop = await getCurrentShop(c as unknown as Parameters<typeof getCurrentShop>[0]);
+  const shop = await getCurrentShop(c as unknown as Parameters<typeof getCurrentShop>[0], repos.shops);
   if (!shop) return c.json({ error: 'Unauthorized' }, 401);
 
   // Both the id and the domain come from the one row this lookup already

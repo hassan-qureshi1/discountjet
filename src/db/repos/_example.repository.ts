@@ -84,12 +84,30 @@ export type WidgetRow = typeof widget.$inferSelect;
 export type WidgetInsert = typeof widget.$inferInsert;
 
 /**
- * Repository for the `widget` table.
+ * The contract a handler depends on. Declare it, add `widgets` to `Repos` in
+ * `./index.ts`, and handlers reach it as `c.get('repos').widgets` — they never
+ * name the class. That indirection is what lets a test pass an in-memory
+ * implementation instead (see `inMemory.ts`), so tests assert on the rows a
+ * request leaves behind rather than on stubbed Drizzle calls.
+ */
+export interface WidgetStore {
+  listLive(shopId: string): Promise<WidgetRow[]>;
+  find(shopId: string, id: string): Promise<WidgetRow | null>;
+  insert(row: WidgetInsert): Promise<void>;
+  update(shopId: string, id: string, patch: Partial<WidgetRow>): Promise<void>;
+  tombstone(shopId: string, id: string, deletedAt: string): Promise<void>;
+  delete(shopId: string, id: string): Promise<void>;
+}
+
+/**
+ * The D1-backed `WidgetStore`.
  *
- * Construct one per request, from the Hono handler:
+ * `implements` is load-bearing: the compiler checks this class against the
+ * contract, and the in-memory fake against the same one, so the two can never
+ * drift apart. A handler gets it off the context:
  *
- *     const repo = new WidgetRepository(createDb(c.env.DB));
- *     const row = await repo.find(c.get('shopId'), c.req.param('id'));
+ *     const widgets = c.get('repos').widgets;
+ *     const row = await widgets.find(c.get('shopId'), c.req.param('id'));
  *
  * `createDb` is NOT a database connection — there is no handshake and no pool,
  * it is a thin object over the D1 binding — so constructing a repository per
@@ -97,7 +115,7 @@ export type WidgetInsert = typeof widget.$inferInsert;
  * isolate is reused across requests from different shops, and a shared client
  * is how a cross-tenant bug gets introduced.
  */
-export class WidgetRepository {
+export class WidgetRepository implements WidgetStore {
   constructor(private readonly db: Db) {}
 
   /**
@@ -198,8 +216,15 @@ export class WidgetRepository {
 //     it surface (see `requireShopDomain` in `src/lib/shopDomain.ts` for the
 //     house style: throw with the id in the message).
 //
+// Once the repository exists, wire it up in two more places:
+//   1. `./index.ts`    — add `widgets: WidgetStore` to `Repos` and construct it
+//      in `createRepos`, so handlers reach it off the request context.
+//   2. `./inMemory.ts` — add `InMemoryWidgetStore implements WidgetStore` and a
+//      `widgets` entry in `createInMemoryRepos`, so tests can seed it.
+//
 // Related reading, in rough order of usefulness:
 //   • `src/db/repos/bundleRepo.ts`   — `BundleRepository`, the closest analogue
+//   • `src/db/repos/inMemory.ts`     — the fakes, and how tests seed them
 //   • `src/db/repos/shopRepo.ts`     — projections, upserts, install/uninstall
 //   • `src/CLAUDE.md`                — the backend conventions this follows
 // ─────────────────────────────────────────────────────────────────────────────

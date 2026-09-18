@@ -1,7 +1,6 @@
 import type { Context } from 'hono';
 import type { Env } from '../types/env';
-import { createDb } from '../db/db';
-import { ShopRepository, type ShopIdentity } from '../db/repos/shopRepo';
+import type { ShopStore, ShopIdentity } from '../db/repos/shopRepo';
 import { RequestedTokenType } from '@shopify/shopify-api';
 import { createShopify, createSessionStorage } from '../shopify';
 
@@ -20,9 +19,9 @@ const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
  * stashes both on the context so no handler re-queries for the domain.
  */
 export async function getCurrentShop(
-  c: Context<{ Bindings: Env }>
+  c: Context<{ Bindings: Env }>,
+  shops: ShopStore,
 ): Promise<ShopIdentity | null> {
-  const shops = new ShopRepository(createDb(c.env.DB));
 
   // 1. Shopify session token (App Bridge useAuthenticatedFetch)
   // decodeSessionToken verifies the HMAC-SHA256 signature using SHOPIFY_API_SECRET

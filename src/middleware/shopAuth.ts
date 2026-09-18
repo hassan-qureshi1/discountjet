@@ -1,8 +1,7 @@
 import type { Context } from 'hono';
 import type { Env } from '../types/env';
 import { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { ShopRepository, type ShopIdentity } from '../db/repos/shopRepo';
 import { RequestedTokenType } from '@shopify/shopify-api';
 import { createShopify, createSessionStorage } from '../shopify';
 
@@ -10,15 +9,20 @@ import { createShopify, createSessionStorage } from '../shopify';
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
 /**
- * Extracts the current shop's D1 row ID from the request.
+ * Resolves the current shop from the request.
  * Priority: Authorization JWT (signature-verified) → shop query param
  *           / x-shop-domain (local dev only).
  * Returns null if not found or shop is not installed.
+ *
+ * Returns the whole identity (id + myshopify domain) rather than just the id:
+ * nearly every handler that needs the id also needs the domain to call the
+ * Admin API, and this lookup already has the row in hand. `requireShop`
+ * stashes both on the context so no handler re-queries for the domain.
  */
-export async function getCurrentShopId(
+export async function getCurrentShop(
   c: Context<{ Bindings: Env }>
-): Promise<string | null> {
-  const db = createDb(c.env.DB);
+): Promise<ShopIdentity | null> {
+  const shops = new ShopRepository(createDb(c.env.DB));
 
   // 1. Shopify session token (App Bridge useAuthenticatedFetch)
   // decodeSessionToken verifies the HMAC-SHA256 signature using SHOPIFY_API_SECRET
@@ -53,12 +57,8 @@ export async function getCurrentShopId(
         }
       }
 
-      const row = await db
-        .select({ id: shopifyShop.id })
-        .from(shopifyShop)
-        .where(and(eq(shopifyShop.myshopifyDomain, shopDomain), eq(shopifyShop.status, 'installed')))
-        .get();
-      if (row?.id) return row.id;
+      const row = await shops.findInstalledByDomain(shopDomain);
+      if (row) return row;
     } catch (err) {
       console.error(`[shopAuth] JWT verification failed:`, err);
       // invalid/expired token — fall through
@@ -76,11 +76,5 @@ export async function getCurrentShopId(
 
   if (!shopDomain) return null;
 
-  const row = await db
-    .select({ id: shopifyShop.id })
-    .from(shopifyShop)
-    .where(and(eq(shopifyShop.myshopifyDomain, shopDomain), eq(shopifyShop.status, 'installed')))
-    .get();
-
-  return row?.id ?? null;
+  return shops.findInstalledByDomain(shopDomain);
 }

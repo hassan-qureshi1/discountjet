@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
-import { and, eq } from 'drizzle-orm';
 import { createDb } from '../db/db';
-import { bundle } from '../db/schema';
+import { BundleRepository, type BundleRow } from '../db/repos/bundleRepo';
 import type { AppEnv } from '../types/env.d';
 import {
   writeComposition,
@@ -17,7 +16,7 @@ import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from
 
 export const bundleRoutes = new Hono<AppEnv>();
 
-type Row = typeof bundle.$inferSelect;
+type Row = BundleRow;
 
 interface BundleItem {
   variantId: string;
@@ -99,12 +98,8 @@ function toDto(row: Row): BundleDto {
 // `inCampaigns` is 0 until bundle campaigns land (E7). `avgSaving` is the mean
 // per-bundle (sumOfItems - price), in dollars, over bundles with both set.
 bundleRoutes.get('/api/bundles', async (c) => {
-  const db = createDb(c.env.DB);
-  const rows = await db
-    .select()
-    .from(bundle)
-    .where(eq(bundle.shopId, c.get('shopId')))
-    .all();
+  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const rows = await bundleRepo.list(c.get('shopId'));
 
   const bundles = rows.map(toDto);
   const savings = rows
@@ -131,7 +126,7 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
   const shopId = c.get('shopId');
 
   try {
-    const shopDomain = await requireShopDomain(db, shopId);
+    const shopDomain = requireShopDomain(c);
     const result = await ensureCartTransform(c.env, shopDomain, db, shopId);
 
     // Idempotently removes the app's two `$app:cart-transform` metafield
@@ -171,12 +166,8 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
 
 // GET /api/bundles/:id — single row scoped to the caller's shop (404 when missing).
 bundleRoutes.get('/api/bundles/:id', async (c) => {
-  const db = createDb(c.env.DB);
-  const row = await db
-    .select()
-    .from(bundle)
-    .where(and(eq(bundle.id, c.req.param('id')), eq(bundle.shopId, c.get('shopId'))))
-    .get();
+  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const row = await bundleRepo.find(c.get('shopId'), c.req.param('id'));
 
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
   return c.json({ bundle: toDto(row) });
@@ -204,25 +195,15 @@ const PRODUCT_VARIANT_QUERY = `
 // Admin API access (the offline token lives server-side), and eagerly
 // resolving every row's product on list load would be an N+1 Admin API call.
 bundleRoutes.get('/api/bundles/:id/admin-url', async (c) => {
-  const db = createDb(c.env.DB);
-  const shopId = c.get('shopId');
-  const row = await db
-    .select()
-    .from(bundle)
-    .where(and(eq(bundle.id, c.req.param('id')), eq(bundle.shopId, shopId)))
-    .get();
+  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  const row = await bundleRepo.find(c.get('shopId'), c.req.param('id'));
 
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
   if (!row.parentVariantId) {
     return c.json({ error: 'This bundle has no parent variant to view.' }, 400);
   }
 
-  // A fresh `createDb` call (rather than reusing `db` above) — the bundle
-  // lookup and the shop-domain lookup select different shapes off different
-  // tables, so they're kept as separate calls rather than threading one
-  // `db` through both (unlike the POST/PUT paths, which reuse a single `db`
-  // for insert/update calls that don't inspect row shape).
-  const shopDomain = await requireShopDomain(createDb(c.env.DB), shopId);
+  const shopDomain = requireShopDomain(c);
 
   let result;
   try {
@@ -316,19 +297,16 @@ bundleRoutes.post('/api/bundles', async (c) => {
     updatedAt: now,
   };
 
-  const db = createDb(c.env.DB);
-  await db.insert(bundle).values(row);
+  const bundleRepo = new BundleRepository(createDb(c.env.DB));
+  await bundleRepo.insert(row);
 
   if (row.operation === 'expand' && row.parentVariantId) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       const { metafieldGid } = await writeComposition(c.env, shopDomain, row.parentVariantId, body.items);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
-      await db
-        .update(bundle)
-        .set({ metafieldState: 'Written', metafieldGid })
-        .where(and(eq(bundle.id, row.id), eq(bundle.shopId, shopId)));
+      await bundleRepo.setMetafieldState(shopId, row.id, 'Written', metafieldGid);
     } catch (err) {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
@@ -337,7 +315,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
     }
   } else if (row.operation === 'merge' && row.parentVariantId) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       // `body.price` is guaranteed a finite, positive number here — the
       // merge guard above (`body.operation === 'merge'`) already rejected
       // any request that reaches this branch (`row.operation === 'merge'`,
@@ -346,10 +324,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
-      await db
-        .update(bundle)
-        .set({ metafieldState: 'Written', metafieldGid })
-        .where(and(eq(bundle.id, row.id), eq(bundle.shopId, shopId)));
+      await bundleRepo.setMetafieldState(shopId, row.id, 'Written', metafieldGid);
     } catch (err) {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
@@ -363,15 +338,11 @@ bundleRoutes.post('/api/bundles', async (c) => {
 
 // PUT /api/bundles/:id — partial update, scoped to the caller's shop (404 when missing).
 bundleRoutes.put('/api/bundles/:id', async (c) => {
-  const db = createDb(c.env.DB);
+  const bundleRepo = new BundleRepository(createDb(c.env.DB));
   const id = c.req.param('id');
   const shopId = c.get('shopId');
 
-  const existing = await db
-    .select()
-    .from(bundle)
-    .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)))
-    .get();
+  const existing = await bundleRepo.find(shopId, id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   const body = await c.req.json<Partial<BundleInput>>();
@@ -414,7 +385,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.sumOfItems !== undefined) patch.sumOfItems = toCents(body.sumOfItems);
   if (body.status !== undefined) patch.status = body.status;
 
-  await db.update(bundle).set(patch).where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+  await bundleRepo.update(shopId, id, patch);
 
   const merged: Row = { ...existing, ...patch };
 
@@ -452,30 +423,24 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // no longer applies.
   if (prevOp === 'expand' && newOp !== 'expand' && existing.metafieldState === 'Written' && existing.parentVariantId) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       await clearComposition(c.env, shopDomain, existing.parentVariantId);
     } catch (err) {
       console.error(`[bundles] failed to clear composition_v2 for bundle ${id} on operation change:`, err);
     }
     merged.metafieldState = 'Cleared';
     merged.metafieldGid = null;
-    await db
-      .update(bundle)
-      .set({ metafieldState: 'Cleared', metafieldGid: null })
-      .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+    await bundleRepo.setMetafieldState(shopId, id, 'Cleared', null);
   } else if (prevOp === 'merge' && newOp !== 'merge' && existing.metafieldState === 'Written' && existing.parentVariantId) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
     } catch (err) {
       console.error(`[bundles] failed to remove merge_bundles entry for bundle ${id} on operation change:`, err);
     }
     merged.metafieldState = 'Cleared';
     merged.metafieldGid = null;
-    await db
-      .update(bundle)
-      .set({ metafieldState: 'Cleared', metafieldGid: null })
-      .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+    await bundleRepo.setMetafieldState(shopId, id, 'Cleared', null);
   } else if (
     prevOp === 'merge' &&
     newOp === 'merge' &&
@@ -494,7 +459,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     // other Phase 1 clears above: `metafieldState`/`metafieldGid` are left
     // alone here (Phase 2 rewrites them for the new parent regardless).
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
     } catch (err) {
       console.error(
@@ -509,14 +474,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // failed write by leaving the client thinking it succeeded).
   if (newOp === 'expand' && merged.parentVariantId && (newOp !== prevOp || compositionInputsChanged)) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, effectiveItems);
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
-      await db
-        .update(bundle)
-        .set({ metafieldState: 'Written', metafieldGid })
-        .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+      await bundleRepo.setMetafieldState(shopId, id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
@@ -526,7 +488,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     }
   } else if (newOp === 'merge' && merged.parentVariantId && (newOp !== prevOp || mergeInputsChanged)) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       // `merged.price` is guaranteed a finite, positive dollar value here —
       // the merge guard above already rejected any request reaching this
       // branch without one.
@@ -539,10 +501,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
-      await db
-        .update(bundle)
-        .set({ metafieldState: 'Written', metafieldGid })
-        .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+      await bundleRepo.setMetafieldState(shopId, id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
@@ -557,15 +516,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
 // DELETE /api/bundles/:id — scoped to the caller's shop (404 when missing).
 bundleRoutes.delete('/api/bundles/:id', async (c) => {
-  const db = createDb(c.env.DB);
+  const bundleRepo = new BundleRepository(createDb(c.env.DB));
   const id = c.req.param('id');
   const shopId = c.get('shopId');
 
-  const existing = await db
-    .select()
-    .from(bundle)
-    .where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)))
-    .get();
+  const existing = await bundleRepo.find(shopId, id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   // Best-effort: clearing the metafield is not fatal to the delete — the
@@ -574,7 +529,7 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
   // reachable. Failures are logged, not surfaced to the client.
   if (existing.metafieldState === 'Written' && existing.parentVariantId) {
     try {
-      const shopDomain = await requireShopDomain(db, shopId);
+      const shopDomain = requireShopDomain(c);
       if (existing.operation === 'expand') {
         await clearComposition(c.env, shopDomain, existing.parentVariantId);
       } else if (existing.operation === 'merge') {
@@ -585,7 +540,7 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
     }
   }
 
-  await db.delete(bundle).where(and(eq(bundle.id, id), eq(bundle.shopId, shopId)));
+  await bundleRepo.delete(shopId, id);
 
   return c.json({ ok: true });
 });

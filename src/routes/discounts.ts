@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
-import { and, eq, isNull } from 'drizzle-orm';
 import { createDb } from '../db/db';
-import { discount, shopifyShop } from '../db/schema';
+import { DiscountRepository, type DiscountRow } from '../db/repos/discountRepo';
 import { getSyncHealth, reconcileDiscounts } from '../lifecycle/discountSync';
 import type { AppEnv } from '../types/env.d';
 
@@ -13,7 +12,7 @@ export const discountRoutes = new Hono<AppEnv>();
 const TYPE_LABEL = { tier: 'Tier', bundle: 'Bundle', special: 'Special' } as const;
 const TYPE_SYMBOL = { tier: '%', bundle: '◱', special: '◨' } as const;
 
-type Row = typeof discount.$inferSelect;
+type Row = DiscountRow;
 
 interface UiDiscount {
   id: string;
@@ -71,12 +70,8 @@ const MATCHERS: Record<FilterId, (d: UiDiscount) => boolean> = {
 // Returns the caller's shop's non-tombstoned discounts in the UI `Discount`
 // shape plus per-tab counts, so the tab badges render without a second call.
 discountRoutes.get('/api/discounts', async (c) => {
-  const db = createDb(c.env.DB);
-  const rows = await db
-    .select()
-    .from(discount)
-    .where(and(eq(discount.shopId, c.get('shopId')), isNull(discount.deletedAt)))
-    .all();
+  const discounts = new DiscountRepository(createDb(c.env.DB));
+  const rows = await discounts.listLive(c.get('shopId'));
 
   const all = rows.map(toUi);
   const counts = {
@@ -102,27 +97,22 @@ discountRoutes.get('/api/discounts/sync-health', async (c) => {
 // POST /api/discounts/reconcile — re-sync from Shopify and tombstone rows deleted
 // while offline. Idempotent: a run with no Shopify changes writes no new tombstones.
 discountRoutes.post('/api/discounts/reconcile', async (c) => {
-  const db = createDb(c.env.DB);
-  const shopId = c.get('shopId');
-  const shop = await db
-    .select({ domain: shopifyShop.myshopifyDomain })
-    .from(shopifyShop)
-    .where(eq(shopifyShop.id, shopId))
-    .get();
-  if (!shop?.domain) return c.json({ error: 'Shop domain not found' }, 404);
+  const shopDomain = c.get('shopDomain');
+  if (!shopDomain) return c.json({ error: 'Shop domain not found' }, 404);
 
-  const result = await reconcileDiscounts({ db, env: c.env, shopId, shopDomain: shop.domain });
+  const result = await reconcileDiscounts({
+    db: createDb(c.env.DB),
+    env: c.env,
+    shopId: c.get('shopId'),
+    shopDomain,
+  });
   return c.json(result);
 });
 
 // GET /api/discounts/:id — single row (404 when missing or tombstoned).
 discountRoutes.get('/api/discounts/:id', async (c) => {
-  const db = createDb(c.env.DB);
-  const row = await db
-    .select()
-    .from(discount)
-    .where(and(eq(discount.id, c.req.param('id')), eq(discount.shopId, c.get('shopId'))))
-    .get();
+  const discounts = new DiscountRepository(createDb(c.env.DB));
+  const row = await discounts.find(c.get('shopId'), c.req.param('id'));
 
   if (!row || row.deletedAt) return c.json({ error: 'Discount not found' }, 404);
   // E4-3 contract: campaign summary when this row is campaign-owned. The campaign

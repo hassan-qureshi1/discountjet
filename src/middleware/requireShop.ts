@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import type { AppEnv } from '../types/env.d';
-import { getCurrentShopId } from './shopAuth';
+import { getCurrentShop } from './shopAuth';
 
 // Routes under /api/* that are intentionally public (no shop auth required).
 // Add a path here ONLY with explicit justification — all other /api/* routes
@@ -15,9 +15,15 @@ export const requireShop: MiddlewareHandler<AppEnv> = async (c, next) => {
     return;
   }
 
-  const shopId = await getCurrentShopId(c as unknown as Parameters<typeof getCurrentShopId>[0]);
-  if (!shopId) return c.json({ error: 'Unauthorized' }, 401);
+  const shop = await getCurrentShop(c as unknown as Parameters<typeof getCurrentShop>[0]);
+  if (!shop) return c.json({ error: 'Unauthorized' }, 401);
 
-  c.set('shopId', shopId);
+  // Both the id and the domain come from the one row this lookup already
+  // read. Handlers needing the `*.myshopify.com` domain for an Admin API
+  // call take it from here (see `requireShopDomain`) instead of re-selecting
+  // the same row — a PUT /api/bundles/:id used to do that up to three times
+  // in a single request.
+  c.set('shopId', shop.id);
+  c.set('shopDomain', shop.myshopifyDomain);
   await next();
 };

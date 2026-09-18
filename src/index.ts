@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { setDb } from './db/db';
 import { authRoutes } from './routes/auth';
 import { exampleRoutes } from './routes/example';
 import { discountRoutes } from './routes/discounts';
@@ -12,12 +11,6 @@ import type { Env } from './types/env';
 import { requireShop } from './middleware/requireShop';
 
 const app = new Hono<{ Bindings: Env }>();
-
-// Middleware: init Drizzle DB client per request
-app.use('*', async (c, next) => {
-  setDb(c.env.DB);
-  await next();
-});
 
 // All /api/* routes require an authenticated shop — see middleware/requireShop.ts
 app.use('/api/*', requireShop);

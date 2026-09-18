@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
 import { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
+import { ShopRepository } from '../db/repos/shopRepo';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import type { AppEnv } from '../types/env.d';
 
@@ -39,10 +38,10 @@ const SHOP_PLAN_QUERY = /* GraphQL */ `
 // GraphQL lookup. `bundlesEligible`/`BundlesFeature` is deferred (E6 later
 // slice) — this endpoint assumes bundles are eligible.
 shopRoutes.get('/api/shop/plan', async (c) => {
-  const db = createDb(c.env.DB);
+  const shops = new ShopRepository(createDb(c.env.DB));
   const shopId = c.get('shopId');
 
-  const shop = await db.select().from(shopifyShop).where(eq(shopifyShop.id, shopId)).get();
+  const shop = await shops.findById(shopId);
   if (!shop?.myshopifyDomain) return c.json({ error: 'Shop domain not found' }, 404);
 
   if (shop.shopifyPlus !== null && shop.partnerDevelopment !== null) {
@@ -61,14 +60,11 @@ shopRoutes.get('/api/shop/plan', async (c) => {
     );
   }
 
-  await db
-    .update(shopifyShop)
-    .set({
-      shopifyPlus: plan.shopifyPlus ? 1 : 0,
-      partnerDevelopment: plan.partnerDevelopment ? 1 : 0,
-      planName: plan.displayName,
-    })
-    .where(eq(shopifyShop.id, shopId));
+  await shops.updatePlanCache(shopId, {
+    shopifyPlus: plan.shopifyPlus,
+    partnerDevelopment: plan.partnerDevelopment,
+    planName: plan.displayName,
+  });
 
   const dto: ShopPlanDto = {
     updateOpEligible: plan.shopifyPlus || plan.partnerDevelopment,

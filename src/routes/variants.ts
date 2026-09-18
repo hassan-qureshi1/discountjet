@@ -111,7 +111,7 @@ variantRoutes.get('/api/variants', async (c) => {
     );
   }
 
-  const shopDomain = await requireShopDomain(createDb(c.env.DB), c.get('shopId'));
+  const shopDomain = requireShopDomain(c);
 
   let result;
   try {

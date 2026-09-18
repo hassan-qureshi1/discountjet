@@ -34,7 +34,12 @@ Single `fetch` export — all Hono routes. To add Queues, Durable Objects, or cr
 
 ## Request Auth
 
-All `/api/*` routes are guarded by `src/middleware/requireShop.ts`. Route handlers access the shop via `c.get('shopId')`. Never call `getCurrentShopId()` directly.
+All `/api/*` routes are guarded by `src/middleware/requireShop.ts`. That middleware resolves the shop row **once** per request and stashes both fields on the context:
+
+- `c.get('shopId')` — the app-internal id
+- `requireShopDomain(c)` (`src/lib/shopDomain.ts`) — the `*.myshopify.com` domain, for Admin API calls. Reads the context, issues no query, and throws if the row has no domain.
+
+Never call `getCurrentShop()` directly, and never re-select the shop row just to get its domain.
 
 To make a route public, add it to `PUBLIC_API_PATHS` in `requireShop.ts` with a comment.
 
@@ -42,9 +47,19 @@ To make a route public, add it to `PUBLIC_API_PATHS` in `requireShop.ts` with a 
 
 ## Database
 
-- `src/db/schema.ts` — Drizzle tables (starter ships only `shopify_shop`)
-- `src/db/db.ts` — `createDb(d1)` factory; `setDb()` called per-request in middleware
+- `src/db/schema.ts` — Drizzle tables
+- `src/db/db.ts` — `createDb(d1)` factory. Not a connection (no handshake, no pool), so calling it once per handler is free; pass the client down rather than re-deriving it.
+- `src/db/repos/` — **every** query lives here, one repository class per table: `ShopRepository`, `BundleRepository`, `DiscountRepository`, `WebhookEventRepository`. Handlers and lifecycle code call these methods; they never build Drizzle queries themselves.
+- `src/db/repos/_example.repository.ts` — annotated skeleton to copy when adding a table.
 - Use Drizzle ORM — never raw SQL strings outside migrations
+
+**Repository rules**
+
+- Construct one per request from the handler: `const bundleRepo = new BundleRepository(createDb(c.env.DB));`. `createDb` is not a connection (no handshake, no pool), so this is free.
+- **Never** hold a repository or `Db` at module scope. A Worker isolate is reused across requests from different shops, so a shared client is how a cross-tenant bug gets in.
+- Shop-scoped reads/writes filter on `shopId` **inside** the repository (see the private `scoped()` in `BundleRepository`). That pairing is the tenant boundary; keeping it in one place means a handler cannot leak another shop's row by forgetting a clause.
+- Return `null`, never `undefined`, for a miss — Drizzle's `.get()` yields `undefined`, and normalising once stops every call site from guessing which to check.
+- Repositories stay dumb: no Hono context, no status codes, no Admin API calls, no business rules.
 
 ---
 

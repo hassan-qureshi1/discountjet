@@ -1,24 +1,16 @@
-import { eq } from 'drizzle-orm';
-import type { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
+import type { Context } from 'hono';
+import type { AppEnv } from '../types/env.d';
 
 /**
- * Resolves the caller's `*.myshopify.com` domain (needed to call the Admin
- * API) from its app-internal shopId. Fails loudly rather than masking a
- * missing domain — a shop row without one is a data-integrity bug, not a
- * recoverable state.
+ * Reads the caller's `*.myshopify.com` domain (needed to call the Admin API)
+ * off the request context, where `requireShop` put it during auth — no query.
+ * Fails loudly rather than masking a missing domain: a shop row without one is
+ * a data-integrity bug, not a recoverable state.
  */
-export async function requireShopDomain(
-  db: ReturnType<typeof createDb>,
-  shopId: string,
-): Promise<string> {
-  const shop = await db
-    .select({ domain: shopifyShop.myshopifyDomain })
-    .from(shopifyShop)
-    .where(eq(shopifyShop.id, shopId))
-    .get();
-  if (!shop?.domain) {
-    throw new Error(`[shopDomain] no myshopify domain on file for shopId=${shopId}`);
+export function requireShopDomain(c: Context<AppEnv>): string {
+  const domain = c.get('shopDomain');
+  if (!domain) {
+    throw new Error(`[shopDomain] no myshopify domain on file for shopId=${c.get('shopId')}`);
   }
-  return shop.domain;
+  return domain;
 }

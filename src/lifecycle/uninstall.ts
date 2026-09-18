@@ -1,13 +1,7 @@
 import type { Env } from '../types/env';
 import { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { ShopRepository } from '../db/repos/shopRepo';
 
 export async function onShopUninstall(shopDomain: string, env: Env): Promise<void> {
-  const db = createDb(env.DB);
-  const now = new Date().toISOString();
-  await db
-    .update(shopifyShop)
-    .set({ status: 'uninstalled', updatedAt: now })
-    .where(eq(shopifyShop.myshopifyDomain, shopDomain));
+  await new ShopRepository(createDb(env.DB)).markUninstalled(shopDomain, new Date().toISOString());
 }

@@ -1,10 +1,8 @@
-import { and, eq, isNull } from 'drizzle-orm';
-import type { createDb } from '../db/db';
-import { discount, webhookEvent } from '../db/schema';
+import type { Db } from '../db/db';
+import { DiscountRepository } from '../db/repos/discountRepo';
+import { WebhookEventRepository } from '../db/repos/webhookEventRepo';
 import type { Env } from '../types/env';
 import { adminGraphql, type GraphqlResult } from '../lib/graphqlAdmin';
-
-type Db = ReturnType<typeof createDb>;
 
 export type DiscountKind = 'tier' | 'bundle' | 'special';
 export type DiscountMethod = 'automatic' | 'code';
@@ -182,13 +180,9 @@ export type SyncOutcome =
 
 /** True if this delivery id has not been seen before (records it if new). */
 async function recordDelivery(deps: SyncDeps, shopifyGid: string | null): Promise<boolean> {
-  const existing = await deps.db
-    .select({ id: webhookEvent.id })
-    .from(webhookEvent)
-    .where(eq(webhookEvent.id, deps.deliveryId))
-    .get();
-  if (existing) return false;
-  await deps.db.insert(webhookEvent).values({
+  const events = new WebhookEventRepository(deps.db);
+  if (await events.deliverySeen(deps.deliveryId)) return false;
+  await events.record({
     id: deps.deliveryId,
     topic: deps.topic,
     shopId: deps.shopId,
@@ -213,10 +207,7 @@ export async function syncDiscountFromWebhook(deps: SyncDeps): Promise<SyncOutco
 
   // Delete: tombstone by GID (delete always wins, regardless of timestamp).
   if (deps.topic === 'discounts/delete') {
-    await deps.db
-      .update(discount)
-      .set({ deletedAt: new Date().toISOString() })
-      .where(and(eq(discount.shopId, deps.shopId), eq(discount.shopifyGid, shopifyGid)));
+    await new DiscountRepository(deps.db).tombstoneByGid(deps.shopId, shopifyGid, new Date().toISOString());
     return { result: 'tombstoned' };
   }
 
@@ -250,34 +241,28 @@ async function upsertClassified(
 ): Promise<SyncOutcome> {
   const incomingUpdatedAt = c.updatedAt ?? fallback.updatedAt ?? new Date().toISOString();
 
-  const existing = await db
-    .select({ id: discount.id, updatedAt: discount.updatedAt })
-    .from(discount)
-    .where(and(eq(discount.shopId, shopId), eq(discount.shopifyGid, shopifyGid)))
-    .get();
+  const discounts = new DiscountRepository(db);
+  const existing = await discounts.findVersionByGid(shopId, shopifyGid);
 
   if (existing) {
     // Ordering guard: ignore a delivery older than what we already stored.
     if (existing.updatedAt && incomingUpdatedAt < existing.updatedAt) {
       return { result: 'ignored_stale' };
     }
-    await db
-      .update(discount)
-      .set({
-        name: c.name,
-        type: c.type,
-        method: c.method,
-        status: c.status,
-        products: c.products,
-        deletedAt: null, // a fresh create/update un-tombstones
-        updatedAt: incomingUpdatedAt,
-      })
-      .where(eq(discount.id, existing.id));
+    await discounts.updateById(existing.id, {
+      name: c.name,
+      type: c.type,
+      method: c.method,
+      status: c.status,
+      products: c.products,
+      deletedAt: null, // a fresh create/update un-tombstones
+      updatedAt: incomingUpdatedAt,
+    });
     return { result: 'upserted', id: existing.id };
   }
 
   const id = crypto.randomUUID();
-  await db.insert(discount).values({
+  await discounts.insert({
     id,
     shopId,
     shopifyGid,
@@ -379,25 +364,16 @@ export async function backfillDiscounts(ctx: SyncContext): Promise<{ liveGids: S
 export async function reconcileDiscounts(ctx: SyncContext): Promise<{ upserted: number; tombstoned: number }> {
   const { liveGids, upserted } = await backfillDiscounts(ctx);
 
-  const rows = await ctx.db
-    .select({ shopifyGid: discount.shopifyGid })
-    .from(discount)
-    .where(and(eq(discount.shopId, ctx.shopId), isNull(discount.deletedAt)))
-    .all();
+  const discounts = new DiscountRepository(ctx.db);
+  const mirroredGids = await discounts.listLiveGids(ctx.shopId);
 
   const now = new Date().toISOString();
-  const stale = gidsToTombstone(
-    rows.map((r) => r.shopifyGid),
-    liveGids,
-  );
+  const stale = gidsToTombstone(mirroredGids, liveGids);
   for (const gid of stale) {
-    await ctx.db
-      .update(discount)
-      .set({ deletedAt: now })
-      .where(and(eq(discount.shopId, ctx.shopId), eq(discount.shopifyGid, gid)));
+    await discounts.tombstoneByGid(ctx.shopId, gid, now);
   }
 
-  await ctx.db.insert(webhookEvent).values({
+  await new WebhookEventRepository(ctx.db).record({
     id: crypto.randomUUID(),
     topic: RECONCILE_TOPIC,
     shopId: ctx.shopId,
@@ -420,11 +396,7 @@ export interface SyncHealth {
  * (config metafield not yet seen).
  */
 export async function getSyncHealth(db: Db, shopId: string): Promise<SyncHealth> {
-  const events = await db
-    .select({ topic: webhookEvent.topic, receivedAt: webhookEvent.receivedAt })
-    .from(webhookEvent)
-    .where(eq(webhookEvent.shopId, shopId))
-    .all();
+  const events = await new WebhookEventRepository(db).list(shopId);
 
   let lastWebhookAt: string | null = null;
   let lastReconcileAt: string | null = null;
@@ -436,11 +408,7 @@ export async function getSyncHealth(db: Db, shopId: string): Promise<SyncHealth>
     }
   }
 
-  const unknown = await db
-    .select({ id: discount.id })
-    .from(discount)
-    .where(and(eq(discount.shopId, shopId), isNull(discount.deletedAt), isNull(discount.type)))
-    .all();
+  const unknownCount = await new DiscountRepository(db).countUnknownType(shopId);
 
-  return { lastWebhookAt, lastReconcileAt, unknownCount: unknown.length };
+  return { lastWebhookAt, lastReconcileAt, unknownCount };
 }

@@ -4,8 +4,7 @@ import { backfillDiscounts } from './discountSync';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
 import { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { ShopRepository } from '../db/repos/shopRepo';
 
 // Called from src/routes/auth.ts after Shopify OAuth completes.
 // The starter ships with the minimum: hydrate the shop row, register webhooks.
@@ -17,6 +16,7 @@ export async function onShopInstall(
 ): Promise<void> {
   const now = new Date().toISOString();
   const db = createDb(env.DB);
+  const shops = new ShopRepository(db);
 
   // 1. Fetch shop details from Shopify REST.
   let name = '';
@@ -54,24 +54,11 @@ export async function onShopInstall(
   }
 
   // 2. Upsert shop row.
-  await db
-    .update(shopifyShop)
-    .set({
-      name,
-      email,
-      city,
-      countryName,
-      domain,
-      shopOwner,
-      currency,
-      ianaTimezone,
-      primaryLocale,
-      plan,
-      installDate: now,
-      status: 'installed',
-      updatedAt: now,
-    })
-    .where(eq(shopifyShop.myshopifyDomain, shopDomain));
+  await shops.markInstalled(
+    shopDomain,
+    { name, email, city, countryName, domain, shopOwner, currency, ianaTimezone, primaryLocale, plan },
+    now,
+  );
 
   // 3. Register webhooks with Shopify.
   // Starter only registers APP_UNINSTALLED. Add more topics in src/lifecycle/webhooks.ts.
@@ -80,15 +67,11 @@ export async function onShopInstall(
   // 4. Backfill the discount mirror (E4-5). Webhooks only cover changes after
   // install, so seed the mirror with existing app-owned discounts now. Best-effort:
   // a failure here (e.g. token not yet readable) is recoverable via reconcile.
-  let shopRow: { id: string } | null | undefined;
+  let shopId: string | null = null;
   try {
-    shopRow = await db
-      .select({ id: shopifyShop.id })
-      .from(shopifyShop)
-      .where(eq(shopifyShop.myshopifyDomain, shopDomain))
-      .get();
-    if (shopRow?.id) {
-      await backfillDiscounts({ db, env, shopId: shopRow.id, shopDomain });
+    shopId = await shops.findIdByDomain(shopDomain);
+    if (shopId) {
+      await backfillDiscounts({ db, env, shopId, shopDomain });
     }
   } catch (err) {
     console.error(`[install] discount backfill failed for ${shopDomain}:`, err);
@@ -98,8 +81,8 @@ export async function onShopInstall(
   // here (e.g. the function not yet deployed) is recoverable — the
   // activation-status endpoint retries this on next load.
   try {
-    if (shopRow?.id) {
-      const result = await ensureCartTransform(env, shopDomain, db, shopRow.id);
+    if (shopId) {
+      const result = await ensureCartTransform(env, shopDomain, db, shopId);
       if ('conflict' in result) {
         console.error(`[install] cart transform registration conflict for ${shopDomain}: a foreign transform already exists`);
       } else {

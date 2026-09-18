@@ -1,7 +1,6 @@
-import { eq } from 'drizzle-orm';
 import type { Env } from '../types/env';
-import type { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
+import type { Db } from '../db/db';
+import { ShopRepository } from '../db/repos/shopRepo';
 import { adminGraphql } from './graphqlAdmin';
 
 const CART_TRANSFORM_API_TYPE = 'cart_transform';
@@ -100,10 +99,11 @@ async function resolveCartTransformFunctionId(env: Env, shopDomain: string): Pro
 export async function ensureCartTransform(
   env: Env,
   shopDomain: string,
-  db: ReturnType<typeof createDb>,
+  db: Db,
   shopId: string,
 ): Promise<{ gid: string; created: boolean } | { conflict: true }> {
-  const shop = await db.select().from(shopifyShop).where(eq(shopifyShop.id, shopId)).get();
+  const shops = new ShopRepository(db);
+  const shop = await shops.findById(shopId);
 
   if (shop?.cartTransformGid) {
     return { gid: shop.cartTransformGid, created: false };
@@ -121,7 +121,7 @@ export async function ensureCartTransform(
   const existingNodes = existingRes.data?.cartTransforms?.nodes ?? [];
   const ours = existingNodes.find((node) => node.functionId === functionId);
   if (ours) {
-    await db.update(shopifyShop).set({ cartTransformGid: ours.id }).where(eq(shopifyShop.id, shopId));
+    await shops.setCartTransformGid(shopId, ours.id);
     return { gid: ours.id, created: false };
   }
 
@@ -154,6 +154,6 @@ export async function ensureCartTransform(
     );
   }
 
-  await db.update(shopifyShop).set({ cartTransformGid: gid }).where(eq(shopifyShop.id, shopId));
+  await shops.setCartTransformGid(shopId, gid);
   return { gid, created: true };
 }

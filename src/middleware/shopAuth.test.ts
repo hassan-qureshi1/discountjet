@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getCurrentShop } from './shopAuth';
 import type { Context } from 'hono';
 import type { Env } from '../types/env';
+import type { AppEnv } from '../types/env.d';
 import { InMemoryShopStore, shopRow } from '../db/repos/inMemory';
 
 // Mock createShopify so decodeSessionToken is controllable in tests.
@@ -50,7 +51,7 @@ function createMockContext(options: {
   headers?: Record<string, string>;
   query?: Record<string, string>;
   env?: Partial<Env>;
-}): Context<{ Bindings: Env }> {
+}): Context<AppEnv> {
   return {
     req: {
       header: (name: string) => {
@@ -66,7 +67,7 @@ function createMockContext(options: {
       DB: {} as unknown as D1Database,
       ...options.env,
     },
-  } as unknown as Context<{ Bindings: Env }>;
+  } as unknown as Context<AppEnv>;
 }
 
 describe('getCurrentShop', () => {

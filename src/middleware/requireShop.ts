@@ -22,7 +22,7 @@ export const requireShop: MiddlewareHandler<AppEnv> = async (c, next) => {
     return;
   }
 
-  const shop = await getCurrentShop(c as unknown as Parameters<typeof getCurrentShop>[0], repos.shops);
+  const shop = await getCurrentShop(c, repos.shops);
   if (!shop) return c.json({ error: 'Unauthorized' }, 401);
 
   // Both the id and the domain come from the one row this lookup already

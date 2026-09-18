@@ -11,6 +11,12 @@
 // `implements` is doing real work: if a store interface gains a method, this
 // file stops compiling until the fake gains it too, so a fake can never
 // silently drift from the contract handlers depend on.
+//
+// INVARIANT: every read returns a COPY of the stored row(s). Handing out the
+// stored object would let a handler mutate the store just by touching what it
+// read — something D1 can never do — so the fake would mask a bug rather than
+// expose it. Writes go through the store's own methods, never through a row a
+// caller is holding.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { Repos } from './index';
@@ -60,7 +66,8 @@ export class InMemoryShopStore implements ShopStore {
   }
 
   async findById(shopId: string): Promise<ShopRow | null> {
-    return this.rows.find((r) => r.id === shopId) ?? null;
+    const row = this.rows.find((r) => r.id === shopId);
+    return row ? { ...row } : null;
   }
 
   async findProfile(shopId: string): Promise<ShopProfileDto | null> {
@@ -142,7 +149,7 @@ export class InMemoryBundleStore implements BundleStore {
   }
 
   async list(shopId: string): Promise<BundleRow[]> {
-    return this.rows.filter((r) => r.shopId === shopId);
+    return this.rows.filter((r) => r.shopId === shopId).map((r) => ({ ...r }));
   }
 
   async find(shopId: string, id: string): Promise<BundleRow | null> {
@@ -178,11 +185,14 @@ export class InMemoryDiscountStore implements DiscountStore {
   constructor(public rows: DiscountRow[] = []) {}
 
   async listLive(shopId: string): Promise<DiscountRow[]> {
-    return this.rows.filter((r) => r.shopId === shopId && r.deletedAt === null);
+    return this.rows
+      .filter((r) => r.shopId === shopId && r.deletedAt === null)
+      .map((r) => ({ ...r }));
   }
 
   async find(shopId: string, id: string): Promise<DiscountRow | null> {
-    return this.rows.find((r) => r.id === id && r.shopId === shopId) ?? null;
+    const row = this.rows.find((r) => r.id === id && r.shopId === shopId);
+    return row ? { ...row } : null;
   }
 
   async findVersionByGid(

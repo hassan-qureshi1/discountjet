@@ -201,6 +201,88 @@ export class WidgetRepository implements WidgetStore {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [SKELETON] The in-memory twin.
+//
+// For a real table this class goes in `./inMemory.ts` (test-only, imported by
+// nothing in the Worker). It is shown here so you can see the pair together.
+//
+// It exists so tests can seed rows, drive a real HTTP request through the Hono
+// app, and then assert on the rows the request left behind — instead of
+// stubbing a Drizzle query chain and asserting that some query was issued.
+// The difference matters: a stub test breaks when a handler changes HOW it
+// queries, even if its behaviour is identical. A test against this fake only
+// breaks when the behaviour actually changes.
+//
+// `implements WidgetStore` is what keeps the fake honest. Add a method to the
+// interface and this class stops compiling until it gains the method too, so
+// the fake can never quietly diverge from what the real repository does.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class InMemoryWidgetStore implements WidgetStore {
+  // `public` so a test can read the rows back: `repos.widgets.rows[0]`.
+  constructor(public rows: WidgetRow[] = []) {}
+
+  // Mirror the repository's tenant scoping rather than matching on id alone.
+  // If the fake were laxer than the real thing, a handler that forgot its
+  // `shopId` filter would pass its tests and leak data in production.
+  private index(shopId: string, id: string): number {
+    return this.rows.findIndex((r) => r.id === id && r.shopId === shopId);
+  }
+
+  async listLive(shopId: string): Promise<WidgetRow[]> {
+    return this.rows.filter((r) => r.shopId === shopId && r.deletedAt === null);
+  }
+
+  async find(shopId: string, id: string): Promise<WidgetRow | null> {
+    const i = this.index(shopId, id);
+    // Return a COPY. Handing out the stored object lets a handler mutate the
+    // store by accident, which D1 would never do — the fake would be hiding
+    // a bug instead of exposing it.
+    return i === -1 ? null : { ...this.rows[i] };
+  }
+
+  async insert(row: WidgetInsert): Promise<void> {
+    this.rows.push({ ...row } as WidgetRow);
+  }
+
+  async update(shopId: string, id: string, patch: Partial<WidgetRow>): Promise<void> {
+    const i = this.index(shopId, id);
+    // A miss is a silent no-op, exactly as `UPDATE ... WHERE` matching no row
+    // is. Do not throw here — that would make the fake stricter than D1.
+    if (i !== -1) this.rows[i] = { ...this.rows[i], ...patch };
+  }
+
+  async tombstone(shopId: string, id: string, deletedAt: string): Promise<void> {
+    await this.update(shopId, id, { deletedAt });
+  }
+
+  async delete(shopId: string, id: string): Promise<void> {
+    const i = this.index(shopId, id);
+    if (i !== -1) this.rows.splice(i, 1);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [SKELETON] How a test uses it, end to end
+//
+//   it('POST /api/widgets stores the row against the caller\'s shop', async () => {
+//     const repos = seed();                       // installs the fakes
+//     const res = await app.request('/api/widgets', { method: 'POST', ... });
+//
+//     expect(res.status).toBe(201);
+//     // Assert on STATE, not on which queries ran.
+//     expect(repos.widgets.rows).toHaveLength(1);
+//     expect(repos.widgets.rows[0]).toMatchObject({ shopId: SHOP.id, name: 'Thing' });
+//   });
+//
+// See `src/api.integration.test.ts` for the real `seed()` helper. To simulate
+// a failure the fake cannot naturally reach (a row vanishing mid-request, a
+// store throwing), override the one method on the instance:
+//
+//     repos.widgets.find = async () => null;
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // [SKELETON] What does NOT belong in a repository
 //
 //   • HTTP concerns. No `c.json(...)`, no status codes, no Hono context. A

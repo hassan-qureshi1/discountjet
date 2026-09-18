@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import type { Env } from '../types/env';
+import type { AppEnv } from '../types/env.d';
 import type { ShopStore, ShopIdentity } from '../db/repos/shopRepo';
 import { RequestedTokenType } from '@shopify/shopify-api';
 import { createShopify, createSessionStorage } from '../shopify';
@@ -19,7 +19,7 @@ const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
  * stashes both on the context so no handler re-queries for the domain.
  */
 export async function getCurrentShop(
-  c: Context<{ Bindings: Env }>,
+  c: Context<AppEnv>,
   shops: ShopStore,
 ): Promise<ShopIdentity | null> {
 

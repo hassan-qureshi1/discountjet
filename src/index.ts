@@ -8,9 +8,10 @@ import { shopRoutes } from './routes/shop';
 import { previewRoutes } from './routes/preview';
 import { webhookRoutes } from './lifecycle/webhooks';
 import type { Env } from './types/env';
+import type { AppEnv } from './types/env.d';
 import { requireShop } from './middleware/requireShop';
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<AppEnv>();
 
 // All /api/* routes require an authenticated shop — see middleware/requireShop.ts
 app.use('/api/*', requireShop);

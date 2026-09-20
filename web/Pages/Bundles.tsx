@@ -10,14 +10,13 @@ import { getOp } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
 import { SymbolTile } from '../components/SymbolTile';
 import { createAuthenticatedFetch } from '../api';
+import { formatMoney, moneyAmount } from '../lib/money';
 
 const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
   merge: 'info',
   expand: 'magic',
   update: 'warning',
 };
-
-const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** A small row of generic package tiles standing in for a bundle's items (no product names available). */
 function ItemThumbs({ count }: { count: number }) {
@@ -78,7 +77,7 @@ export default function Bundles() {
   const [viewError, setViewError] = useState<string | null>(null);
 
   const bundles = data?.bundles ?? [];
-  const summary = data?.summary ?? { count: 0, inCampaigns: 0, avgSaving: 0 };
+  const summary = data?.summary ?? { count: 0, inCampaigns: 0, avgSaving: null };
 
   const handleViewInShopify = async (bundleId: string) => {
     setViewError(null);
@@ -127,7 +126,7 @@ export default function Bundles() {
               <Stat label="In campaigns" value={String(summary.inCampaigns)} />
             </Box>
             <Box borderInlineStartWidth="025" borderColor="border">
-              <Stat label="Avg. saving" value={money(summary.avgSaving)} />
+              <Stat label="Avg. saving" value={formatMoney(summary.avgSaving)} />
             </Box>
           </InlineGrid>
         </Card>
@@ -153,7 +152,12 @@ export default function Bundles() {
               ]}
             >
               {bundles.map((b: Bundle, index: number) => {
-                const save = b.price != null && b.sumOfItems != null ? b.sumOfItems - b.price : null;
+                const price = moneyAmount(b.price);
+                const sum = moneyAmount(b.sumOfItems);
+                const save = price != null && sum != null
+                  ? formatMoney({ amount: String(sum - price), currencyCode: b.price!.currencyCode })
+                  : null;
+                const saveAmount = price != null && sum != null ? sum - price : null;
                 return (
                   <IndexTable.Row id={b.id} key={b.id} position={index}>
                     <IndexTable.Cell>
@@ -180,13 +184,13 @@ export default function Bundles() {
                     </IndexTable.Cell>
                     <IndexTable.Cell>
                       <Text as="span" numeric alignment="end" fontWeight="semibold">
-                        {b.price != null ? money(b.price) : '—'}
+                        {formatMoney(b.price)}
                       </Text>
                     </IndexTable.Cell>
                     <IndexTable.Cell>
                       <div style={{ textAlign: 'right' }}>
-                        {save != null && save > 0 ? (
-                          <Badge tone="success">{`−${money(save)}`}</Badge>
+                        {save != null && saveAmount != null && saveAmount > 0 ? (
+                          <Badge tone="success">{`−${save}`}</Badge>
                         ) : (
                           <Text as="span" tone="subdued">—</Text>
                         )}

@@ -30,7 +30,7 @@ import {
 import {
   useBundleQuery, useCreateBundle, useShopPlanQuery, useUpdateBundle, useVariantsQuery,
 } from '../bundles/hooks';
-import type { BundleInput, ResolvedVariant } from '../bundles/api';
+import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import {
   CART_TRANSFORM_LIMITS,
@@ -40,9 +40,20 @@ import {
   OPERATIONS,
   type GateResult,
 } from '../bundles/ops';
-import type { BundleItem, BundleOperation, BundleStatus } from '../types/bundles';
+import type { BundleOperation, BundleStatus } from '../types/bundles';
+import { formatMoney, moneyAmount } from '../lib/money';
 
-const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** What the editor holds while the merchant is picking. NOT the wire shape:
+ *  `price` is a plain number for the live preview only — the server re-resolves
+ *  every price from Shopify on save and ignores whatever we send. */
+interface DraftItem {
+  variantId: string;
+  name: string;
+  qty: number;
+  price: number | null;
+  priceAdjustment?: number;
+  titleOverride?: string;
+}
 
 const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
   merge: 'info',
@@ -256,7 +267,7 @@ export default function BundleEditor() {
   const [priceStr, setPriceStr] = useState('0');
   const [parentVariantId, setParentVariantId] = useState<string | undefined>(undefined);
   const [parentTitle, setParentTitle] = useState<string | undefined>(undefined);
-  const [items, setItems] = useState<BundleItem[]>([]);
+  const [items, setItems] = useState<DraftItem[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [updatePriceAdjustment, setUpdatePriceAdjustment] = useState('');
   const [updateTitleOverride, setUpdateTitleOverride] = useState('');
@@ -271,12 +282,21 @@ export default function BundleEditor() {
     setName(bundle.name);
     setOperation(bundle.operation);
     setStatus(bundle.status);
-    setPriceStr(bundle.price != null ? String(bundle.price) : '0');
+    const bundlePrice = moneyAmount(bundle.price);
+    setPriceStr(bundlePrice != null ? String(bundlePrice) : '0');
     setParentVariantId(bundle.parentVariantId);
-    setItems(bundle.items);
+    setItems(bundle.items.map((it) => ({
+      variantId: it.variantId,
+      name: it.name,
+      qty: it.qty,
+      price: moneyAmount(it.price),
+      ...(it.priceAdjustment ? { priceAdjustment: moneyAmount(it.priceAdjustment) ?? undefined } : {}),
+      ...(it.titleOverride ? { titleOverride: it.titleOverride } : {}),
+    })));
     if (bundle.operation === 'update' && bundle.items[0]) {
       const [override] = bundle.items;
-      setUpdatePriceAdjustment(override.priceAdjustment != null ? String(override.priceAdjustment) : '');
+      const overrideAdjustment = moneyAmount(override.priceAdjustment ?? null);
+      setUpdatePriceAdjustment(overrideAdjustment != null ? String(overrideAdjustment) : '');
       setUpdateTitleOverride(override.titleOverride ?? '');
     }
     initializedRef.current = true;
@@ -360,7 +380,9 @@ export default function BundleEditor() {
           const existing = prev.find((p) => p.variantId === v.variantId);
           // Keep the quantity the merchant already typed for a variant that
           // was already in the bundle.
-          return { variantId: v.variantId, qty: existing?.qty ?? 1, price: v.price };
+          return {
+            variantId: v.variantId, name: v.title, qty: existing?.qty ?? 1, price: v.price ?? null,
+          };
         });
         if (complete) return next;
         const keptIds = new Set(next.map((it) => it.variantId));
@@ -421,6 +443,8 @@ export default function BundleEditor() {
   const priceNum = parseFloat(priceStr) || 0;
   const save = Math.max(0, sumOfItems - priceNum);
   const selectedOp = getOp(operation);
+  const currencyCode = planData?.currencyCode ?? 'USD';
+  const showMoney = (n: number) => formatMoney({ amount: String(n), currencyCode });
 
   const updateGate = gateOperation('update', updateOpEligible);
   const isUpdateLocked = operation === 'update' && !updateGate.enabled;
@@ -431,7 +455,7 @@ export default function BundleEditor() {
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
     if (operation === 'update') {
-      const overrideItem: BundleItem | undefined = parentVariantId
+      const overrideItem: BundleItemInput | undefined = parentVariantId
         ? {
           variantId: parentVariantId,
           qty: 1,
@@ -449,10 +473,14 @@ export default function BundleEditor() {
     return {
       name: trimmedName,
       operation,
-      items,
+      items: items.map((it) => ({
+        variantId: it.variantId,
+        qty: it.qty,
+        ...(it.priceAdjustment !== undefined ? { priceAdjustment: it.priceAdjustment } : {}),
+        ...(it.titleOverride ? { titleOverride: it.titleOverride } : {}),
+      })),
       parentVariantId,
       price: operation === 'merge' ? priceNum : undefined,
-      sumOfItems,
       status: nextStatus,
     };
   };
@@ -637,9 +665,9 @@ export default function BundleEditor() {
                         </Text>
                         <InlineStack gap="200" blockAlign="center">
                           <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
-                            {money(sumOfItems)}
+                            {showMoney(sumOfItems)}
                           </Text>
-                          {save > 0 && <Badge tone="success">{`Save ${money(save)}`}</Badge>}
+                          {save > 0 && <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>}
                         </InlineStack>
                       </BlockStack>
                     </InlineGrid>
@@ -710,7 +738,7 @@ export default function BundleEditor() {
                         />
                         <InlineStack gap="150" blockAlign="center">
                           <Text as="span" variant="bodySm" tone="subdued">
-                            {money(c.price ?? 0)}
+                            {showMoney(c.price ?? 0)}
                             {' '}
                             / unit
                           </Text>

@@ -13,13 +13,25 @@ export type {
   Bundle, BundleItem, BundleOperation, BundleStatus, BundleSummary,
 };
 
+/**
+ * The shape of an item as sent to the server. Deliberately NOT `BundleItem`
+ * (the wire-read shape) — the server re-resolves `name` and `price` from
+ * Shopify on every save and ignores whatever the client sends, so those
+ * fields have no business being in the request body.
+ */
+export interface BundleItemInput {
+  variantId: string;
+  qty: number;
+  priceAdjustment?: number;
+  titleOverride?: string;
+}
+
 export interface BundleInput {
   name: string;
   operation: BundleOperation;
-  items: BundleItem[];
+  items: BundleItemInput[];
   parentVariantId?: string;
   price?: number;
-  sumOfItems?: number;
   status?: BundleStatus;
 }
 
@@ -35,6 +47,7 @@ export interface BundleDetailResponse {
 export interface ShopPlanResponse {
   updateOpEligible: boolean;
   planName: string | null;
+  currencyCode: string;
 }
 
 export function fetchBundles(f: AuthenticatedFetch): Promise<BundlesResponse> {

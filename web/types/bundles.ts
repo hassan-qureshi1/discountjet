@@ -2,6 +2,9 @@
  * Bundle types for the E6 feature
  * Matches the backend DTO shape in src/routes/bundles.ts
  */
+import type { MoneyV2 } from '../lib/money';
+
+export type { MoneyV2 };
 
 export type BundleOperation = 'merge' | 'expand' | 'update';
 
@@ -9,15 +12,11 @@ export type BundleStatus = 'Active' | 'Scheduled' | 'Ended' | 'Draft';
 
 export interface BundleItem {
   variantId: string;
+  name: string;
   qty: number;
-  priceAdjustment?: number;
+  price: MoneyV2;
+  priceAdjustment?: MoneyV2;
   titleOverride?: string;
-  /**
-   * Per-unit price in dollars, used to build the `bundle.composition_v2`
-   * metafield for `expand` bundles. Populated by the editor from the picked
-   * variant; no DB migration needed — `items` is stored as free-form JSON.
-   */
-  price?: number;
 }
 
 export interface Bundle {
@@ -26,8 +25,8 @@ export interface Bundle {
   operation: BundleOperation;
   items: BundleItem[];
   parentVariantId?: string;
-  price: number | null;
-  sumOfItems: number | null;
+  price: MoneyV2 | null;
+  sumOfItems: MoneyV2 | null;
   status: BundleStatus;
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
@@ -37,5 +36,5 @@ export interface Bundle {
 export interface BundleSummary {
   count: number;
   inCampaigns: number;
-  avgSaving: number;
+  avgSaving: MoneyV2 | null;
 }

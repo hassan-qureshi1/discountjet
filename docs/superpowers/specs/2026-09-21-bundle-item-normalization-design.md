@@ -236,25 +236,22 @@ computing the same figure locally for the live preview, but no longer posts it.
 Existing bundle data is disposable (dev store only), so this is a single migration:
 
 1. create `bundle_item`
-2. `insert … select … from bundle, json_each(bundle.items)` — carrying `variantId`, `qty`,
-   `priceAdjustment`, `titleOverride`, converting `price` to minor units
-3. recreate `bundle` without `items` and `sum_of_items` (SQLite requires table recreation to drop
+2. recreate `bundle` without `items` and `sum_of_items` (SQLite requires table recreation to drop
    a column; drizzle-kit generates this)
 
-Legacy items have no `name` and may have no `price`, and SQL cannot call the Admin API to get
-them. Those rows are **dropped** by the migration rather than inserted with placeholder values —
-a bundle with missing components is visibly broken in the editor and the merchant re-picks them,
-which is better than a row carrying a fabricated price into a checkout metafield.
+**No item data is carried over.** Legacy `items` JSON has no `name` field at all, and
+`bundle_item.name` is `NOT NULL`, so there is nothing valid to insert — and SQL cannot call the
+Admin API to fetch one. Fabricating a name, or defaulting it to the variant id, would put a
+placeholder into the column the deleted-variant banner reads, which is precisely the case where a
+wrong label is worse than an obvious absence.
 
-The dollars→minor-units conversion in step 2 needs the exponent, which depends on the shop's
-currency, so the migration joins `shopify_shop` and uses a `CASE` over the 0-decimal and
-3-decimal currency lists, defaulting to 2.
+Bundles keep their name, price, status and metafield state; they simply have no components until
+the merchant re-picks them. For an `expand` bundle that is a state the routes already reject on
+save, so it surfaces in the editor as a bundle that cannot be saved until its items are re-picked.
+This is intended: the alternative is a bundle that looks fine and writes an empty
+`composition_v2`, which aborts the entire cart-transform invocation for that cart.
 
-Dropping legacy items can leave a bundle with **no** components. For an `expand` bundle that is an
-invalid state the routes already reject on save, so it surfaces in the editor as a bundle that
-cannot be saved until the merchant re-picks its items. This is intended: the alternative is a
-bundle that looks fine and writes an empty `composition_v2`, which aborts the entire
-cart-transform invocation for that cart.
+Because nothing is converted, the migration needs no currency lookup.
 
 `docs/erd.dbml` is updated in the same change as the schema and the migration, per the root
 `CLAUDE.md` rule.

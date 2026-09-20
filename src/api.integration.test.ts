@@ -1143,6 +1143,252 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(repos.bundleItems.rows[0]).toMatchObject({ priceAdjustment: 125, qty: 3, price: 1500 });
   });
 
+  // ---------------------------------------------------------------------
+  // Request-body preconditions. The bundle total is COMPUTED as
+  // `sum(price * qty)` and the metafield is built from the same rows, so a
+  // junk `qty`, a duplicate variant or a non-array `items` corrupts money (or
+  // 500s) rather than being cosmetic. Each of these must be a 400 whose
+  // message NAMES the offending value — a future refactor must not be able to
+  // quietly turn one back into a 500.
+  // ---------------------------------------------------------------------
+
+  it('POST /api/bundles rejects a fractional qty, naming the variant and the value', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'update',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2.6 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/gid:\/\/shopify\/ProductVariant\/1/);
+    expect(error).toMatch(/2\.6/);
+    // Rejected before Shopify is asked, and nothing was written.
+    expect(adminGraphql).not.toHaveBeenCalled();
+    expect(repos.bundles.rows).toHaveLength(0);
+    expect(repos.bundleItems.rows).toHaveLength(0);
+  });
+
+  it('POST /api/bundles rejects a zero/negative/non-numeric qty', async () => {
+    for (const qty of [0, -1, 'two', null]) {
+      vi.clearAllMocks();
+      seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+
+      const res = await app.request(
+        '/api/bundles',
+        {
+          method: 'POST',
+          headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Camp Kit',
+            operation: 'update',
+            items: [{ variantId: 'gid://shopify/ProductVariant/1', qty }],
+          }),
+        },
+        env('development'),
+      );
+
+      expect(res.status).toBe(400);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toMatch(/whole number greater than zero/);
+      expect(error).toContain(String(qty));
+      expect(adminGraphql).not.toHaveBeenCalled();
+    }
+  });
+
+  it('PUT /api/bundles/:id rejects a fractional qty rather than storing it', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
+      bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1', qty: 2 })],
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2.6 }] }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/2\.6/);
+    expect(repos.bundleItems.rows[0].qty).toBe(2);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/bundles/:id rejects `items: null` and leaves the stored priceAdjustment untouched', async () => {
+    // The bug this pins: `body.items ?? existingItems.map(...)` let `null`
+    // fall through to the stored rows (priceAdjustment ALREADY in minor
+    // units), while the gate `body.items !== undefined` was still TRUE for
+    // `null` — so verifyItems re-ran toMinorUnits and turned 500 into 50000.
+    const stored = bundleItemRow({
+      id: 'i1',
+      bundleId: 'bundle-1',
+      qty: 2,
+      price: 1500,
+      priceAdjustment: 500, // already minor units: A$5.00
+    });
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
+      bundleItems: [{ ...stored }],
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed', items: null }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/items must be an array/i);
+    // The stored adjustment is UNCHANGED — not 50000, and not merely "the
+    // request succeeded".
+    expect(repos.bundleItems.rows).toEqual([stored]);
+    expect(repos.bundleItems.rows[0].priceAdjustment).toBe(500);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles rejects more items than the variant resolver will accept', async () => {
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    const items = Array.from({ length: 51 }, (_, i) => ({
+      variantId: `gid://shopify/ProductVariant/${i + 1}`,
+      qty: 1,
+    }));
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Camp Kit', operation: 'update', items }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/at most 50 items/);
+    expect(error).toMatch(/51/);
+    // Never reaches Shopify — that is the whole point of the cap.
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles rejects two rows for the same variant, naming the repeat', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'update',
+          items: [
+            { variantId: 'gid://shopify/ProductVariant/1', qty: 1 },
+            { variantId: 'gid://shopify/ProductVariant/2', qty: 1 },
+            { variantId: 'gid://shopify/ProductVariant/1', qty: 3 },
+          ],
+        }),
+      },
+      env('development'),
+    );
+
+    // A 400, not the 500 the (bundle_id, variant_id) unique index used to give.
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toMatch(/Duplicate items/);
+    expect(error).toMatch(/gid:\/\/shopify\/ProductVariant\/1/);
+    expect(error).not.toMatch(/ProductVariant\/2/);
+    expect(repos.bundleItems.rows).toHaveLength(0);
+  });
+
+  it('PUT /api/bundles/:id rejects two rows for the same variant', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
+      bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1' })],
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          items: [
+            { variantId: 'gid://shopify/ProductVariant/1', qty: 1 },
+            { variantId: 'gid://shopify/ProductVariant/1', qty: 2 },
+          ],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/gid:\/\/shopify\/ProductVariant\/1/);
+    expect(repos.bundleItems.rows).toHaveLength(1);
+  });
+
+  it('POST /api/bundles rejects a non-array `items` with a 400, not a 500', async () => {
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Camp Kit', operation: 'update', items: {} }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/items must be an array/i);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/bundles/:id rejects a non-array `items` with a 400, not a 500', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
+      bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1' })],
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ items: {} }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/items must be an array/i);
+    expect(repos.bundleItems.rows).toHaveLength(1);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
   it('PUT /api/bundles/:id rejects a body containing sumOfItems', async () => {
     seed({ bundles: [bundleRow({ operation: 'update' })] });
 

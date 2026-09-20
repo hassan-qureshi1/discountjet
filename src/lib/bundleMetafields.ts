@@ -52,18 +52,24 @@ function toSafeQuantity(qty: number): number {
 // `price` is `f64` on the Rust side, which parses fine from any finite JSON
 // number — but a non-finite (NaN/Infinity) value would serialize as `null`
 // (deserialization failure) or fail `JSON.stringify` entirely. The type now
-// makes `price` required, so this guards only the non-finite case: fall back
-// to 0 rather than propagate garbage into the cart transform.
+// makes `price` required, so this guards only the non-finite case — and it
+// throws rather than substituting 0, because this value is the per-unit price
+// the cart transform charges: a zero here is a component given away FREE at
+// checkout. Unreachable today is not a reason to leave a silent zero on the
+// checkout path.
 function toSafePrice(price: number): number {
-  return Number.isFinite(price) ? price : 0;
+  if (!Number.isFinite(price)) {
+    throw new Error(`[bundleMetafields] non-finite component price: ${price}`);
+  }
+  return price;
 }
 
 /**
  * Pure mapping from bundle items to the `$app:cart-transform.composition`
  * JSON array shape. Shopify-independent (no network calls) — the value the Rust
  * `bundle_expander` reads is `JSON.stringify(compositionFromItems(items))`.
- * Guarantees a valid integer `quantity` (>= 1) and a finite `price` even if
- * the caller's input isn't shape-validated upstream.
+ * Guarantees a valid integer `quantity` (>= 1), and throws rather than emit a
+ * non-finite `price` the Rust side could not read (or, worse, a silent zero).
  */
 export function compositionFromItems(items: BundleItemLike[]): CompositionEntry[] {
   return items.map((item) => ({

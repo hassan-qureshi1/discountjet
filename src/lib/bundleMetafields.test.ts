@@ -59,13 +59,13 @@ describe('compositionFromItems', () => {
     expect(result.map((r) => r.quantity)).toEqual([1, 1, 1, 1]);
   });
 
-  it('falls back a non-finite price to 0', () => {
-    const result = compositionFromItems([
-      { variantId: '1', qty: 1, price: NaN },
-      { variantId: '2', qty: 1, price: Infinity },
-    ]);
-    expect(result.map((r) => r.price)).toEqual([0, 0]);
-    expect(result.every((r) => Number.isFinite(r.price))).toBe(true);
+  it('throws on a non-finite price rather than emitting a free component', () => {
+    // A 0 here is not a safe fallback — it is the price the cart transform
+    // charges, so it hands the component away free at checkout.
+    expect(() => compositionFromItems([{ variantId: '1', qty: 1, price: NaN }]))
+      .toThrow(/non-finite component price: NaN/);
+    expect(() => compositionFromItems([{ variantId: '2', qty: 1, price: Infinity }]))
+      .toThrow(/non-finite component price: Infinity/);
   });
 });
 

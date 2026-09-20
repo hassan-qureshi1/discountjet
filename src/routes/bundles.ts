@@ -13,7 +13,7 @@ import {
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { requireShopDomain } from '../lib/shopDomain';
-import { resolveVariants, variantDisplayName, VARIANT_GID } from '../lib/variantResolver';
+import { resolveVariants, variantDisplayName, VARIANT_GID, MAX_VARIANT_IDS } from '../lib/variantResolver';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
@@ -183,11 +183,52 @@ async function verifyItems(
     return convertAdjustment ? toMinorUnits(value, currency) : value;
   };
 
+  // Bounded before Shopify is asked: `nodes(ids:)` tops out at 250 ids, so an
+  // unbounded list reaches the Admin API and comes back as an opaque 502.
+  if (items.length > MAX_VARIANT_IDS) {
+    throw new HttpError(
+      400,
+      `A bundle can hold at most ${MAX_VARIANT_IDS} items; this request has ${items.length}.`,
+    );
+  }
+
   const malformed = items.filter((i) => !VARIANT_GID.test(i.variantId));
   if (malformed.length > 0) {
     throw new HttpError(
       400,
       `Not ProductVariant ids: ${malformed.map((i) => i.variantId).join(', ')}`,
+    );
+  }
+
+  // `qty` is load-bearing money now, not a cosmetic count: the bundle total is
+  // computed as `sum(price * qty)`, so a fractional qty makes `toMoney` slice a
+  // non-integer by string position and render as `$NaN`, while
+  // `compositionFromItems` rounds the SAME value to an integer for the
+  // metafield — D1 and `composition_v2` then disagree about what the shopper
+  // gets. A whole positive number is the only honest input.
+  const badQty = items.filter((i) => !Number.isInteger(i.qty) || i.qty <= 0);
+  if (badQty.length > 0) {
+    throw new HttpError(
+      400,
+      `Quantity must be a whole number greater than zero: ${badQty
+        .map((i) => `${i.variantId} (qty ${i.qty})`)
+        .join(', ')}`,
+    );
+  }
+
+  // `bundle_item` has a `(bundle_id, variant_id)` unique index, so a duplicated
+  // variant fails the whole `replaceForBundle` batch — a 500 for what is plainly
+  // a bad request.
+  const seenVariants = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const item of items) {
+    if (seenVariants.has(item.variantId)) duplicates.add(item.variantId);
+    seenVariants.add(item.variantId);
+  }
+  if (duplicates.size > 0) {
+    throw new HttpError(
+      400,
+      `Duplicate items for the same variant: ${[...duplicates].join(', ')}. Use one row per variant and set its quantity.`,
     );
   }
 
@@ -446,6 +487,11 @@ bundleRoutes.post('/api/bundles', async (c) => {
   if (!body.name) return c.json({ error: 'Bundle name is required' }, 400);
   if (!body.operation) return c.json({ error: 'Bundle operation is required' }, 400);
   if (!body.items) return c.json({ error: 'Bundle items are required' }, 400);
+  // Shape, not just presence: `items: {}` is truthy and would reach `.filter`
+  // and `.map` below as a 500 instead of the 400 it plainly is.
+  if (!Array.isArray(body.items)) {
+    return c.json({ error: 'Bundle items must be an array.' }, 400);
+  }
 
   // An expand bundle with zero items would write `bundle.composition_v2 =
   // "[]"` below — the Rust cart-transform function treats an empty
@@ -569,6 +615,23 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     );
   }
 
+  // ONE predicate for "this PUT replaces the components", used by the fallback
+  // below AND by the re-resolution gate further down. They used to be spelled
+  // differently (`body.items ?? …` vs `body.items !== undefined`), and
+  // `items: null` fell into the gap: the fallback rebuilt the stored rows,
+  // whose `priceAdjustment` is ALREADY minor units, and the gate then handed
+  // them to `verifyItems(convertAdjustment: true)`, scaling a stored 500
+  // (A$5.00) to 50000 (A$500.00) on every such PUT.
+  //
+  // `null` is a 400, not "no change": omitting the key already says "leave the
+  // components alone", so an explicit `null` adds no meaning and is a client
+  // bug worth surfacing rather than silently reinterpreting.
+  const bodyItems = body.items;
+  const replacesItems = bodyItems !== undefined;
+  if (replacesItems && !Array.isArray(bodyItems)) {
+    return c.json({ error: 'Bundle items must be an array. Omit `items` to leave them unchanged.' }, 400);
+  }
+
   const currency = await shopCurrency(c);
   const existingItems = await bundleItems.listForBundle(id);
 
@@ -582,9 +645,9 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // never re-resolves or rewrites those rows (see the `drafts` block), so no
   // `price` needs carrying across.
   const effectiveOperation = body.operation ?? existing.operation;
-  const effectiveItems: BundleItemInput[] =
-    body.items ??
-    existingItems.map((item) => ({
+  const effectiveItems: BundleItemInput[] = replacesItems
+    ? bodyItems
+    : existingItems.map((item) => ({
       variantId: item.variantId,
       qty: item.qty,
       ...(item.priceAdjustment !== null ? { priceAdjustment: item.priceAdjustment } : {}),
@@ -639,7 +702,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // Resolved BEFORE the row is touched, so an unverifiable price aborts the
   // whole PUT rather than leaving a half-applied edit behind.
   let drafts: BundleItemDraft[] | null = null;
-  if (body.items !== undefined) {
+  if (replacesItems) {
     try {
       // Always major units here: this branch only runs for client-sent items.
       drafts = await verifyItems(c, currency, effectiveItems, existingItems, true);
@@ -674,9 +737,9 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // an extra Admin API round-trip (or a spurious 502 if it fails), but a
   // transition INTO `expand`/`merge` must always (re)write, even if
   // items/parentVariantId happen to be unchanged from before.
-  const compositionInputsChanged = body.items !== undefined || body.parentVariantId !== undefined;
+  const compositionInputsChanged = replacesItems || body.parentVariantId !== undefined;
   const mergeInputsChanged =
-    body.items !== undefined ||
+    replacesItems ||
     body.parentVariantId !== undefined ||
     body.price !== undefined ||
     body.name !== undefined;

@@ -18,6 +18,31 @@ export function formatMoney(money: MoneyV2 | null, locale = 'en'): string {
   }).format(Number(money.amount));
 }
 
+/**
+ * The shop currency's symbol, for a money INPUT's prefix — a `TextField` has no
+ * amount to format yet, so `formatMoney` cannot supply it.
+ *
+ * Returns `undefined` when the currency is unknown, so the field renders with
+ * NO prefix rather than a guessed `$`. That mirrors the read paths, which show
+ * the em dash instead of inventing a currency; a hardcoded `$` on an AUD or JPY
+ * shop is exactly what this change set removes.
+ */
+export function currencySymbol(currencyCode: string | undefined): string | undefined {
+  if (currencyCode === undefined) return undefined;
+  try {
+    return new Intl.NumberFormat('en', {
+      style: 'currency',
+      currency: currencyCode,
+      currencyDisplay: 'narrowSymbol',
+    })
+      .formatToParts(0)
+      .find((part) => part.type === 'currency')?.value;
+  } catch {
+    // An unknown/invalid code is a data problem, not a reason to guess a symbol.
+    return undefined;
+  }
+}
+
 /** The numeric amount, for arithmetic like the savings column. Null stays null. */
 export function moneyAmount(money: MoneyV2 | null): number | null {
   return money === null ? null : Number(money.amount);

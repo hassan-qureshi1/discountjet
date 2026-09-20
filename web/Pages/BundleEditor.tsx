@@ -42,7 +42,7 @@ import {
   type GateResult,
 } from '../bundles/ops';
 import type { BundleOperation, BundleStatus } from '../types/bundles';
-import { formatMoney, moneyAmount } from '../lib/money';
+import { formatMoney, moneyAmount, currencySymbol } from '../lib/money';
 import { sumItemPrices } from '../bundles/preview';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
@@ -458,6 +458,10 @@ export default function BundleEditor() {
       ? formatMoney({ amount: String(n), currencyCode })
       : formatMoney(null)
   );
+  // The same rule for money INPUTS: the shop's own symbol, or none at all while
+  // the currency is unknown. Never a hardcoded `$` — it would assert USD on an
+  // AUD or JPY shop just as the old read-path helpers did.
+  const moneyPrefix = currencySymbol(currencyCode);
 
   const updateGate = gateOperation('update', updateOpEligible);
   const isUpdateLocked = operation === 'update' && !updateGate.enabled;
@@ -726,7 +730,7 @@ export default function BundleEditor() {
                       <TextField
                         label="Bundle price"
                         type="number"
-                        prefix="$"
+                        prefix={moneyPrefix}
                         value={priceStr}
                         onChange={setPriceStr}
                         autoComplete="off"
@@ -864,7 +868,7 @@ export default function BundleEditor() {
                     <TextField
                       label="New price"
                       type="number"
-                      prefix="$"
+                      prefix={moneyPrefix}
                       value={updatePriceAdjustment}
                       onChange={setUpdatePriceAdjustment}
                       autoComplete="off"

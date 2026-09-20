@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatMoney, moneyAmount } from './money';
+import { formatMoney, moneyAmount, currencySymbol } from './money';
 
 describe('formatMoney', () => {
   it('formats in the currency it is given, not a hardcoded dollar', () => {
@@ -32,5 +32,27 @@ describe('moneyAmount', () => {
 
   it('passes null through', () => {
     expect(moneyAmount(null)).toBeNull();
+  });
+});
+
+describe('currencySymbol (the prefix on BundleEditor\'s money inputs)', () => {
+  it('renders the shop\'s own symbol, not a hardcoded dollar', () => {
+    expect(currencySymbol('JPY')).toBe('¥');
+    expect(currencySymbol('GBP')).toBe('£');
+    expect(currencySymbol('EUR')).toBe('€');
+  });
+
+  it('renders a bare $ for AUD rather than A$ — the narrow symbol, as a field prefix should be', () => {
+    expect(currencySymbol('AUD')).toBe('$');
+  });
+
+  it('renders NO prefix when the shop currency has not loaded — never a guessed $', () => {
+    const prefix = currencySymbol(undefined);
+    expect(prefix).toBeUndefined();
+    expect(prefix ?? '').not.toContain('$');
+  });
+
+  it('renders no prefix for an invalid currency code rather than throwing or guessing', () => {
+    expect(currencySymbol('NOTACURRENCY')).toBeUndefined();
   });
 });

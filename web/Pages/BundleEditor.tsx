@@ -13,6 +13,7 @@ import {
   Badge,
   Banner,
   BlockStack,
+  Box,
   Button,
   Card,
   Divider,
@@ -568,22 +569,35 @@ export default function BundleEditor() {
         {deadItems.length > 0 && (
           <Banner tone="critical" title="Some products were deleted in Shopify">
             <BlockStack gap="200">
-              {deadItems.map((item) => (
-                <InlineStack key={item.variantId} gap="200" blockAlign="center">
-                  <Text as="span">
-                    <strong>{item.name}</strong>
-                    {' — '}
-                    {showMoney(item.price)}
-                  </Text>
-                  <Button
-                    variant="plain"
-                    tone="critical"
-                    onClick={() => removeItem(item.variantId)}
-                  >
-                    Remove from bundle
-                  </Button>
-                </InlineStack>
-              ))}
+              {deadItems.map((item) => {
+                // showMoney renders the em dash for both "no price on record" and
+                // "currency not yet known" — a bare dash character read out by a
+                // screen reader conveys nothing, so the words are added for
+                // assistive tech only; the visible row is unchanged.
+                const priceUnknown = item.price === null || currencyCode === undefined;
+                return (
+                  <InlineStack key={item.variantId} gap="200" blockAlign="center">
+                    <Text as="span">
+                      <strong>{item.name}</strong>
+                      {' — '}
+                      {showMoney(item.price)}
+                      {priceUnknown && (
+                        <Box as="span" visuallyHidden>
+                          {' (price unknown)'}
+                        </Box>
+                      )}
+                    </Text>
+                    <Button
+                      variant="plain"
+                      tone="critical"
+                      accessibilityLabel={`Remove ${item.name} from bundle`}
+                      onClick={() => removeItem(item.variantId)}
+                    >
+                      Remove from bundle
+                    </Button>
+                  </InlineStack>
+                );
+              })}
               <Text as="span" variant="bodySm" tone="subdued">
                 Their last known price is shown. Removing one takes effect when you save.
               </Text>

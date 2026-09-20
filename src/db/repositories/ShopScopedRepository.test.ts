@@ -61,7 +61,6 @@ describe('ShopScopedRepository', () => {
     await repo.create({
       name: 'Bundle',
       operation: 'expand',
-      items: '[]',
       status: 'Draft',
       // A caller cannot pass shopId through the type, but even a cast one loses:
       ...({ shopId: OTHER } as unknown as Record<string, never>),
@@ -74,7 +73,7 @@ describe('ShopScopedRepository', () => {
 
   it('mints a uuid id and ISO-8601 timestamps on create', async () => {
     const { fake, repo } = bundles([{ id: 'b1' }]);
-    await repo.create({ name: 'Bundle', operation: 'expand', items: '[]', status: 'Draft' });
+    await repo.create({ name: 'Bundle', operation: 'expand', status: 'Draft' });
 
     const strings = fake.lastQuery().params.filter((p): p is string => typeof p === 'string');
     expect(strings.some((p) => /^[0-9a-f-]{36}$/i.test(p))).toBe(true);

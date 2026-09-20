@@ -1,6 +1,7 @@
 import { createDb, type Db } from '../db';
 import { ShopRepository, type IShopRepository } from './ShopRepository';
 import { BundleRepository, type IBundleRepository } from './BundleRepository';
+import { BundleItemRepository, type IBundleItemRepository } from './BundleItemRepository';
 import { DiscountRepository, type IDiscountRepository } from './DiscountRepository';
 import { WebhookEventRepository, type IWebhookEventRepository } from './WebhookEventRepository';
 
@@ -8,6 +9,7 @@ export { BaseRepository } from './BaseRepository';
 export { ShopScopedRepository } from './ShopScopedRepository';
 export { ShopRepository } from './ShopRepository';
 export { BundleRepository } from './BundleRepository';
+export { BundleItemRepository } from './BundleItemRepository';
 export { DiscountRepository } from './DiscountRepository';
 export { WebhookEventRepository } from './WebhookEventRepository';
 export { NotFoundError } from './types';
@@ -23,6 +25,12 @@ export type {
   ShopProfileDto,
 } from './ShopRepository';
 export type { IBundleRepository, BundleRow, BundleNew } from './BundleRepository';
+export type {
+  IBundleItemRepository,
+  BundleItemRow,
+  BundleItemNew,
+  BundleItemDraft,
+} from './BundleItemRepository';
 export type { IDiscountRepository, DiscountRow, DiscountNew } from './DiscountRepository';
 export type {
   IWebhookEventRepository,
@@ -43,6 +51,7 @@ export type {
 export interface Repositories {
   shops: IShopRepository;
   bundles: IBundleRepository;
+  bundleItems: IBundleItemRepository;
   discounts: IDiscountRepository;
   events: IWebhookEventRepository;
 }
@@ -73,6 +82,7 @@ export function createRepositoriesFromDb(db: Db, shopId: string): Repositories {
     shops: new ShopRepository(db),
     // Shop-scoped repositories take shopId, so they cannot be built unscoped:
     bundles: new BundleRepository(db, shopId),
+    bundleItems: new BundleItemRepository(db, shopId),
     discounts: new DiscountRepository(db, shopId),
     events: new WebhookEventRepository(db),
   };

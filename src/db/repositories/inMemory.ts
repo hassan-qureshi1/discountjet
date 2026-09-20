@@ -34,6 +34,12 @@ import type {
 } from './ShopRepository';
 import type { ShopInsert } from './ShopRepository';
 import type { IBundleRepository, BundleRow, BundleNew } from './BundleRepository';
+import type {
+  IBundleItemRepository,
+  BundleItemRow,
+  BundleItemNew,
+  BundleItemDraft,
+} from './BundleItemRepository';
 import type { IDiscountRepository, DiscountRow, DiscountNew } from './DiscountRepository';
 import type {
   IWebhookEventRepository,
@@ -240,7 +246,6 @@ export class InMemoryBundleRepository
     return {
       parentVariantId: null,
       price: null,
-      sumOfItems: null,
       metafieldState: 'NotYet',
       metafieldGid: null,
       scheduleStart: null,
@@ -263,6 +268,75 @@ export class InMemoryBundleRepository
     // Deliberately not `update()` — the real repository does not bump
     // `updatedAt` for transport bookkeeping either.
     if (i !== -1) this.rows[i] = { ...this.rows[i], metafieldState: state, metafieldGid };
+  }
+}
+
+export class InMemoryBundleItemRepository
+  extends InMemoryBase<BundleItemRow, BundleItemNew>
+  implements IBundleItemRepository
+{
+  protected readonly table = 'bundle_item';
+
+  constructor(
+    public readonly shopId: string,
+    rows: BundleItemRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: BundleItemRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(data: NewRow<BundleItemNew>, id: string, now: string): BundleItemRow {
+    return {
+      priceAdjustment: null,
+      titleOverride: null,
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as BundleItemRow;
+  }
+
+  async listForBundle(bundleId: string): Promise<BundleItemRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.bundleId === bundleId)
+      .map((r) => ({ ...r }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async replaceForBundle(bundleId: string, items: BundleItemDraft[]): Promise<BundleItemRow[]> {
+    const now = new Date().toISOString();
+    this.rows = this.rows.filter((r) => !(this.inScope(r) && r.bundleId === bundleId));
+    const created = items.map((item) => ({
+      priceAdjustment: null,
+      titleOverride: null,
+      ...item,
+      id: crypto.randomUUID(),
+      shopId: this.shopId,
+      bundleId,
+      createdAt: now,
+      updatedAt: now,
+    }) as BundleItemRow);
+    this.rows.push(...created);
+    return created.map((r) => ({ ...r }));
+  }
+
+  async sumFor(bundleId: string): Promise<number | null> {
+    const rows = await this.listForBundle(bundleId);
+    if (rows.length === 0) return null;
+    return rows.reduce((total, r) => total + r.price * r.qty, 0);
+  }
+
+  async sumsByBundle(): Promise<Map<string, number>> {
+    const sums = new Map<string, number>();
+    for (const r of this.rows) {
+      if (!this.inScope(r)) continue;
+      sums.set(r.bundleId, (sums.get(r.bundleId) ?? 0) + r.price * r.qty);
+    }
+    return sums;
   }
 }
 
@@ -370,6 +444,7 @@ export class InMemoryWebhookEventRepository implements IWebhookEventRepository {
 export interface InMemoryRepositories extends Repositories {
   shops: InMemoryShopRepository;
   bundles: InMemoryBundleRepository;
+  bundleItems: InMemoryBundleItemRepository;
   discounts: InMemoryDiscountRepository;
   events: InMemoryWebhookEventRepository;
 }
@@ -383,6 +458,7 @@ export function createInMemoryRepositories(
   seed: {
     shops?: ShopRow[];
     bundles?: BundleRow[];
+    bundleItems?: BundleItemRow[];
     discounts?: DiscountRow[];
     events?: WebhookEventRow[];
   } = {},
@@ -390,6 +466,7 @@ export function createInMemoryRepositories(
   return {
     shops: new InMemoryShopRepository(seed.shops ?? []),
     bundles: new InMemoryBundleRepository(shopId, seed.bundles ?? []),
+    bundleItems: new InMemoryBundleItemRepository(shopId, seed.bundleItems ?? []),
     discounts: new InMemoryDiscountRepository(shopId, seed.discounts ?? []),
     events: new InMemoryWebhookEventRepository(seed.events ?? []),
   };

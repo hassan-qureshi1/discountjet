@@ -78,11 +78,9 @@ Table bundle {
 
   name text [not null]
   operation text [not null, note: 'merge | expand | update']
-  items text [not null, note: 'JSON: [{variantId, qty, priceAdjustment?, titleOverride?, imageOverride?}]']
 
   parent_variant_id text
-  price integer [note: 'cents']
-  sum_of_items integer [note: 'cents']
+  price integer [note: 'minor units']
 
   metafield_state text [not null, default: 'NotYet', note: 'NotYet | Written | Cleared']
   metafield_gid text
@@ -100,6 +98,30 @@ Table bundle {
   }
 
   Note: 'E6 bundles. This table is the source of truth; items are materialized into a Cart Transform Function config and a variant metafield.'
+}
+
+Table bundle_item {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE — redundant via bundle_id, carried so the repository can be shop-scoped']
+  bundle_id text [not null, ref: > bundle.id, note: 'ON DELETE CASCADE']
+
+  variant_id text [not null, note: 'ProductVariant GID']
+  name text [not null, note: 'title snapshot — READ ONLY when the variant fails to resolve']
+  qty integer [not null]
+  price integer [not null, note: 'per-unit, minor units']
+
+  price_adjustment integer [note: 'minor units; update operation only']
+  title_override text [note: 'update operation only']
+
+  created_at text [not null]
+  updated_at text [not null]
+
+  indexes {
+    bundle_id [name: 'bundle_item_bundle_id_idx']
+    (bundle_id, variant_id) [unique, name: 'bundle_item_bundle_variant_unq']
+  }
+
+  Note: 'Bundle components. The bundle total is not stored — it is sum(price * qty) over these rows, so it cannot disagree with them. No position column: the editor has no reorder UI, so items are ordered by name.'
 }
 
 Table webhook_event {

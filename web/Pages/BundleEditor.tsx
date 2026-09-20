@@ -42,6 +42,7 @@ import {
 } from '../bundles/ops';
 import type { BundleOperation, BundleStatus } from '../types/bundles';
 import { formatMoney, moneyAmount } from '../lib/money';
+import { sumItemPrices } from '../bundles/preview';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
  *  `price` is a plain number for the live preview only — the server re-resolves
@@ -439,12 +440,23 @@ export default function BundleEditor() {
     setItems((prev) => prev.map((it) => (it.variantId === variantId ? { ...it, qty } : it)));
   };
 
-  const sumOfItems = items.reduce((sum, it) => sum + (it.price ?? 0) * it.qty, 0);
+  // `null` means "unknown", never zero — an item whose price hasn't resolved
+  // yet must not silently contribute $0 to the total, which would
+  // understate it (see web/bundles/preview.ts).
+  const sumOfItems = sumItemPrices(items);
   const priceNum = parseFloat(priceStr) || 0;
-  const save = Math.max(0, sumOfItems - priceNum);
+  const save = sumOfItems != null ? Math.max(0, sumOfItems - priceNum) : null;
   const selectedOp = getOp(operation);
-  const currencyCode = planData?.currencyCode ?? 'USD';
-  const showMoney = (n: number) => formatMoney({ amount: String(n), currencyCode });
+  // Genuinely optional, not guessed: before the plan query resolves (or if it
+  // errors) we do not know the shop's currency, and guessing one (e.g. 'USD')
+  // would silently mislabel every price on screen. `showMoney` renders the em
+  // dash for both an unknown currency and an unknown amount.
+  const currencyCode = planData?.currencyCode;
+  const showMoney = (n: number | null) => (
+    currencyCode !== undefined && n !== null
+      ? formatMoney({ amount: String(n), currencyCode })
+      : formatMoney(null)
+  );
 
   const updateGate = gateOperation('update', updateOpEligible);
   const isUpdateLocked = operation === 'update' && !updateGate.enabled;
@@ -667,7 +679,7 @@ export default function BundleEditor() {
                           <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
                             {showMoney(sumOfItems)}
                           </Text>
-                          {save > 0 && <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>}
+                          {save != null && save > 0 && <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>}
                         </InlineStack>
                       </BlockStack>
                     </InlineGrid>
@@ -738,7 +750,7 @@ export default function BundleEditor() {
                         />
                         <InlineStack gap="150" blockAlign="center">
                           <Text as="span" variant="bodySm" tone="subdued">
-                            {showMoney(c.price ?? 0)}
+                            {showMoney(c.price)}
                             {' '}
                             / unit
                           </Text>

@@ -10,6 +10,19 @@ describe('formatMoney', () => {
   it('renders an em dash for an absent amount rather than $0.00', () => {
     expect(formatMoney(null)).toBe('—');
   });
+
+  it('never guesses a currency: an unresolved shop currency renders as the em dash, not a dollar sign', () => {
+    // Mirrors BundleEditor's showMoney: before planData.currencyCode has
+    // loaded, currencyCode is undefined, and the caller must fall back to
+    // formatMoney(null) rather than guessing e.g. 'USD'.
+    const currencyCode: string | undefined = undefined;
+    const amount = 42;
+    const rendered = currencyCode !== undefined
+      ? formatMoney({ amount: String(amount), currencyCode })
+      : formatMoney(null);
+    expect(rendered).toBe('—');
+    expect(rendered).not.toContain('$');
+  });
 });
 
 describe('moneyAmount', () => {

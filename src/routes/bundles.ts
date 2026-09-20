@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
-import { createDb } from '../db/db';
-import type { BundleRow } from '../db/repos/bundleRepo';
+import type { BundleRow } from '../db/repositories';
 import type { AppEnv } from '../types/env.d';
 import {
   writeComposition,
@@ -99,7 +98,7 @@ function toDto(row: Row): BundleDto {
 // per-bundle (sumOfItems - price), in dollars, over bundles with both set.
 bundleRoutes.get('/api/bundles', async (c) => {
   const bundleRepo = c.get('repos').bundles;
-  const rows = await bundleRepo.list(c.get('shopId'));
+  const rows = await bundleRepo.findAll();
 
   const bundles = rows.map(toDto);
   const savings = rows
@@ -122,12 +121,11 @@ bundleRoutes.get('/api/bundles', async (c) => {
 // endpoint lets the UI retry/reflect that state on demand). Registered
 // before `/api/bundles/:id` so `activation` isn't swallowed as an `:id`.
 bundleRoutes.get('/api/bundles/activation', async (c) => {
-  const db = createDb(c.env.DB);
   const shopId = c.get('shopId');
 
   try {
     const shopDomain = requireShopDomain(c);
-    const result = await ensureCartTransform(c.env, shopDomain, db, shopId);
+    const result = await ensureCartTransform(c.env, shopDomain, c.get('repos').shops, shopId);
 
     // Idempotently removes the app's two `$app:cart-transform` metafield
     // definitions if present — covers a store that had them created by a
@@ -167,7 +165,7 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
 // GET /api/bundles/:id — single row scoped to the caller's shop (404 when missing).
 bundleRoutes.get('/api/bundles/:id', async (c) => {
   const bundleRepo = c.get('repos').bundles;
-  const row = await bundleRepo.find(c.get('shopId'), c.req.param('id'));
+  const row = await bundleRepo.findById(c.req.param('id'));
 
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
   return c.json({ bundle: toDto(row) });
@@ -196,7 +194,7 @@ const PRODUCT_VARIANT_QUERY = `
 // resolving every row's product on list load would be an N+1 Admin API call.
 bundleRoutes.get('/api/bundles/:id/admin-url', async (c) => {
   const bundleRepo = c.get('repos').bundles;
-  const row = await bundleRepo.find(c.get('shopId'), c.req.param('id'));
+  const row = await bundleRepo.findById(c.req.param('id'));
 
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
   if (!row.parentVariantId) {
@@ -276,11 +274,11 @@ bundleRoutes.post('/api/bundles', async (c) => {
     }
   }
 
-  const shopId = c.get('shopId');
-  const now = new Date().toISOString();
-  const row: Row = {
-    id: crypto.randomUUID(),
-    shopId,
+  const bundleRepo = c.get('repos').bundles;
+
+  // No id, no shopId, no timestamps: the repository mints the first and the
+  // last, and injects the tenant it was constructed with.
+  const row: Row = await bundleRepo.create({
     name: body.name,
     operation: body.operation,
     items: JSON.stringify(body.items),
@@ -293,12 +291,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
     scheduleEnd: null,
     status: body.status ?? 'Draft',
     blockOnFailure: 0,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  const bundleRepo = c.get('repos').bundles;
-  await bundleRepo.insert(row);
+  });
 
   if (row.operation === 'expand' && row.parentVariantId) {
     try {
@@ -306,7 +299,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       const { metafieldGid } = await writeComposition(c.env, shopDomain, row.parentVariantId, body.items);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
-      await bundleRepo.setMetafieldState(shopId, row.id, 'Written', metafieldGid);
+      await bundleRepo.setMetafieldState(row.id, 'Written', metafieldGid);
     } catch (err) {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
@@ -324,7 +317,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
-      await bundleRepo.setMetafieldState(shopId, row.id, 'Written', metafieldGid);
+      await bundleRepo.setMetafieldState(row.id, 'Written', metafieldGid);
     } catch (err) {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
@@ -340,9 +333,8 @@ bundleRoutes.post('/api/bundles', async (c) => {
 bundleRoutes.put('/api/bundles/:id', async (c) => {
   const bundleRepo = c.get('repos').bundles;
   const id = c.req.param('id');
-  const shopId = c.get('shopId');
 
-  const existing = await bundleRepo.find(shopId, id);
+  const existing = await bundleRepo.findById(id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   const body = await c.req.json<Partial<BundleInput>>();
@@ -374,9 +366,8 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     }
   }
 
-  const updatedAt = new Date().toISOString();
-
-  const patch: Partial<Row> = { updatedAt };
+  // No `updatedAt` here — `update()` stamps it, so a patch cannot forget to.
+  const patch: Partial<Row> = {};
   if (body.name !== undefined) patch.name = body.name;
   if (body.operation !== undefined) patch.operation = body.operation;
   if (body.items !== undefined) patch.items = JSON.stringify(body.items);
@@ -385,9 +376,8 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.sumOfItems !== undefined) patch.sumOfItems = toCents(body.sumOfItems);
   if (body.status !== undefined) patch.status = body.status;
 
-  await bundleRepo.update(shopId, id, patch);
-
-  const merged: Row = { ...existing, ...patch };
+  // The stored row, straight back from the write — no re-deriving it locally.
+  const merged: Row = await bundleRepo.update(id, patch);
 
   // A bundle uses AT MOST ONE metafield transport at a time — `expand` ->
   // the variant `bundle.composition_v2` metafield, `merge` -> the shop
@@ -430,7 +420,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     }
     merged.metafieldState = 'Cleared';
     merged.metafieldGid = null;
-    await bundleRepo.setMetafieldState(shopId, id, 'Cleared', null);
+    await bundleRepo.setMetafieldState(id, 'Cleared', null);
   } else if (prevOp === 'merge' && newOp !== 'merge' && existing.metafieldState === 'Written' && existing.parentVariantId) {
     try {
       const shopDomain = requireShopDomain(c);
@@ -440,7 +430,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     }
     merged.metafieldState = 'Cleared';
     merged.metafieldGid = null;
-    await bundleRepo.setMetafieldState(shopId, id, 'Cleared', null);
+    await bundleRepo.setMetafieldState(id, 'Cleared', null);
   } else if (
     prevOp === 'merge' &&
     newOp === 'merge' &&
@@ -478,7 +468,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, effectiveItems);
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
-      await bundleRepo.setMetafieldState(shopId, id, 'Written', metafieldGid);
+      await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
@@ -501,7 +491,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
-      await bundleRepo.setMetafieldState(shopId, id, 'Written', metafieldGid);
+      await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
@@ -518,9 +508,8 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 bundleRoutes.delete('/api/bundles/:id', async (c) => {
   const bundleRepo = c.get('repos').bundles;
   const id = c.req.param('id');
-  const shopId = c.get('shopId');
 
-  const existing = await bundleRepo.find(shopId, id);
+  const existing = await bundleRepo.findById(id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   // Best-effort: clearing the metafield is not fatal to the delete — the
@@ -540,7 +529,7 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
     }
   }
 
-  await bundleRepo.delete(shopId, id);
+  await bundleRepo.delete(id);
 
   return c.json({ ok: true });
 });

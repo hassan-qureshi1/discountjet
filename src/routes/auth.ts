@@ -2,8 +2,7 @@ import { Hono } from 'hono';
 import { createShopify, createSessionStorage } from '../shopify';
 import { onShopInstall } from '../lifecycle/install';
 import type { Env } from '../types/env';
-import { createDb } from '../db/db';
-import { ShopRepository } from '../db/repos/shopRepo';
+import { createShopRepository } from '../db/repositories';
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
@@ -20,7 +19,7 @@ authRoutes.get('/shopify/install', async (c) => {
   // actually need to start a fresh OAuth flow. For an existing install we'd
   // otherwise loop: escape → top-level redirect to / → Shopify admin re-loads
   // the iframe at the configured App URL (/shopify/install) → escape again.
-  const shops = new ShopRepository(createDb(c.env.DB));
+  const shops = createShopRepository(c.env.DB);
   const existing = await shops.findInstalledByDomain(shop);
 
   console.log(`[install] existing record=${!!existing}`);
@@ -130,7 +129,7 @@ authRoutes.get('/shopify/callback', async (c) => {
     console.log(`[auth:callback] KV verify: loaded=${!!verifySession}, id=${verifySession?.id}`);
 
     // Upsert shop record
-    await new ShopRepository(createDb(c.env.DB)).upsertInstalled({
+    await createShopRepository(c.env.DB).upsertInstalled({
       id: session.id,
       myshopifyDomain: shopDomain,
       createdAt: now,

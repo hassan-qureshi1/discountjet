@@ -3,8 +3,7 @@ import { registerWebhooks } from './webhooks';
 import { backfillDiscounts } from './discountSync';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
-import { createDb } from '../db/db';
-import { ShopRepository } from '../db/repos/shopRepo';
+import { createRepositories, createShopRepository } from '../db/repositories';
 
 // Called from src/routes/auth.ts after Shopify OAuth completes.
 // The starter ships with the minimum: hydrate the shop row, register webhooks.
@@ -15,8 +14,9 @@ export async function onShopInstall(
   env: Env,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const db = createDb(env.DB);
-  const shops = new ShopRepository(db);
+  // Unscoped: at this point the shop row may not exist yet, so there is no
+  // tenant to bind a scoped repository to.
+  const shops = createShopRepository(env.DB);
 
   // 1. Fetch shop details from Shopify REST.
   let name = '';
@@ -71,7 +71,13 @@ export async function onShopInstall(
   try {
     shopId = await shops.findIdByDomain(shopDomain);
     if (shopId) {
-      await backfillDiscounts({ db, env, shopId, shopDomain });
+      // The row exists now, so the scoped set can be built.
+      await backfillDiscounts({
+        repos: createRepositories(env.DB, shopId),
+        env,
+        shopId,
+        shopDomain,
+      });
     }
   } catch (err) {
     console.error(`[install] discount backfill failed for ${shopDomain}:`, err);
@@ -82,7 +88,7 @@ export async function onShopInstall(
   // activation-status endpoint retries this on next load.
   try {
     if (shopId) {
-      const result = await ensureCartTransform(env, shopDomain, db, shopId);
+      const result = await ensureCartTransform(env, shopDomain, shops, shopId);
       if ('conflict' in result) {
         console.error(`[install] cart transform registration conflict for ${shopDomain}: a foreign transform already exists`);
       } else {

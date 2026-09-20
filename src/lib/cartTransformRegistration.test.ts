@@ -7,32 +7,20 @@ vi.mock('./graphqlAdmin', () => ({
 import { adminGraphql } from './graphqlAdmin';
 import { ensureCartTransform } from './cartTransformRegistration';
 import type { Env } from '../types/env';
-import type { createDb } from '../db/db';
+import { InMemoryShopRepository, shopRow } from '../db/repositories/inMemory';
 
 /**
- * Minimal chainable fake mirroring the `db.select().from().where().get()` /
- * `db.update().set().where()` shape used elsewhere (see `src/routes/shop.ts`).
- * `shopRow` is mutable so `.get()` reflects state at call time; `updateCalls`
- * records every `.set(...)` payload passed to `.update()`.
+ * A real (in-memory) shop repository rather than a stubbed Drizzle chain, so
+ * these tests assert on the row `ensureCartTransform` leaves behind rather than
+ * on the query shape it used to get there.
  */
-function fakeDb(shopRow: Record<string, unknown> | undefined) {
-  const updateCalls: Array<Record<string, unknown>> = [];
-  const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          get: async () => shopRow,
-        }),
-      }),
-    }),
-    update: () => ({
-      set: (values: Record<string, unknown>) => {
-        updateCalls.push(values);
-        return { where: async () => undefined };
-      },
-    }),
-  };
-  return { db: db as unknown as ReturnType<typeof createDb>, updateCalls };
+function fakeShops(cartTransformGid: string | null) {
+  return new InMemoryShopRepository([shopRow({ id: 'shop-1', cartTransformGid })]);
+}
+
+/** The gid persisted on the shop row, or null if nothing was written. */
+function storedGid(shops: InMemoryShopRepository): string | null {
+  return shops.rows[0].cartTransformGid;
 }
 
 describe('ensureCartTransform', () => {
@@ -43,16 +31,16 @@ describe('ensureCartTransform', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('short-circuits when the shop row already has a cartTransformGid — no adminGraphql call', async () => {
-    const { db } = fakeDb({ id: shopId, cartTransformGid: 'gid://shopify/CartTransform/1' });
+    const shops = fakeShops('gid://shopify/CartTransform/1');
 
-    const result = await ensureCartTransform(env, shopDomain, db, shopId);
+    const result = await ensureCartTransform(env, shopDomain, shops, shopId);
 
     expect(result).toEqual({ gid: 'gid://shopify/CartTransform/1', created: false });
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
   it('adopts an existing transform matching our functionId and persists it (no create mutation)', async () => {
-    const { db, updateCalls } = fakeDb({ id: shopId, cartTransformGid: null });
+    const shops = fakeShops(null);
 
     vi.mocked(adminGraphql).mockImplementation(async (_shop, _env, query: string) => {
       if (query.includes('shopifyFunctions')) {
@@ -76,10 +64,10 @@ describe('ensureCartTransform', () => {
       throw new Error(`unexpected query: ${query}`);
     });
 
-    const result = await ensureCartTransform(env, shopDomain, db, shopId);
+    const result = await ensureCartTransform(env, shopDomain, shops, shopId);
 
     expect(result).toEqual({ gid: 'gid://shopify/CartTransform/existing', created: false });
-    expect(updateCalls).toEqual([{ cartTransformGid: 'gid://shopify/CartTransform/existing' }]);
+    expect(storedGid(shops)).toBe('gid://shopify/CartTransform/existing');
     expect(adminGraphql).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -89,7 +77,7 @@ describe('ensureCartTransform', () => {
   });
 
   it('returns conflict when an existing transform belongs to a different function — no create, no persist', async () => {
-    const { db, updateCalls } = fakeDb({ id: shopId, cartTransformGid: null });
+    const shops = fakeShops(null);
 
     vi.mocked(adminGraphql).mockImplementation(async (_shop, _env, query: string) => {
       if (query.includes('shopifyFunctions')) {
@@ -113,10 +101,10 @@ describe('ensureCartTransform', () => {
       throw new Error(`unexpected query: ${query}`);
     });
 
-    const result = await ensureCartTransform(env, shopDomain, db, shopId);
+    const result = await ensureCartTransform(env, shopDomain, shops, shopId);
 
     expect(result).toEqual({ conflict: true });
-    expect(updateCalls).toEqual([]);
+    expect(storedGid(shops)).toBeNull();
     expect(adminGraphql).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -126,7 +114,7 @@ describe('ensureCartTransform', () => {
   });
 
   it('creates a cart transform when none exists and our function resolves, then persists the gid', async () => {
-    const { db, updateCalls } = fakeDb({ id: shopId, cartTransformGid: null });
+    const shops = fakeShops(null);
 
     vi.mocked(adminGraphql).mockImplementation(async (_shop, _env, query: string, variables) => {
       if (query.includes('shopifyFunctions')) {
@@ -155,14 +143,14 @@ describe('ensureCartTransform', () => {
       throw new Error(`unexpected query: ${query}`);
     });
 
-    const result = await ensureCartTransform(env, shopDomain, db, shopId);
+    const result = await ensureCartTransform(env, shopDomain, shops, shopId);
 
     expect(result).toEqual({ gid: 'gid://shopify/CartTransform/new', created: true });
-    expect(updateCalls).toEqual([{ cartTransformGid: 'gid://shopify/CartTransform/new' }]);
+    expect(storedGid(shops)).toBe('gid://shopify/CartTransform/new');
   });
 
   it('throws loudly when the cart-transform function is not deployed', async () => {
-    const { db } = fakeDb({ id: shopId, cartTransformGid: null });
+    const shops = fakeShops(null);
 
     vi.mocked(adminGraphql).mockImplementation(async (_shop, _env, query: string) => {
       if (query.includes('shopifyFunctions')) {
@@ -171,13 +159,13 @@ describe('ensureCartTransform', () => {
       throw new Error(`unexpected query: ${query}`);
     });
 
-    await expect(ensureCartTransform(env, shopDomain, db, shopId)).rejects.toThrow(
+    await expect(ensureCartTransform(env, shopDomain, shops, shopId)).rejects.toThrow(
       /cart-transform function not deployed/,
     );
   });
 
   it('throws loudly on cartTransformCreate userErrors', async () => {
-    const { db } = fakeDb({ id: shopId, cartTransformGid: null });
+    const shops = fakeShops(null);
 
     vi.mocked(adminGraphql).mockImplementation(async (_shop, _env, query: string) => {
       if (query.includes('shopifyFunctions')) {
@@ -205,6 +193,6 @@ describe('ensureCartTransform', () => {
       throw new Error(`unexpected query: ${query}`);
     });
 
-    await expect(ensureCartTransform(env, shopDomain, db, shopId)).rejects.toThrow(/userErrors/);
+    await expect(ensureCartTransform(env, shopDomain, shops, shopId)).rejects.toThrow(/userErrors/);
   });
 });

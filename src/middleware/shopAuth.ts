@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import type { AppEnv } from '../types/env.d';
-import type { ShopStore, ShopIdentity } from '../db/repos/shopRepo';
+import type { IShopRepository, ShopIdentity } from '../db/repositories';
 import { RequestedTokenType } from '@shopify/shopify-api';
 import { createShopify, createSessionStorage } from '../shopify';
 
@@ -20,7 +20,7 @@ const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
  */
 export async function getCurrentShop(
   c: Context<AppEnv>,
-  shops: ShopStore,
+  shops: IShopRepository,
 ): Promise<ShopIdentity | null> {
 
   // 1. Shopify session token (App Bridge useAuthenticatedFetch)

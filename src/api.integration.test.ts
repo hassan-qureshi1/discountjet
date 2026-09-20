@@ -4,18 +4,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // the protected-route flow is exercised end-to-end with no real bindings or
 // credentials (mirrors the mocking style of the other unit tests).
 //
-// The data layer is swapped at ONE seam: `createRepos`, which `requireShop`
-// calls once per request to build the stores it puts on the context. Tests
-// seed in-memory implementations of those stores and then assert on the rows
-// that end up in them. Nothing here stubs a Drizzle query chain, so a handler
-// can be refactored — different number of queries, different order — without
-// touching a test, as long as its observable behaviour holds.
+// The data layer is swapped at TWO seams, both in `db/repositories` and both
+// called by `requireShop`: `createShopRepository` (unscoped, used to resolve
+// the caller's shop during auth) and `createRepositories` (the shop-bound set
+// it then puts on the context). Tests seed in-memory implementations and then
+// assert on the rows that end up in them. Nothing here stubs a Drizzle query
+// chain, so a handler can be refactored — different number of queries,
+// different order — without touching a test, as long as its behaviour holds.
 vi.mock('./db/db', () => ({
   createDb: vi.fn(),
 }));
-vi.mock('./db/repos', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./db/repos')>()),
-  createRepos: vi.fn(),
+vi.mock('./db/repositories', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./db/repositories')>()),
+  createShopRepository: vi.fn(),
+  createRepositories: vi.fn(),
 }));
 vi.mock('./shopify', () => ({
   createShopify: vi.fn(),
@@ -33,11 +35,13 @@ vi.mock('./lib/metafieldDefinitions', () => ({
 }));
 
 import { app } from './index';
-import { createRepos } from './db/repos';
-import { createInMemoryRepos, shopRow, type InMemoryRepos } from './db/repos/inMemory';
-import type { ShopRow } from './db/repos/shopRepo';
-import type { BundleRow } from './db/repos/bundleRepo';
-import type { DiscountRow } from './db/repos/discountRepo';
+import { createRepositories, createShopRepository } from './db/repositories';
+import {
+  createInMemoryRepositories,
+  shopRow,
+  type InMemoryRepositories,
+} from './db/repositories/inMemory';
+import type { ShopRow, BundleRow, DiscountRow } from './db/repositories';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
@@ -54,12 +58,16 @@ function seed(rows: {
   shops?: ShopRow[];
   bundles?: BundleRow[];
   discounts?: DiscountRow[];
-} = {}): InMemoryRepos {
-  const repos = createInMemoryRepos({
+} = {}): InMemoryRepositories {
+  const repos = createInMemoryRepositories(SHOP.id, {
     shops: [shopRow({ ...SHOP, status: 'installed' })],
     ...rows,
   });
-  vi.mocked(createRepos).mockReturnValue(repos);
+  // Auth resolves the shop through the unscoped repository; the handlers then
+  // use the shop-bound set. Both come from the same fakes, so a row written
+  // through one is visible through the other.
+  vi.mocked(createShopRepository).mockReturnValue(repos.shops);
+  vi.mocked(createRepositories).mockReturnValue(repos);
   return repos;
 }
 

@@ -1,6 +1,6 @@
 import type { Env } from '../types/env';
 import type { Db } from '../db/db';
-import { ShopRepository } from '../db/repos/shopRepo';
+import type { IShopRepository } from '../db/repositories';
 import { adminGraphql } from './graphqlAdmin';
 
 const CART_TRANSFORM_API_TYPE = 'cart_transform';
@@ -99,10 +99,9 @@ async function resolveCartTransformFunctionId(env: Env, shopDomain: string): Pro
 export async function ensureCartTransform(
   env: Env,
   shopDomain: string,
-  db: Db,
+  shops: IShopRepository,
   shopId: string,
 ): Promise<{ gid: string; created: boolean } | { conflict: true }> {
-  const shops = new ShopRepository(db);
   const shop = await shops.findById(shopId);
 
   if (shop?.cartTransformGid) {

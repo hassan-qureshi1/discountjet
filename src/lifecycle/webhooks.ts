@@ -2,8 +2,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { Env } from '../types/env';
 import { timingSafeEqual } from '../lib/timingSafeEqual';
-import { createDb } from '../db/db';
-import { ShopRepository } from '../db/repos/shopRepo';
+import { createRepositories, createShopRepository } from '../db/repositories';
 import { syncDiscountFromWebhook, type DiscountWebhookPayload } from './discountSync';
 
 // Starter registers only APP_UNINSTALLED. To register more topics, add to this
@@ -105,8 +104,7 @@ async function handleDiscountWebhook(
   rawBody: string,
 ): Promise<void> {
   try {
-    const db = createDb(c.env.DB);
-    const shopId = await new ShopRepository(db).findIdByDomain(shopDomain);
+    const shopId = await createShopRepository(c.env.DB).findIdByDomain(shopDomain);
     if (!shopId) {
       console.error(`[discountSync] no installed shop for ${shopDomain}`);
       return;
@@ -116,7 +114,7 @@ async function handleDiscountWebhook(
     const payload = JSON.parse(rawBody) as DiscountWebhookPayload;
 
     await syncDiscountFromWebhook({
-      db,
+      repos: createRepositories(c.env.DB, shopId),
       env: c.env,
       shopId,
       shopDomain,

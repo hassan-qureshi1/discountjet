@@ -29,7 +29,8 @@ See `README.md` for setup. See `wrangler.jsonc` for which Cloudflare bindings ar
 
 - **All IDs are `crypto.randomUUID()`** — not auto-increment.
 - **Timestamps are ISO 8601 strings** stored as `text()` (no SQLite `datetime` type).
-- **One table to start (`shopify_shop`)** — every additional table you add should reference it via a non-null `shopId` text FK with `onDelete: 'cascade'` (GDPR `SHOP_REDACT` pattern).
+- **Tenant isolation is structural, not conventional** — every shop-owned table gets a repository extending `ShopScopedRepository`, whose constructor requires a `shopId` and which injects `where shop_id = ?` into every read and write. A scoped repository cannot be built without a tenant, so a query cannot forget one. `shopify_shop` itself extends `BaseRepository`, because it *is* the tenant.
+- **Every additional table references `shopify_shop`** via a non-null `shopId` text FK with `onDelete: 'cascade'` (GDPR `SHOP_REDACT` pattern).
 
 ---
 
@@ -39,6 +40,7 @@ See `README.md` for setup. See `wrangler.jsonc` for which Cloudflare bindings ar
 - **Never use raw `KV.get()` + `JSON.parse()` for sessions** — always use `KVSessionStorage.loadSession()`.
 - **Fail loudly on data integrity issues** — never use `?? ''` or fallbacks to mask a missing domain, ID, or required field.
 - **Never pass secrets through queue messages** — fetch tokens from KV at processing time.
+- **All D1 access goes through a repository** — no Drizzle query builder, and no `createDb()`, outside `src/db/repositories/`. Route handlers use `c.get('repos')`; code with no request context (lifecycle, webhooks, cron, queues) uses `createRepositories(env.DB, shopId)` or `createShopRepository(env.DB)`. See `src/CLAUDE.md` for the recipe for adding one.
 
 ---
 

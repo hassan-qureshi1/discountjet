@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { createDb } from '../db/db';
 import type { AppEnv } from '../types/env.d';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { requireShopDomain } from '../lib/shopDomain';

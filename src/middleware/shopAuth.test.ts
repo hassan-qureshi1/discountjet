@@ -3,7 +3,7 @@ import { getCurrentShop } from './shopAuth';
 import type { Context } from 'hono';
 import type { Env } from '../types/env';
 import type { AppEnv } from '../types/env.d';
-import { InMemoryShopStore, shopRow } from '../db/repos/inMemory';
+import { InMemoryShopRepository, shopRow } from '../db/repositories/inMemory';
 
 // Mock createShopify so decodeSessionToken is controllable in tests.
 // The real implementation calls SHOPIFY_API_SECRET for HMAC verification
@@ -26,7 +26,7 @@ import { createShopify } from '../shopify';
  * the lookup's result rather than on how the lookup was built.
  */
 function shopsWith(...rows: Array<{ id: string; myshopifyDomain: string }>) {
-  return new InMemoryShopStore(
+  return new InMemoryShopRepository(
     rows.map((r) => shopRow({ id: r.id, myshopifyDomain: r.myshopifyDomain })),
   );
 }

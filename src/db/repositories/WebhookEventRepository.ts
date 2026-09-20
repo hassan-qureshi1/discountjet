@@ -1,23 +1,35 @@
 import { eq } from 'drizzle-orm';
-import type { Db } from '../db';
+import type { Db } from './BaseRepository';
 import { webhookEvent } from '../schema';
 
 export type WebhookEventRow = typeof webhookEvent.$inferSelect;
 export type WebhookEventInsert = typeof webhookEvent.$inferInsert;
 
-/** The contract handlers depend on — see `ShopStore` for why it exists. */
-export interface WebhookEventStore {
+/** The contract handlers and the sync module depend on. */
+export interface IWebhookEventRepository {
   deliverySeen(deliveryId: string): Promise<boolean>;
   record(row: WebhookEventInsert): Promise<void>;
   list(shopId: string): Promise<Array<Pick<WebhookEventRow, 'topic' | 'receivedAt'>>>;
 }
 
 /**
- * The D1-backed `WebhookEventStore` — the idempotency + sync-health ledger.
- * `id` is Shopify's per-delivery `X-Shopify-Webhook-Id`, so a re-delivered
- * webhook is detected here rather than processed twice.
+ * The idempotency + sync-health ledger.
+ *
+ * DELIBERATELY OUTSIDE the BaseRepository/ShopScopedRepository hierarchy, and
+ * the one place in the app that still takes a `shopId` as an argument. Three
+ * reasons, all properties of what this table is:
+ *
+ *  - `shop_id` is nullable with no FK, so the ledger survives a shop deletion
+ *    rather than cascading with it. A ShopScopedRepository asserts the opposite.
+ *  - `deliverySeen()` gates on the delivery id ALONE. Scoping it by shop would
+ *    be wrong as well as pointless: `X-Shopify-Webhook-Id` is globally unique,
+ *    and the gate has to fire before we have resolved a shop at all.
+ *  - `id` is Shopify's delivery id, not a minted UUID, so `create()`'s id and
+ *    timestamp minting has nothing to do here.
+ *
+ * Adding generic CRUD to this table would advertise guarantees it does not have.
  */
-export class WebhookEventRepository implements WebhookEventStore {
+export class WebhookEventRepository implements IWebhookEventRepository {
   constructor(private readonly db: Db) {}
 
   /** True when this delivery id has been seen before — the idempotency gate. */

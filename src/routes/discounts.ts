@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
-import { createDb } from '../db/db';
-import type { DiscountRow } from '../db/repos/discountRepo';
+import type { DiscountRow } from '../db/repositories';
 import { getSyncHealth, reconcileDiscounts } from '../lifecycle/discountSync';
 import type { AppEnv } from '../types/env.d';
 
@@ -71,7 +70,7 @@ const MATCHERS: Record<FilterId, (d: UiDiscount) => boolean> = {
 // shape plus per-tab counts, so the tab badges render without a second call.
 discountRoutes.get('/api/discounts', async (c) => {
   const discounts = c.get('repos').discounts;
-  const rows = await discounts.listLive(c.get('shopId'));
+  const rows = await discounts.listLive();
 
   const all = rows.map(toUi);
   const counts = {
@@ -90,8 +89,7 @@ discountRoutes.get('/api/discounts', async (c) => {
 // GET /api/discounts/sync-health — last webhook, last reconcile, unknown-config
 // count. Registered before /:id so "sync-health" isn't captured as an id.
 discountRoutes.get('/api/discounts/sync-health', async (c) => {
-  const db = createDb(c.env.DB);
-  return c.json(await getSyncHealth(db, c.get('shopId')));
+  return c.json(await getSyncHealth(c.get('repos'), c.get('shopId')));
 });
 
 // POST /api/discounts/reconcile — re-sync from Shopify and tombstone rows deleted
@@ -101,7 +99,7 @@ discountRoutes.post('/api/discounts/reconcile', async (c) => {
   if (!shopDomain) return c.json({ error: 'Shop domain not found' }, 404);
 
   const result = await reconcileDiscounts({
-    db: createDb(c.env.DB),
+    repos: c.get('repos'),
     env: c.env,
     shopId: c.get('shopId'),
     shopDomain,
@@ -112,7 +110,7 @@ discountRoutes.post('/api/discounts/reconcile', async (c) => {
 // GET /api/discounts/:id — single row (404 when missing or tombstoned).
 discountRoutes.get('/api/discounts/:id', async (c) => {
   const discounts = c.get('repos').discounts;
-  const row = await discounts.find(c.get('shopId'), c.req.param('id'));
+  const row = await discounts.findById(c.req.param('id'));
 
   if (!row || row.deletedAt) return c.json({ error: 'Discount not found' }, 404);
   // E4-3 contract: campaign summary when this row is campaign-owned. The campaign

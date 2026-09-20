@@ -461,8 +461,23 @@ export default function BundleEditor() {
   const updateGate = gateOperation('update', updateOpEligible);
   const isUpdateLocked = operation === 'update' && !updateGate.enabled;
 
+  // Variants Shopify no longer knows about — derived straight from the same
+  // `/api/variants` response `resolvedVariants` is built from, rather than a
+  // separate effect/state: there's nothing async left to wait on once that
+  // query has answered, so a second piece of state would just be able to go
+  // stale relative to it.
+  const deadVariantIds = new Set(
+    (variantData?.variants ?? []).filter((v) => !v.exists).map((v) => v.id),
+  );
+  const deadItems = items.filter((it) => deadVariantIds.has(it.variantId));
+
   const canSave = name.trim().length > 0
     && (operation === 'update' ? Boolean(parentVariantId) : Boolean(parentVariantId) && items.length > 0);
+  // `canSave` already blocks the primary action when a merge/expand bundle has
+  // zero items (including the case where removing every dead item empties
+  // it), but a disabled button with no banner is a dead end — the merchant
+  // has no way to tell *why* Save stopped working.
+  const needsItemsToSave = operation !== 'update' && items.length === 0;
 
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
@@ -548,6 +563,38 @@ export default function BundleEditor() {
         {isUpdateLocked && (
           <Banner tone="warning" title="This bundle can only be saved as a Draft">
             <p>Overriding a cart line&apos;s price or title requires Shopify Plus. It won&apos;t go live until this store is on Plus and the bundle is re-saved.</p>
+          </Banner>
+        )}
+        {deadItems.length > 0 && (
+          <Banner tone="critical" title="Some products were deleted in Shopify">
+            <BlockStack gap="200">
+              {deadItems.map((item) => (
+                <InlineStack key={item.variantId} gap="200" blockAlign="center">
+                  <Text as="span">
+                    <strong>{item.name}</strong>
+                    {' — '}
+                    {showMoney(item.price)}
+                  </Text>
+                  <Button
+                    variant="plain"
+                    tone="critical"
+                    onClick={() => removeItem(item.variantId)}
+                  >
+                    Remove from bundle
+                  </Button>
+                </InlineStack>
+              ))}
+              <Text as="span" variant="bodySm" tone="subdued">
+                Their last known price is shown. Removing one takes effect when you save.
+              </Text>
+            </BlockStack>
+          </Banner>
+        )}
+        {needsItemsToSave && (
+          <Banner tone="warning" title="This bundle has no items">
+            <p>
+              {`${operation === 'merge' ? 'Merge' : 'Expand'} bundles need at least one variant to save. Add one below, or discard this bundle if it's no longer needed.`}
+            </p>
           </Banner>
         )}
 

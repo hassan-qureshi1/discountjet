@@ -7,6 +7,7 @@ export const shopRoutes = new Hono<AppEnv>();
 interface ShopPlanDto {
   updateOpEligible: boolean;
   planName: string | null;
+  currencyCode: string;
 }
 
 interface ShopPlanQueryResult {
@@ -41,11 +42,15 @@ shopRoutes.get('/api/shop/plan', async (c) => {
 
   const shop = await shops.findById(shopId);
   if (!shop?.myshopifyDomain) return c.json({ error: 'Shop domain not found' }, 404);
+  if (!shop.currency) {
+    return c.json({ error: 'This shop has no currency on its row.' }, 500);
+  }
 
   if (shop.shopifyPlus !== null && shop.partnerDevelopment !== null) {
     const dto: ShopPlanDto = {
       updateOpEligible: shop.shopifyPlus === 1 || shop.partnerDevelopment === 1,
       planName: shop.planName,
+      currencyCode: shop.currency,
     };
     return c.json(dto);
   }
@@ -67,6 +72,7 @@ shopRoutes.get('/api/shop/plan', async (c) => {
   const dto: ShopPlanDto = {
     updateOpEligible: plan.shopifyPlus || plan.partnerDevelopment,
     planName: plan.displayName,
+    currencyCode: shop.currency,
   };
   return c.json(dto);
 });

@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
-import type { BundleRow } from '../db/repositories';
+import type { Context } from 'hono';
+import type { BundleRow, BundleItemRow } from '../db/repositories';
 import type { AppEnv } from '../types/env.d';
+import { toMinorUnits, toMoney, type MoneyV2 } from '../lib/money';
 import {
   writeComposition,
   clearComposition,
   mergeConfigEntry,
   upsertMergeConfig,
   removeMergeConfig,
+  type BundleItemLike,
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { requireShopDomain } from '../lib/shopDomain';
@@ -17,36 +20,44 @@ export const bundleRoutes = new Hono<AppEnv>();
 
 type Row = BundleRow;
 
-interface BundleItem {
-  variantId: string;
-  qty: number;
-  priceAdjustment?: number;
-  titleOverride?: string;
-  // Per-unit price in dollars, used to build the `bundle.composition_v2`
-  // metafield for `expand` bundles. Populated by the editor (later task)
-  // from the picked variant; no DB migration needed — `items` is stored as
-  // free-form JSON text.
-  price?: number;
-}
+// The POST/PUT request-body item shape. This is deliberately the same shape
+// `compositionFromItems`/`mergeConfigEntry` (src/lib/bundleMetafields.ts)
+// consume for the Shopify-side metafield writes — those are unaffected by
+// bundle_item normalization, since they never touched the DB row.
+//
+// TASK 6 BRIDGE: nothing here persists these into `bundle_item` rows yet
+// (that requires resolving each variant's real price from Shopify, which is
+// Task 6's job). Until then a bundle's `items`/`sumOfItems` in the DTO stay
+// empty/null immediately after a POST/PUT, even though the metafield write
+// below still carries the submitted items through to Shopify correctly.
+type BundleItemInput = BundleItemLike;
 
 interface BundleInput {
   name: string;
   operation: 'merge' | 'expand' | 'update';
-  items: BundleItem[];
+  items: BundleItemInput[];
   parentVariantId?: string;
-  price?: number; // dollars
-  sumOfItems?: number; // dollars
+  price?: number; // dollars (major units)
   status?: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
+}
+
+interface BundleItemDto {
+  variantId: string;
+  name: string;
+  qty: number;
+  price: MoneyV2;
+  priceAdjustment?: MoneyV2;
+  titleOverride?: string;
 }
 
 interface BundleDto {
   id: string;
   name: string;
   operation: 'merge' | 'expand' | 'update';
-  items: BundleItem[];
+  items: BundleItemDto[];
   parentVariantId?: string;
-  price: number | null;
-  sumOfItems: number | null;
+  price: MoneyV2 | null;
+  sumOfItems: MoneyV2 | null;
   status: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
@@ -72,19 +83,51 @@ function relativeTime(iso: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
-// Cents (DB) <-> dollars (UI) — round to avoid floating-point drift on the way in.
-const toCents = (dollars: number) => Math.round(dollars * 100);
-const toDollars = (cents: number | null) => (cents === null ? null : cents / 100);
+/**
+ * The caller's shop currency. Every money value crossing this boundary needs
+ * it, and a shop row without one is a data-integrity problem rather than a
+ * reason to guess USD — `toMoney` would silently store JPY off by 100.
+ */
+async function shopCurrency(c: Context<AppEnv>): Promise<string> {
+  const shop = await c.get('repos').shops.findById(c.get('shopId'));
+  if (!shop?.currency) {
+    throw new Error(`[bundles] shop ${c.get('shopId')} has no currency on its row`);
+  }
+  return shop.currency;
+}
 
-function toDto(row: Row): BundleDto {
+/** Minor units -> a plain JS number of major units, for numeric validation/config building. */
+function toMajorNumber(minorUnits: number, currency: string): number {
+  return Number(toMoney(minorUnits, currency)!.amount);
+}
+
+function toItemDto(row: BundleItemRow, currency: string): BundleItemDto {
+  return {
+    variantId: row.variantId,
+    name: row.name,
+    qty: row.qty,
+    price: toMoney(row.price, currency)!,
+    ...(row.priceAdjustment !== null
+      ? { priceAdjustment: toMoney(row.priceAdjustment, currency)! }
+      : {}),
+    ...(row.titleOverride ? { titleOverride: row.titleOverride } : {}),
+  };
+}
+
+function toDto(
+  row: Row,
+  items: BundleItemRow[],
+  sumOfItems: number | null,
+  currency: string,
+): BundleDto {
   return {
     id: row.id,
     name: row.name,
     operation: row.operation,
-    items: JSON.parse(row.items) as BundleItem[],
+    items: items.map((item) => toItemDto(item, currency)),
     ...(row.parentVariantId ? { parentVariantId: row.parentVariantId } : {}),
-    price: toDollars(row.price),
-    sumOfItems: toDollars(row.sumOfItems),
+    price: toMoney(row.price, currency),
+    sumOfItems: toMoney(sumOfItems, currency),
     status: row.status,
     metafieldState: row.metafieldState,
     ...(row.metafieldGid ? { metafieldGid: row.metafieldGid } : {}),
@@ -94,19 +137,40 @@ function toDto(row: Row): BundleDto {
 
 // GET /api/bundles — the caller's shop's bundles plus a summary strip.
 // `inCampaigns` is 0 until bundle campaigns land (E7). `avgSaving` is the mean
-// per-bundle (sumOfItems - price), in dollars, over bundles with both set.
+// per-bundle (sumOfItems - price) over bundles with both set.
+//
+// Item rows and their sums are fetched in TWO queries total, not two per
+// bundle — see `sumsByBundle` / `findAll` below.
 bundleRoutes.get('/api/bundles', async (c) => {
-  const bundleRepo = c.get('repos').bundles;
-  const rows = await bundleRepo.findAll();
+  const { bundles: bundleRepo, bundleItems } = c.get('repos');
+  const currency = await shopCurrency(c);
 
-  const bundles = rows.map(toDto);
+  const rows = await bundleRepo.findAll();
+  const sums = await bundleItems.sumsByBundle();
+  const allItems = await bundleItems.findAll();
+
+  const itemsByBundle = new Map<string, BundleItemRow[]>();
+  for (const item of allItems) {
+    const list = itemsByBundle.get(item.bundleId) ?? [];
+    list.push(item);
+    itemsByBundle.set(item.bundleId, list);
+  }
+  for (const list of itemsByBundle.values()) {
+    list.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  const bundles = rows.map((row) =>
+    toDto(row, itemsByBundle.get(row.id) ?? [], sums.get(row.id) ?? null, currency),
+  );
+
   const savings = rows
-    .filter((r) => r.price !== null && r.sumOfItems !== null)
-    .map((r) => (r.sumOfItems as number) - (r.price as number));
+    .filter((r) => r.price !== null && sums.get(r.id) !== undefined)
+    .map((r) => (sums.get(r.id) as number) - (r.price as number));
+  // MoneyV2 | null, never 0 — "no bundles with a saving" is not "saves nothing".
   const avgSaving =
     savings.length === 0
-      ? 0
-      : Math.round(savings.reduce((sum, s) => sum + s, 0) / savings.length / 100);
+      ? null
+      : toMoney(Math.round(savings.reduce((sum, s) => sum + s, 0) / savings.length), currency);
 
   return c.json({
     bundles,
@@ -163,11 +227,17 @@ bundleRoutes.get('/api/bundles/activation', async (c) => {
 
 // GET /api/bundles/:id — single row scoped to the caller's shop (404 when missing).
 bundleRoutes.get('/api/bundles/:id', async (c) => {
-  const bundleRepo = c.get('repos').bundles;
-  const row = await bundleRepo.findById(c.req.param('id'));
+  const { bundles: bundleRepo, bundleItems } = c.get('repos');
+  const id = c.req.param('id');
 
+  const row = await bundleRepo.findById(id);
   if (!row) return c.json({ error: 'Bundle not found' }, 404);
-  return c.json({ bundle: toDto(row) });
+
+  const currency = await shopCurrency(c);
+  const items = await bundleItems.listForBundle(id);
+  const sum = await bundleItems.sumFor(id);
+
+  return c.json({ bundle: toDto(row, items, sum, currency) });
 });
 
 interface ProductVariantResponse {
@@ -273,17 +343,21 @@ bundleRoutes.post('/api/bundles', async (c) => {
     }
   }
 
-  const bundleRepo = c.get('repos').bundles;
+  const { bundles: bundleRepo, bundleItems } = c.get('repos');
+  const currency = await shopCurrency(c);
 
   // No id, no shopId, no timestamps: the repository mints the first and the
   // last, and injects the tenant it was constructed with.
+  //
+  // TASK 6 BRIDGE: `body.items` is not written to `bundle_item` here — see
+  // the `BundleItemInput` comment above. A freshly created row therefore has
+  // no item rows yet, so its DTO's `items`/`sumOfItems` come back empty/null
+  // even though the metafield write below still uses `body.items` directly.
   const row: Row = await bundleRepo.create({
     name: body.name,
     operation: body.operation,
-    items: JSON.stringify(body.items),
     parentVariantId: body.parentVariantId ?? null,
-    price: body.price === undefined ? null : toCents(body.price),
-    sumOfItems: body.sumOfItems === undefined ? null : toCents(body.sumOfItems),
+    price: body.price === undefined ? null : toMinorUnits(body.price, currency),
     metafieldState: 'NotYet',
     metafieldGid: null,
     scheduleStart: null,
@@ -303,7 +377,10 @@ bundleRoutes.post('/api/bundles', async (c) => {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
       const message = err instanceof Error ? err.message : String(err);
-      return c.json({ error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row) }, 502);
+      return c.json(
+        { error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row, [], null, currency) },
+        502,
+      );
     }
   } else if (row.operation === 'merge' && row.parentVariantId) {
     try {
@@ -321,29 +398,47 @@ bundleRoutes.post('/api/bundles', async (c) => {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
       const message = err instanceof Error ? err.message : String(err);
-      return c.json({ error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(row) }, 502);
+      return c.json(
+        { error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(row, [], null, currency) },
+        502,
+      );
     }
   }
 
-  return c.json({ bundle: toDto(row) }, 201);
+  const items = await bundleItems.listForBundle(row.id);
+  const sum = await bundleItems.sumFor(row.id);
+  return c.json({ bundle: toDto(row, items, sum, currency) }, 201);
 });
 
 // PUT /api/bundles/:id — partial update, scoped to the caller's shop (404 when missing).
 bundleRoutes.put('/api/bundles/:id', async (c) => {
-  const bundleRepo = c.get('repos').bundles;
+  const { bundles: bundleRepo, bundleItems } = c.get('repos');
   const id = c.req.param('id');
 
   const existing = await bundleRepo.findById(id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   const body = await c.req.json<Partial<BundleInput>>();
+  const currency = await shopCurrency(c);
 
   // Effective operation/items after this PUT is applied — reject before any
   // write if the result would be an expand bundle with zero items (see the
   // matching guard in POST for why: an empty composition_v2 aborts the
   // Rust cart-transform function entirely).
+  //
+  // TASK 6 BRIDGE: when the PUT body doesn't touch `items`, the "current"
+  // items come from whatever `bundle_item` rows already exist for this
+  // bundle — which, until Task 6 wires up persistence, is nothing (see the
+  // `BundleItemInput` comment above the type). Converting minor units back
+  // to a per-unit number keeps this correct once rows do exist.
   const effectiveOperation = body.operation ?? existing.operation;
-  const effectiveItems = body.items ?? (JSON.parse(existing.items) as BundleItem[]);
+  const effectiveItems: BundleItemInput[] =
+    body.items ??
+    (await bundleItems.listForBundle(id)).map((item) => ({
+      variantId: item.variantId,
+      qty: item.qty,
+      price: toMajorNumber(item.price, currency),
+    }));
   if (effectiveOperation === 'expand' && effectiveItems.length === 0) {
     return c.json({ error: 'An expand bundle needs at least one component item.' }, 400);
   }
@@ -354,7 +449,12 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // merge into. The effective value is whichever this PUT sets, or (if this
   // PUT doesn't touch that field) whatever the existing row already has.
   if (effectiveOperation === 'merge') {
-    const effectivePrice = body.price !== undefined ? body.price : toDollars(existing.price);
+    const effectivePrice =
+      body.price !== undefined
+        ? body.price
+        : existing.price === null
+          ? null
+          : toMajorNumber(existing.price, currency);
     if (typeof effectivePrice !== 'number' || !Number.isFinite(effectivePrice) || effectivePrice <= 0) {
       return c.json({ error: 'A merge bundle needs a price.' }, 400);
     }
@@ -369,10 +469,8 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   const patch: Partial<Row> = {};
   if (body.name !== undefined) patch.name = body.name;
   if (body.operation !== undefined) patch.operation = body.operation;
-  if (body.items !== undefined) patch.items = JSON.stringify(body.items);
   if (body.parentVariantId !== undefined) patch.parentVariantId = body.parentVariantId;
-  if (body.price !== undefined) patch.price = toCents(body.price);
-  if (body.sumOfItems !== undefined) patch.sumOfItems = toCents(body.sumOfItems);
+  if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
   if (body.status !== undefined) patch.status = body.status;
 
   // The stored row, straight back from the write — no re-deriving it locally.
@@ -470,8 +568,13 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const items = await bundleItems.listForBundle(id);
+      const sum = await bundleItems.sumFor(id);
       return c.json(
-        { error: `Bundle updated but composition_v2 write failed: ${message}`, bundle: toDto(merged) },
+        {
+          error: `Bundle updated but composition_v2 write failed: ${message}`,
+          bundle: toDto(merged, items, sum, currency),
+        },
         502,
       );
     }
@@ -483,7 +586,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       // branch without one.
       const entry = mergeConfigEntry({
         parentVariantId: merged.parentVariantId,
-        price: toDollars(merged.price)!,
+        price: toMajorNumber(merged.price!, currency),
         items: effectiveItems,
         title: merged.name,
       });
@@ -493,14 +596,21 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const items = await bundleItems.listForBundle(id);
+      const sum = await bundleItems.sumFor(id);
       return c.json(
-        { error: `Bundle updated but merge_bundles write failed: ${message}`, bundle: toDto(merged) },
+        {
+          error: `Bundle updated but merge_bundles write failed: ${message}`,
+          bundle: toDto(merged, items, sum, currency),
+        },
         502,
       );
     }
   }
 
-  return c.json({ bundle: toDto(merged) });
+  const items = await bundleItems.listForBundle(id);
+  const sum = await bundleItems.sumFor(id);
+  return c.json({ bundle: toDto(merged, items, sum, currency) });
 });
 
 // DELETE /api/bundles/:id — scoped to the caller's shop (404 when missing).

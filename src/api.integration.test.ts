@@ -41,13 +41,13 @@ import {
   shopRow,
   type InMemoryRepositories,
 } from './db/repositories/inMemory';
-import type { ShopRow, BundleRow, DiscountRow } from './db/repositories';
+import type { ShopRow, BundleRow, BundleItemRow, DiscountRow } from './db/repositories';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
 
 /** The installed shop every request in this file authenticates as. */
-const SHOP = { id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com' };
+const SHOP = { id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com', currency: 'USD' };
 
 /**
  * Installs an in-memory data layer for the next request and hands it back so
@@ -57,6 +57,7 @@ const SHOP = { id: 'shop-abc', myshopifyDomain: 'mystore.myshopify.com' };
 function seed(rows: {
   shops?: ShopRow[];
   bundles?: BundleRow[];
+  bundleItems?: BundleItemRow[];
   discounts?: DiscountRow[];
 } = {}): InMemoryRepositories {
   const repos = createInMemoryRepositories(SHOP.id, {
@@ -77,10 +78,8 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   shopId: SHOP.id,
   name: 'Camp Kit',
   operation: 'merge',
-  items: JSON.stringify([{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }]),
   parentVariantId: null,
-  price: 2999, // cents => $29.99
-  sumOfItems: 3999, // cents => $39.99
+  price: 2999, // minor units => $29.99
   metafieldState: 'NotYet',
   metafieldGid: null,
   scheduleStart: null,
@@ -89,6 +88,22 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   blockOnFailure: 0,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-20T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `bundle_item` row. */
+const bundleItemRow = (overrides: Partial<BundleItemRow> = {}): BundleItemRow => ({
+  id: 'item-1',
+  shopId: SHOP.id,
+  bundleId: 'bundle-1',
+  variantId: 'gid://shopify/ProductVariant/1',
+  name: 'Blue T-Shirt / Large',
+  qty: 2,
+  price: 1500, // minor units => $15.00
+  priceAdjustment: null,
+  titleOverride: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:00:00.000Z',
   ...overrides,
 });
 
@@ -198,7 +213,7 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus' });
+    expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus', currencyCode: 'USD' });
     expect(adminGraphql).toHaveBeenCalledTimes(1);
     // The plan signals are cached back onto the shop row, not just returned.
     expect(repos.shops.rows[0]).toMatchObject({
@@ -221,7 +236,7 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ updateOpEligible: false, planName: 'Basic' });
+    expect(await res.json()).toEqual({ updateOpEligible: false, planName: 'Basic', currencyCode: 'USD' });
     expect(adminGraphql).toHaveBeenCalledTimes(1);
   });
 
@@ -237,8 +252,32 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus' });
+    expect(await res.json()).toEqual({ updateOpEligible: true, planName: 'Shopify Plus', currencyCode: 'USD' });
     expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/shop/plan includes the shop currency', async () => {
+    seed({
+      shops: [
+        shopRow({
+          ...SHOP,
+          status: 'installed',
+          currency: 'AUD',
+          shopifyPlus: 1,
+          partnerDevelopment: 0,
+          planName: 'Shopify Plus',
+        }),
+      ],
+    });
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    const json = (await res.json()) as { currencyCode: string };
+    expect(json.currencyCode).toBe('AUD');
   });
 
   it('returns 404 when the shop row/domain is missing', async () => {
@@ -263,10 +302,16 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('GET /api/bundles returns bundles + summary with correct avgSaving math', async () => {
     const rows = [
-      bundleRow({ id: 'bundle-1', price: 2999, sumOfItems: 3999 }), // saving $10.00
-      bundleRow({ id: 'bundle-2', price: 1000, sumOfItems: 1500 }), // saving $5.00
+      bundleRow({ id: 'bundle-1', price: 2999 }), // sumOfItems 3999 => saving $10.00
+      bundleRow({ id: 'bundle-2', price: 1000 }), // sumOfItems 1500 => saving $5.00
     ];
-    seed({ bundles: rows });
+    seed({
+      bundles: rows,
+      bundleItems: [
+        bundleItemRow({ id: 'i1', bundleId: 'bundle-1', qty: 1, price: 3999 }),
+        bundleItemRow({ id: 'i2', bundleId: 'bundle-2', qty: 1, price: 1500 }),
+      ],
+    });
 
     const res = await app.request(
       '/api/bundles',
@@ -275,16 +320,17 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     );
     expect(res.status).toBe(200);
     const json = (await res.json()) as {
-      bundles: { id: string; price: number; sumOfItems: number }[];
-      summary: { count: number; inCampaigns: number; avgSaving: number };
+      bundles: { id: string; price: { amount: string; currencyCode: string }; sumOfItems: { amount: string; currencyCode: string } }[];
+      summary: { count: number; inCampaigns: number; avgSaving: { amount: string; currencyCode: string } };
     };
     expect(json.bundles).toHaveLength(2);
-    expect(json.bundles[0].price).toBe(29.99);
-    expect(json.bundles[0].sumOfItems).toBe(39.99);
-    expect(json.summary).toEqual({ count: 2, inCampaigns: 0, avgSaving: 8 }); // mean(10, 5) = 7.5 -> round = 8
+    expect(json.bundles[0].price).toEqual({ amount: '29.99', currencyCode: 'USD' });
+    expect(json.bundles[0].sumOfItems).toEqual({ amount: '39.99', currencyCode: 'USD' });
+    // mean(10.00, 5.00) = 7.50
+    expect(json.summary).toEqual({ count: 2, inCampaigns: 0, avgSaving: { amount: '7.50', currencyCode: 'USD' } });
   });
 
-  it('GET /api/bundles returns zeroed summary when empty', async () => {
+  it('GET /api/bundles returns a null summary when empty', async () => {
     seed({ bundles: [] });
 
     const res = await app.request(
@@ -293,9 +339,68 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       env('development'),
     );
     expect(res.status).toBe(200);
-    const json = (await res.json()) as { bundles: unknown[]; summary: { count: number; inCampaigns: number; avgSaving: number } };
+    const json = (await res.json()) as { bundles: unknown[]; summary: { count: number; inCampaigns: number; avgSaving: unknown } };
     expect(json.bundles).toEqual([]);
-    expect(json.summary).toEqual({ count: 0, inCampaigns: 0, avgSaving: 0 });
+    expect(json.summary).toEqual({ count: 0, inCampaigns: 0, avgSaving: null });
+  });
+
+  it('GET /api/bundles computes sumOfItems from the item rows', async () => {
+    seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', price: 2999 })],
+      bundleItems: [
+        bundleItemRow({ id: 'i1', bundleId: 'bundle-1', qty: 2, price: 1500 }),
+        bundleItemRow({ id: 'i2', bundleId: 'bundle-1', variantId: 'gid://shopify/ProductVariant/2', name: 'Cap', qty: 1, price: 999 }),
+      ],
+    });
+
+    const res = await app.request(
+      '/api/bundles',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+    const json = (await res.json()) as { bundles: { sumOfItems: { amount: string; currencyCode: string } }[] };
+
+    // 2 x 1500 + 1 x 999 = 3999
+    expect(json.bundles[0].sumOfItems).toEqual({ amount: '39.99', currencyCode: 'AUD' });
+  });
+
+  it('GET /api/bundles/:id returns items ordered by name with MoneyV2 prices', async () => {
+    seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1' })],
+      bundleItems: [
+        bundleItemRow({ id: 'i1', name: 'Zebra Mug', variantId: 'gid://shopify/ProductVariant/9', price: 500, qty: 1 }),
+        bundleItemRow({ id: 'i2', name: 'Anchor Tee', variantId: 'gid://shopify/ProductVariant/8', price: 2000, qty: 1 }),
+      ],
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+    const json = (await res.json()) as { bundle: { items: { name: string; price: { amount: string } }[] } };
+
+    expect(json.bundle.items.map((i) => i.name)).toEqual(['Anchor Tee', 'Zebra Mug']);
+    expect(json.bundle.items[0].price).toEqual({ amount: '20.00', currencyCode: 'AUD' });
+  });
+
+  it('GET /api/bundles reports a null sum for a bundle with no items', async () => {
+    seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1' })],
+      bundleItems: [],
+    });
+
+    const res = await app.request(
+      '/api/bundles',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+    const json = (await res.json()) as { bundles: { sumOfItems: unknown }[] };
+
+    expect(json.bundles[0].sumOfItems).toBeNull();
   });
 
   it('GET /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
@@ -309,19 +414,25 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('POST /api/bundles inserts and returns 201 with cents<->dollars round-trip', async () => {
+  it('POST /api/bundles inserts and returns 201 with minor-units<->MoneyV2 round-trip', async () => {
     const repos = seed();
 
-    // `operation: 'update'` — this test is only about the cents<->dollars
+    // `operation: 'update'` — this test is only about the minor-units<->MoneyV2
     // round-trip, not merge-specific validation, so it deliberately avoids
     // the merge guards (which require a price + parentVariantId) and any
     // metafield write.
+    //
+    // TASK 6 BRIDGE: `items` is still required input (validated, and used to
+    // build the composition/merge_bundles metafield for expand/merge
+    // bundles), but nothing yet persists it into `bundle_item` rows — see
+    // the `BundleItemInput` comment in `src/routes/bundles.ts`. So the
+    // response's `items`/`sumOfItems` come back empty/null even though the
+    // request carried items.
     const body = {
       name: 'Camp Kit',
       operation: 'update',
       items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
       price: 29.99,
-      sumOfItems: 39.99,
     };
     const res = await app.request(
       '/api/bundles',
@@ -334,15 +445,23 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     );
     expect(res.status).toBe(201);
     const json = (await res.json()) as {
-      bundle: { id: string; name: string; price: number; sumOfItems: number; status: string; metafieldState: string; items: unknown[] };
+      bundle: {
+        id: string;
+        name: string;
+        price: { amount: string; currencyCode: string } | null;
+        sumOfItems: unknown;
+        status: string;
+        metafieldState: string;
+        items: unknown[];
+      };
     };
     expect(json.bundle.id).toBeTruthy();
     expect(json.bundle.name).toBe('Camp Kit');
-    expect(json.bundle.price).toBe(29.99);
-    expect(json.bundle.sumOfItems).toBe(39.99);
+    expect(json.bundle.price).toEqual({ amount: '29.99', currencyCode: 'USD' });
+    expect(json.bundle.sumOfItems).toBeNull();
     expect(json.bundle.status).toBe('Draft');
     expect(json.bundle.metafieldState).toBe('NotYet');
-    expect(json.bundle.items).toEqual(body.items);
+    expect(json.bundle.items).toEqual([]);
     // The row is really in the store, scoped to the caller's shop.
     expect(repos.bundles.rows).toHaveLength(1);
     expect(repos.bundles.rows[0]).toMatchObject({ shopId: SHOP.id, name: 'Camp Kit', price: 2999 });
@@ -392,8 +511,8 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.error).toEqual(expect.any(String));
   });
 
-  it('PUT /api/bundles/:id updates and returns 200 with cents<->dollars round-trip', async () => {
-    // `operation: 'update'` — this test is only about the cents<->dollars
+  it('PUT /api/bundles/:id updates and returns 200 with minor-units<->MoneyV2 round-trip', async () => {
+    // `operation: 'update'` — this test is only about the minor-units<->MoneyV2
     // round-trip, not merge-specific validation, so it deliberately avoids
     // the merge guards (which require a price + parentVariantId) and any
     // metafield write.
@@ -409,11 +528,13 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       env('development'),
     );
     expect(res.status).toBe(200);
-    const json = (await res.json()) as { bundle: { id: string; price: number; updated: string } };
+    const json = (await res.json()) as {
+      bundle: { id: string; price: { amount: string; currencyCode: string } | null; updated: string };
+    };
     expect(json.bundle.id).toBe('bundle-1');
-    expect(json.bundle.price).toBe(19.99);
+    expect(json.bundle.price).toEqual({ amount: '19.99', currencyCode: 'USD' });
     expect(json.bundle.updated).toBe('Just now');
-    expect(repos.bundles.rows[0].price).toBe(1999); // persisted in cents
+    expect(repos.bundles.rows[0].price).toBe(1999); // persisted in minor units
   });
 
   it('PUT /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
@@ -862,7 +983,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
     });
-    const repos = seed({ bundles: [existing] });
+    // The PUT body below carries no `items`, so the "expand needs at least
+    // one item" guard falls back to whatever `bundle_item` rows already
+    // exist for this bundle — needs at least one seeded here, or the guard
+    // (correctly) rejects it.
+    const repos = seed({ bundles: [existing], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
 
     const res = await app.request(
       '/api/bundles/bundle-1',

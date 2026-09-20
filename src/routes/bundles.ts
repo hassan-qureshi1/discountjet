@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import type { BundleRow, BundleItemRow } from '../db/repositories';
+import type { BundleRow, BundleItemRow, BundleItemDraft } from '../db/repositories';
 import type { AppEnv } from '../types/env.d';
 import { toMinorUnits, toMoney, type MoneyV2 } from '../lib/money';
 import {
@@ -13,6 +13,7 @@ import {
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { requireShopDomain } from '../lib/shopDomain';
+import { resolveVariants, variantDisplayName, VARIANT_GID } from '../lib/variantResolver';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
@@ -20,17 +21,22 @@ export const bundleRoutes = new Hono<AppEnv>();
 
 type Row = BundleRow;
 
-// The POST/PUT request-body item shape. This is deliberately the same shape
-// `compositionFromItems`/`mergeConfigEntry` (src/lib/bundleMetafields.ts)
-// consume for the Shopify-side metafield writes — those are unaffected by
-// bundle_item normalization, since they never touched the DB row.
-//
-// TASK 6 BRIDGE: nothing here persists these into `bundle_item` rows yet
-// (that requires resolving each variant's real price from Shopify, which is
-// Task 6's job). Until then a bundle's `items`/`sumOfItems` in the DTO stay
-// empty/null immediately after a POST/PUT, even though the metafield write
-// below still carries the submitted items through to Shopify correctly.
-type BundleItemInput = BundleItemLike;
+/**
+ * What a client posts per item.
+ *
+ * `price` is accepted but NOT trusted — see `verifyItems`. `priceAdjustment`
+ * arriving on a request body is in MAJOR units (dollars), unlike the stored
+ * `bundle_item.priceAdjustment`, which is minor units like every other money
+ * column.
+ */
+interface BundleItemInput {
+  variantId: string;
+  qty: number;
+  priceAdjustment?: number;
+  titleOverride?: string;
+  /** Ignored — the editor sends it for its live preview; the server re-resolves. */
+  price?: number;
+}
 
 interface BundleInput {
   name: string;
@@ -135,6 +141,124 @@ function toDto(
   };
 }
 
+/** Lets `verifyItems` fail with a status without every caller re-checking. */
+class HttpError extends Error {
+  constructor(
+    public readonly status: 400 | 502,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
+/**
+ * Re-resolves every item's price and name from Shopify in ONE Admin call, and
+ * returns the rows to store.
+ *
+ * Client-sent prices are discarded. They exist so the editor can show a running
+ * total while the merchant picks; they are not a source of truth, and for an
+ * `expand` bundle they would flow straight into the `composition_v2` metafield
+ * the Rust cart-transform function reads at checkout — i.e. straight onto a
+ * real shopper's bill.
+ *
+ * A variant that no longer resolves keeps whatever price and name its existing
+ * row holds, so a merchant can still open and fix the bundle. On a create there
+ * is no such row, so the save is rejected — `bundle_item.price` is NOT NULL and
+ * there is nothing honest to put in it.
+ */
+async function verifyItems(
+  c: Context<AppEnv>,
+  currency: string,
+  items: BundleItemInput[],
+  existing: BundleItemRow[],
+  // False when `items` was rebuilt from stored rows on a PUT that did not send
+  // any: those `priceAdjustment` values are ALREADY in minor units, and running
+  // them through `toMinorUnits` again would scale them by the exponent twice.
+  convertAdjustment: boolean,
+): Promise<BundleItemDraft[]> {
+  const adjustment = (value: number | undefined): number | null => {
+    if (value === undefined) return null;
+    return convertAdjustment ? toMinorUnits(value, currency) : value;
+  };
+
+  const malformed = items.filter((i) => !VARIANT_GID.test(i.variantId));
+  if (malformed.length > 0) {
+    throw new HttpError(
+      400,
+      `Not ProductVariant ids: ${malformed.map((i) => i.variantId).join(', ')}`,
+    );
+  }
+
+  const shopDomain = requireShopDomain(c);
+  let resolved;
+  try {
+    resolved = await resolveVariants(
+      shopDomain,
+      c.env,
+      items.map((i) => i.variantId),
+    );
+  } catch (err) {
+    // `resolveVariants` already prefixes both of its failure modes with
+    // "Failed to resolve variants: " — surface its message verbatim rather
+    // than wrapping it a second time.
+    throw new HttpError(502, err instanceof Error ? err.message : String(err));
+  }
+
+  const priorByVariant = new Map(existing.map((row) => [row.variantId, row]));
+
+  return items.map((item) => {
+    const live = resolved.get(item.variantId);
+    const prior = priorByVariant.get(item.variantId);
+
+    if (live?.exists && live.price !== undefined) {
+      return {
+        variantId: item.variantId,
+        name: variantDisplayName(live) ?? item.variantId,
+        qty: item.qty,
+        price: toMinorUnits(live.price, currency),
+        priceAdjustment: adjustment(item.priceAdjustment),
+        titleOverride: item.titleOverride ?? null,
+      };
+    }
+
+    if (!prior) {
+      throw new HttpError(
+        400,
+        `${item.variantId} no longer exists in Shopify, so its price can't be determined. Remove it from the bundle.`,
+      );
+    }
+
+    // Deleted, but we already hold what it cost and what it was called.
+    return {
+      variantId: item.variantId,
+      name: prior.name,
+      qty: item.qty,
+      price: prior.price,
+      priceAdjustment: adjustment(item.priceAdjustment),
+      titleOverride: item.titleOverride ?? null,
+    };
+  });
+}
+
+/**
+ * Stored rows -> the shape the metafield helpers take. The Rust side's
+ * `BundleComponent.price` is a MAJOR-unit float, so the minor units in D1 are
+ * converted here, once, at the boundary.
+ */
+function toMetafieldItems(rows: BundleItemRow[], currency: string): BundleItemLike[] {
+  return rows.map((r) => ({
+    variantId: r.variantId,
+    qty: r.qty,
+    price: toMajorNumber(r.price, currency),
+  }));
+}
+
+/** True when a request body tries to dictate `sumOfItems`, which is computed. */
+function hasSumOfItems(body: unknown): boolean {
+  return (body as { sumOfItems?: unknown }).sumOfItems !== undefined;
+}
+
 // GET /api/bundles — the caller's shop's bundles plus a summary strip.
 // `inCampaigns` is 0 until bundle campaigns land (E7). `avgSaving` is the mean
 // per-bundle (sumOfItems - price) over bundles with both set.
@@ -155,9 +279,10 @@ bundleRoutes.get('/api/bundles', async (c) => {
     list.push(item);
     itemsByBundle.set(item.bundleId, list);
   }
-  for (const list of itemsByBundle.values()) {
-    list.sort((a, b) => a.name.localeCompare(b.name));
-  }
+  // No sort here: `bundleItems.findAll()` is already ordered by name, and this
+  // grouping is stable, so each bundle's list comes out in the same order
+  // `listForBundle` (and therefore `GET /api/bundles/:id`) produces. Ordering
+  // is the repository's job — see `BundleItemRepository.findAll`.
 
   const bundles = rows.map((row) =>
     toDto(row, itemsByBundle.get(row.id) ?? [], sums.get(row.id) ?? null, currency),
@@ -343,16 +468,29 @@ bundleRoutes.post('/api/bundles', async (c) => {
     }
   }
 
+  if (hasSumOfItems(body)) {
+    return c.json(
+      { error: 'sumOfItems is computed from the bundle’s items and cannot be set.' },
+      400,
+    );
+  }
+
   const { bundles: bundleRepo, bundleItems } = c.get('repos');
   const currency = await shopCurrency(c);
 
+  // Before the row exists: a price we cannot verify must not become a row at
+  // all. There is no prior `bundle_item` to fall back on for a create, so an
+  // unresolvable variant is a 400, not a zero.
+  let drafts: BundleItemDraft[];
+  try {
+    drafts = await verifyItems(c, currency, body.items, [], true);
+  } catch (err) {
+    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    throw err;
+  }
+
   // No id, no shopId, no timestamps: the repository mints the first and the
   // last, and injects the tenant it was constructed with.
-  //
-  // TASK 6 BRIDGE: `body.items` is not written to `bundle_item` here — see
-  // the `BundleItemInput` comment above. A freshly created row therefore has
-  // no item rows yet, so its DTO's `items`/`sumOfItems` come back empty/null
-  // even though the metafield write below still uses `body.items` directly.
   const row: Row = await bundleRepo.create({
     name: body.name,
     operation: body.operation,
@@ -366,10 +504,15 @@ bundleRoutes.post('/api/bundles', async (c) => {
     blockOnFailure: 0,
   });
 
+  // One atomic batch, so the bundle is never left half-componented.
+  const itemRows = await bundleItems.replaceForBundle(row.id, drafts);
+  const sum = await bundleItems.sumFor(row.id);
+  const forMetafield = toMetafieldItems(itemRows, currency);
+
   if (row.operation === 'expand' && row.parentVariantId) {
     try {
       const shopDomain = requireShopDomain(c);
-      const { metafieldGid } = await writeComposition(c.env, shopDomain, row.parentVariantId, body.items);
+      const { metafieldGid } = await writeComposition(c.env, shopDomain, row.parentVariantId, forMetafield);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
       await bundleRepo.setMetafieldState(row.id, 'Written', metafieldGid);
@@ -378,7 +521,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       // failure loudly instead of letting the client believe it succeeded.
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
-        { error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row, [], null, currency) },
+        { error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row, itemRows, sum, currency) },
         502,
       );
     }
@@ -389,7 +532,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       // merge guard above (`body.operation === 'merge'`) already rejected
       // any request that reaches this branch (`row.operation === 'merge'`,
       // copied straight from `body.operation`) without one.
-      const entry = mergeConfigEntry({ parentVariantId: row.parentVariantId, price: body.price!, items: body.items, title: body.name });
+      const entry = mergeConfigEntry({ parentVariantId: row.parentVariantId, price: body.price!, items: forMetafield, title: body.name });
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
@@ -399,15 +542,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
       // failure loudly instead of letting the client believe it succeeded.
       const message = err instanceof Error ? err.message : String(err);
       return c.json(
-        { error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(row, [], null, currency) },
+        { error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(row, itemRows, sum, currency) },
         502,
       );
     }
   }
 
-  const items = await bundleItems.listForBundle(row.id);
-  const sum = await bundleItems.sumFor(row.id);
-  return c.json({ bundle: toDto(row, items, sum, currency) }, 201);
+  return c.json({ bundle: toDto(row, itemRows, sum, currency) }, 201);
 });
 
 // PUT /api/bundles/:id — partial update, scoped to the caller's shop (404 when missing).
@@ -419,25 +560,33 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
 
   const body = await c.req.json<Partial<BundleInput>>();
+
+  if (hasSumOfItems(body)) {
+    return c.json(
+      { error: 'sumOfItems is computed from the bundle’s items and cannot be set.' },
+      400,
+    );
+  }
+
   const currency = await shopCurrency(c);
+  const existingItems = await bundleItems.listForBundle(id);
 
   // Effective operation/items after this PUT is applied — reject before any
   // write if the result would be an expand bundle with zero items (see the
   // matching guard in POST for why: an empty composition_v2 aborts the
   // Rust cart-transform function entirely).
   //
-  // TASK 6 BRIDGE: when the PUT body doesn't touch `items`, the "current"
-  // items come from whatever `bundle_item` rows already exist for this
-  // bundle — which, until Task 6 wires up persistence, is nothing (see the
-  // `BundleItemInput` comment above the type). Converting minor units back
-  // to a per-unit number keeps this correct once rows do exist.
+  // A PUT that doesn't touch `items` keeps the bundle's current components,
+  // rebuilt from the stored rows. No `price` is carried across: prices are
+  // re-resolved from Shopify below for every save, touched or not.
   const effectiveOperation = body.operation ?? existing.operation;
   const effectiveItems: BundleItemInput[] =
     body.items ??
-    (await bundleItems.listForBundle(id)).map((item) => ({
+    existingItems.map((item) => ({
       variantId: item.variantId,
       qty: item.qty,
-      price: toMajorNumber(item.price, currency),
+      ...(item.priceAdjustment !== null ? { priceAdjustment: item.priceAdjustment } : {}),
+      ...(item.titleOverride ? { titleOverride: item.titleOverride } : {}),
     }));
   if (effectiveOperation === 'expand' && effectiveItems.length === 0) {
     return c.json({ error: 'An expand bundle needs at least one component item.' }, 400);
@@ -473,8 +622,23 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
   if (body.status !== undefined) patch.status = body.status;
 
+  // Re-resolve BEFORE the row is touched, so an unverifiable price aborts the
+  // whole PUT rather than leaving a half-applied edit behind.
+  let drafts: BundleItemDraft[];
+  try {
+    // `body.items` carries major-unit adjustments; rows rebuilt from storage
+    // above already hold minor units and must not be converted twice.
+    drafts = await verifyItems(c, currency, effectiveItems, existingItems, body.items !== undefined);
+  } catch (err) {
+    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    throw err;
+  }
+
   // The stored row, straight back from the write — no re-deriving it locally.
   const merged: Row = await bundleRepo.update(id, patch);
+  const itemRows = await bundleItems.replaceForBundle(id, drafts);
+  const sum = await bundleItems.sumFor(id);
+  const forMetafield = toMetafieldItems(itemRows, currency);
 
   // A bundle uses AT MOST ONE metafield transport at a time — `expand` ->
   // the variant `bundle.composition_v2` metafield, `merge` -> the shop
@@ -562,18 +726,16 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (newOp === 'expand' && merged.parentVariantId && (newOp !== prevOp || compositionInputsChanged)) {
     try {
       const shopDomain = requireShopDomain(c);
-      const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, effectiveItems);
+      const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, forMetafield);
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const items = await bundleItems.listForBundle(id);
-      const sum = await bundleItems.sumFor(id);
       return c.json(
         {
           error: `Bundle updated but composition_v2 write failed: ${message}`,
-          bundle: toDto(merged, items, sum, currency),
+          bundle: toDto(merged, itemRows, sum, currency),
         },
         502,
       );
@@ -587,7 +749,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       const entry = mergeConfigEntry({
         parentVariantId: merged.parentVariantId,
         price: toMajorNumber(merged.price!, currency),
-        items: effectiveItems,
+        items: forMetafield,
         title: merged.name,
       });
       const { metafieldGid } = await upsertMergeConfig(c.env, shopDomain, entry);
@@ -596,21 +758,17 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const items = await bundleItems.listForBundle(id);
-      const sum = await bundleItems.sumFor(id);
       return c.json(
         {
           error: `Bundle updated but merge_bundles write failed: ${message}`,
-          bundle: toDto(merged, items, sum, currency),
+          bundle: toDto(merged, itemRows, sum, currency),
         },
         502,
       );
     }
   }
 
-  const items = await bundleItems.listForBundle(id);
-  const sum = await bundleItems.sumFor(id);
-  return c.json({ bundle: toDto(merged, items, sum, currency) });
+  return c.json({ bundle: toDto(merged, itemRows, sum, currency) });
 });
 
 // DELETE /api/bundles/:id — scoped to the caller's shop (404 when missing).

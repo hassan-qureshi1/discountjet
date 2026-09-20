@@ -76,9 +76,21 @@ export async function resolveVariants(
   const unique = [...new Set(ids)];
   if (unique.length === 0) return new Map();
 
-  const result = await adminGraphql<NodesResponse>(shopDomain, env, VARIANT_NODES_QUERY, {
-    ids: unique,
-  });
+  // Both failure modes carry the same prefix. A transport failure (the call
+  // itself throwing) is just as much a "couldn't resolve the variants" as a
+  // GraphQL `errors` payload, and the callers surface `err.message` verbatim —
+  // so prefixing only one of them would make a network failure reach the
+  // merchant as a bare `fetch failed` with no hint of what was being fetched.
+  let result;
+  try {
+    result = await adminGraphql<NodesResponse>(shopDomain, env, VARIANT_NODES_QUERY, {
+      ids: unique,
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to resolve variants: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   if (result.errors && result.errors.length > 0) {
     throw new Error(`Failed to resolve variants: ${JSON.stringify(result.errors)}`);

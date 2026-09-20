@@ -300,6 +300,14 @@ export class InMemoryBundleItemRepository
     } as BundleItemRow;
   }
 
+  /** Ordered by name, like the real repository's `findAll` override. */
+  override async findAll(): Promise<BundleItemRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r))
+      .map((r) => ({ ...r }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   async listForBundle(bundleId: string): Promise<BundleItemRow[]> {
     return this.rows
       .filter((r) => this.inScope(r) && r.bundleId === bundleId)

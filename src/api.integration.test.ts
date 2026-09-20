@@ -107,6 +107,30 @@ const bundleItemRow = (overrides: Partial<BundleItemRow> = {}): BundleItemRow =>
   ...overrides,
 });
 
+/**
+ * The Admin `nodes` payload `resolveVariants` reads. Every bundle save now
+ * re-resolves its items' prices through it, so a POST/PUT carrying items makes
+ * this call FIRST, before any metafield read or write.
+ */
+const variantNode = (
+  overrides: { id?: string; title?: string; price?: string; productTitle?: string } = {},
+) => ({
+  id: overrides.id ?? 'gid://shopify/ProductVariant/1',
+  title: overrides.title ?? 'Large',
+  price: overrides.price ?? '15.00',
+  image: null,
+  product: {
+    id: 'gid://shopify/Product/9',
+    title: overrides.productTitle ?? 'Blue T-Shirt',
+    featuredImage: null,
+  },
+});
+
+/** Queues the next `adminGraphql` call to answer the variant-resolution query. */
+const mockVariantResolution = (nodes: unknown[]) => {
+  vi.mocked(adminGraphql).mockResolvedValueOnce({ data: { nodes } } as never);
+};
+
 /** A complete `discount` mirror row. */
 const discountRow = (overrides: Partial<DiscountRow> = {}): DiscountRow => ({
   id: 'disc-1',
@@ -386,6 +410,28 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.items[0].price).toEqual({ amount: '20.00', currencyCode: 'AUD' });
   });
 
+  it('GET /api/bundles orders each bundle\'s items by name, straight from the repository', async () => {
+    seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1' })],
+      // Seeded out of order: the list route no longer re-sorts, so this
+      // proves the repository's own ordering is what reaches the client.
+      bundleItems: [
+        bundleItemRow({ id: 'i1', name: 'Zebra Mug', variantId: 'gid://shopify/ProductVariant/9', price: 500, qty: 1 }),
+        bundleItemRow({ id: 'i2', name: 'Anchor Tee', variantId: 'gid://shopify/ProductVariant/8', price: 2000, qty: 1 }),
+      ],
+    });
+
+    const res = await app.request(
+      '/api/bundles',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+    const json = (await res.json()) as { bundles: { items: { name: string }[] }[] };
+
+    expect(json.bundles[0].items.map((i) => i.name)).toEqual(['Anchor Tee', 'Zebra Mug']);
+  });
+
   it('GET /api/bundles reports a null sum for a bundle with no items', async () => {
     seed({
       shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
@@ -416,18 +462,14 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles inserts and returns 201 with minor-units<->MoneyV2 round-trip', async () => {
     const repos = seed();
+    // Even an `update` bundle re-resolves its items: the price that lands in
+    // `bundle_item` is Shopify's, never the client's.
+    mockVariantResolution([variantNode({ price: '15.00' })]);
 
     // `operation: 'update'` — this test is only about the minor-units<->MoneyV2
     // round-trip, not merge-specific validation, so it deliberately avoids
     // the merge guards (which require a price + parentVariantId) and any
     // metafield write.
-    //
-    // TASK 6 BRIDGE: `items` is still required input (validated, and used to
-    // build the composition/merge_bundles metafield for expand/merge
-    // bundles), but nothing yet persists it into `bundle_item` rows — see
-    // the `BundleItemInput` comment in `src/routes/bundles.ts`. So the
-    // response's `items`/`sumOfItems` come back empty/null even though the
-    // request carried items.
     const body = {
       name: 'Camp Kit',
       operation: 'update',
@@ -458,13 +500,32 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.id).toBeTruthy();
     expect(json.bundle.name).toBe('Camp Kit');
     expect(json.bundle.price).toEqual({ amount: '29.99', currencyCode: 'USD' });
-    expect(json.bundle.sumOfItems).toBeNull();
+    // 2 x $15.00, resolved from Shopify and summed from the persisted rows.
+    expect(json.bundle.sumOfItems).toEqual({ amount: '30.00', currencyCode: 'USD' });
     expect(json.bundle.status).toBe('Draft');
     expect(json.bundle.metafieldState).toBe('NotYet');
-    expect(json.bundle.items).toEqual([]);
+    expect(json.bundle.items).toEqual([
+      {
+        variantId: 'gid://shopify/ProductVariant/1',
+        name: 'Blue T-Shirt / Large',
+        qty: 2,
+        price: { amount: '15.00', currencyCode: 'USD' },
+      },
+    ]);
     // The row is really in the store, scoped to the caller's shop.
     expect(repos.bundles.rows).toHaveLength(1);
     expect(repos.bundles.rows[0]).toMatchObject({ shopId: SHOP.id, name: 'Camp Kit', price: 2999 });
+    // ...and so are its components, in minor units, scoped to the same shop.
+    expect(repos.bundleItems.rows).toHaveLength(1);
+    expect(repos.bundleItems.rows[0]).toMatchObject({
+      shopId: SHOP.id,
+      bundleId: repos.bundles.rows[0].id,
+      variantId: 'gid://shopify/ProductVariant/1',
+      name: 'Blue T-Shirt / Large',
+      qty: 2,
+      price: 1500,
+      priceAdjustment: null,
+    });
   });
 
   it('POST /api/bundles returns 400 with a JSON error when name is missing', async () => {
@@ -578,6 +639,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles writes composition for an expand bundle with a parentVariantId', async () => {
     const repos = seed();
+    mockVariantResolution([variantNode({ price: '15.00' })]);
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         metafieldsSet: {
@@ -613,16 +675,26 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldGid: 'gid://shopify/Metafield/1',
     });
 
-    expect(adminGraphql).toHaveBeenCalledTimes(1);
-    const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[0];
+    // Call 0 resolves the variants; call 1 writes the metafield.
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+    const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[1];
     expect(query).toContain('metafieldsSet');
     expect(variables).toEqual({
       metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'composition' })],
     });
+    // The client claimed $10; the composition the Rust function reads says $15.
+    const written = JSON.parse(
+      (variables as { metafields: { value: string }[] }).metafields[0].value,
+    ) as { id: string; quantity: number; price: number }[];
+    expect(written).toEqual([
+      { id: 'gid://shopify/ProductVariant/1', quantity: 2, price: 15 },
+    ]);
+    expect(repos.bundleItems.rows[0]).toMatchObject({ price: 1500, qty: 2 });
   });
 
   it('POST /api/bundles writes $app:cart-transform.merge_bundles (never composition) for a merge bundle', async () => {
     const repos = seed();
+    mockVariantResolution([variantNode()]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
       .mockResolvedValueOnce({
@@ -654,8 +726,9 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldGid: 'gid://shopify/Metafield/2',
     });
 
-    expect(adminGraphql).toHaveBeenCalledTimes(2);
-    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    // Call 0 resolves the variants, then the merge config read + write.
+    expect(adminGraphql).toHaveBeenCalledTimes(3);
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[2];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
       metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
@@ -717,6 +790,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles writes $app:cart-transform.merge_bundles for a merge bundle with a parentVariantId', async () => {
     const repos = seed();
+    mockVariantResolution([variantNode()]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
       .mockResolvedValueOnce({
@@ -754,8 +828,9 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldGid: 'gid://shopify/Metafield/2',
     });
 
-    expect(adminGraphql).toHaveBeenCalledTimes(2);
-    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    // Call 0 resolves the variants, then the merge config read + write.
+    expect(adminGraphql).toHaveBeenCalledTimes(3);
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[2];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
       metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
@@ -764,6 +839,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles returns a 502 JSON error when the metafield write fails', async () => {
     const repos = seed();
+    mockVariantResolution([variantNode()]);
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         metafieldsSet: {
@@ -796,6 +872,267 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // state still says nothing was written — never a false `Written`.
     expect(repos.bundles.rows).toHaveLength(1);
     expect(repos.bundles.rows[0]).toMatchObject({ metafieldState: 'NotYet', metafieldGid: null });
+  });
+
+  it('POST /api/bundles overwrites the client price with Shopify\'s', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    mockVariantResolution([variantNode({ price: '15.00' })]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+    });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'expand',
+          parentVariantId: 'gid://shopify/ProductVariant/7',
+          // A client claiming the item costs one cent.
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2, price: 0.01 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    expect(repos.bundleItems.rows[0].price).toBe(1500);
+    expect(repos.bundleItems.rows[0].name).toBe('Blue T-Shirt / Large');
+  });
+
+  it('POST /api/bundles converts a major-unit priceAdjustment into minor units', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    mockVariantResolution([variantNode({ price: '15.00' })]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'update',
+          items: [
+            { variantId: 'gid://shopify/ProductVariant/1', qty: 1, priceAdjustment: 2.5, titleOverride: 'Freebie' },
+          ],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    expect(repos.bundleItems.rows[0]).toMatchObject({
+      priceAdjustment: 250,
+      titleOverride: 'Freebie',
+    });
+  });
+
+  it('POST /api/bundles rejects a body containing sumOfItems', async () => {
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'expand',
+          parentVariantId: 'gid://shopify/ProductVariant/7',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+          sumOfItems: 99.99,
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/sumOfItems/);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles rejects a variant that does not exist', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    mockVariantResolution([null]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'expand',
+          parentVariantId: 'gid://shopify/ProductVariant/7',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/ProductVariant\/1/);
+    // Nothing was created — an unverifiable price never becomes a row.
+    expect(repos.bundles.rows).toHaveLength(0);
+    expect(repos.bundleItems.rows).toHaveLength(0);
+  });
+
+  it('POST /api/bundles rejects an item id that is not a ProductVariant gid', async () => {
+    seed();
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'update',
+          items: [{ variantId: 'gid://shopify/Product/456', qty: 1 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/Not ProductVariant ids/);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles surfaces a variant-resolution transport failure as a prefixed 502', async () => {
+    seed();
+    vi.mocked(adminGraphql).mockRejectedValueOnce(new Error('network down'));
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'update',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { error: string };
+    // Prefixed exactly once — the resolver adds it, the route does not repeat it.
+    expect(json.error).toBe('Failed to resolve variants: network down');
+  });
+
+  it('PUT /api/bundles/:id keeps a deleted variant\'s stored price and name', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'expand', parentVariantId: 'gid://shopify/ProductVariant/7', metafieldState: 'NotYet' })],
+      bundleItems: [
+        bundleItemRow({
+          id: 'i1',
+          bundleId: 'bundle-1',
+          variantId: 'gid://shopify/ProductVariant/1',
+          name: 'Blue T-Shirt / Large',
+          price: 1500,
+          qty: 2,
+        }),
+      ],
+    });
+    mockVariantResolution([null]);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const kept = repos.bundleItems.rows.find((r) => r.variantId === 'gid://shopify/ProductVariant/1');
+    expect(kept?.price).toBe(1500);
+    expect(kept?.name).toBe('Blue T-Shirt / Large');
+  });
+
+  it('PUT /api/bundles/:id does not re-convert a stored priceAdjustment when the body sends no items', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
+      bundleItems: [
+        bundleItemRow({
+          id: 'i1',
+          bundleId: 'bundle-1',
+          price: 1500,
+          qty: 2,
+          priceAdjustment: 250, // already minor units: $2.50
+          titleOverride: 'Freebie',
+        }),
+      ],
+    });
+    mockVariantResolution([variantNode({ price: '15.00' })]);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    // 250, not 25000 — a stored adjustment must not go through toMinorUnits twice.
+    expect(repos.bundleItems.rows[0]).toMatchObject({
+      priceAdjustment: 250,
+      titleOverride: 'Freebie',
+      qty: 2,
+    });
+  });
+
+  it('PUT /api/bundles/:id converts a major-unit priceAdjustment when the body DOES send items', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
+      bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1', priceAdjustment: 250 })],
+    });
+    mockVariantResolution([variantNode({ price: '15.00' })]);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 3, priceAdjustment: 1.25 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(repos.bundleItems.rows[0]).toMatchObject({ priceAdjustment: 125, qty: 3, price: 1500 });
+  });
+
+  it('PUT /api/bundles/:id rejects a body containing sumOfItems', async () => {
+    seed({ bundles: [bundleRow({ operation: 'update' })] });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ sumOfItems: 99.99 }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toMatch(/sumOfItems/);
   });
 
   it('GET /api/bundles/:id/admin-url resolves the parent variant\'s product into an admin URL', async () => {
@@ -988,6 +1325,9 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // exist for this bundle — needs at least one seeded here, or the guard
     // (correctly) rejects it.
     const repos = seed({ bundles: [existing], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+    // Prices are re-verified on EVERY save, so even a rename resolves the
+    // bundle's components — that one call is all the Admin traffic allowed.
+    mockVariantResolution([variantNode({ price: '15.00' })]);
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -1009,7 +1349,12 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
     });
-    expect(adminGraphql).not.toHaveBeenCalled();
+    // Exactly one Admin call, and it is the variant lookup — no metafield
+    // read, write or delete on a rename-only PUT.
+    expect(adminGraphql).toHaveBeenCalledTimes(1);
+    const [, , resolveQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(resolveQuery).toContain('nodes(ids: $ids)');
+    expect(resolveQuery).not.toContain('metafields');
   });
 
   it('PUT /api/bundles/:id transitions expand -> merge: clears composition and writes $app:cart-transform.merge_bundles', async () => {
@@ -1022,8 +1367,10 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     });
     const repos = seed({ bundles: [existing] });
 
-    // Call order: clearComposition (metafieldsDelete) for the OLD transport,
-    // then upsertMergeConfig's read + write for the NEW transport.
+    // Call order: the variant resolution for the body's items, then
+    // clearComposition (metafieldsDelete) for the OLD transport, then
+    // upsertMergeConfig's read + write for the NEW transport.
+    mockVariantResolution([variantNode()]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({
         data: {
@@ -1065,12 +1412,14 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldGid: 'gid://shopify/Metafield/2',
     });
 
-    expect(adminGraphql).toHaveBeenCalledTimes(3);
-    const [, , clearQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(adminGraphql).toHaveBeenCalledTimes(4);
+    const [, , resolveQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(resolveQuery).toContain('nodes(ids: $ids)');
+    const [, , clearQuery] = vi.mocked(adminGraphql).mock.calls[1];
     expect(clearQuery).toContain('metafieldsDelete');
-    const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[1];
+    const [, , readQuery] = vi.mocked(adminGraphql).mock.calls[2];
     expect(readQuery).toContain('merge_bundles');
-    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[2];
+    const [, , writeQuery, writeVars] = vi.mocked(adminGraphql).mock.calls[3];
     expect(writeQuery).toContain('metafieldsSet');
     expect(writeVars).toEqual({
       metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],

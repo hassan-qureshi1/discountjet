@@ -28,14 +28,14 @@ describe('compositionFromItems', () => {
     expect(result).toEqual([{ id: 'gid://shopify/ProductVariant/456', quantity: 1, price: 10.5 }]);
   });
 
-  it('maps multiple items preserving order, defaulting missing price to 0', () => {
+  it('maps multiple items preserving order', () => {
     const result = compositionFromItems([
       { variantId: '111', qty: 1, price: 10 },
-      { variantId: '222', qty: 3 },
+      { variantId: '222', qty: 3, price: 2.5 },
     ]);
     expect(result).toEqual([
       { id: 'gid://shopify/ProductVariant/111', quantity: 1, price: 10 },
-      { id: 'gid://shopify/ProductVariant/222', quantity: 3, price: 0 },
+      { id: 'gid://shopify/ProductVariant/222', quantity: 3, price: 2.5 },
     ]);
   });
 
@@ -193,8 +193,8 @@ describe('mergeConfigEntry', () => {
       parentVariantId: '999',
       price: 49.99,
       items: [
-        { variantId: '1', qty: 1 },
-        { variantId: 'gid://shopify/ProductVariant/2', qty: 1 },
+        { variantId: '1', qty: 1, price: 10 },
+        { variantId: 'gid://shopify/ProductVariant/2', qty: 1, price: 20 },
       ],
     });
     expect(result).toEqual({
@@ -209,10 +209,10 @@ describe('mergeConfigEntry', () => {
       parentVariantId: 'gid://shopify/ProductVariant/999',
       price: 10,
       items: [
-        { variantId: '1', qty: 1 },
-        { variantId: '1', qty: 2 },
-        { variantId: 'gid://shopify/ProductVariant/1', qty: 1 }, // same variant, GID form
-        { variantId: '2', qty: 1 },
+        { variantId: '1', qty: 1, price: 5 },
+        { variantId: '1', qty: 2, price: 5 },
+        { variantId: 'gid://shopify/ProductVariant/1', qty: 1, price: 5 }, // same variant, GID form
+        { variantId: '2', qty: 1, price: 5 },
       ],
     });
     expect(result.sources).toEqual(['gid://shopify/ProductVariant/1', 'gid://shopify/ProductVariant/2']);
@@ -222,12 +222,12 @@ describe('mergeConfigEntry', () => {
     const withTitle = mergeConfigEntry({
       parentVariantId: '999',
       price: 10,
-      items: [{ variantId: '1', qty: 1 }],
+      items: [{ variantId: '1', qty: 1, price: 5 }],
       title: 'Camp Kit',
     });
     expect(withTitle.title).toBe('Camp Kit');
 
-    const withoutTitle = mergeConfigEntry({ parentVariantId: '999', price: 10, items: [{ variantId: '1', qty: 1 }] });
+    const withoutTitle = mergeConfigEntry({ parentVariantId: '999', price: 10, items: [{ variantId: '1', qty: 1, price: 5 }] });
     expect(withoutTitle).not.toHaveProperty('title');
   });
 });

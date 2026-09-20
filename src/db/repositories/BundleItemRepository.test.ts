@@ -23,6 +23,16 @@ describe('BundleItemRepository', () => {
     expect(params).toEqual(expect.arrayContaining([SHOP, 'b1']));
   });
 
+  it('orders findAll by name too, so the list route never re-sorts', async () => {
+    const { fake, items } = repo();
+    await items.findAll();
+
+    const { sql, params } = fake.lastQuery();
+    expect(sql).toMatch(/"shop_id" = \?/i);
+    expect(sql).toMatch(/order by .*"name"/i);
+    expect(params).toEqual([SHOP]);
+  });
+
   it('scopes the sum and multiplies price by qty', async () => {
     const { fake, items } = repo([{ total: 3999 }]);
     await items.sumFor('b1');

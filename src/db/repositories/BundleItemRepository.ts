@@ -46,6 +46,21 @@ export class BundleItemRepository
     super(db, bundleItem, shopId);
   }
 
+  /**
+   * Every item row for the caller's shop, ordered by name — the SAME ordering
+   * `listForBundle` guarantees. `GET /api/bundles` groups these into per-bundle
+   * lists, and a stable grouping of an ordered list stays ordered, so the route
+   * does not re-sort. Ordering is this repository's job and lives only here.
+   */
+  override async findAll(): Promise<BundleItemRow[]> {
+    return this.db
+      .select()
+      .from(bundleItem)
+      .where(this.scope())
+      .orderBy(asc(bundleItem.name))
+      .all();
+  }
+
   /** Ordered by name: there is no `position`, see the schema comment. */
   async listForBundle(bundleId: string): Promise<BundleItemRow[]> {
     return this.db

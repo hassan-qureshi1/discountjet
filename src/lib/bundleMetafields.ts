@@ -1,11 +1,19 @@
 import type { Env } from '../types/env';
 import { adminGraphql } from './graphqlAdmin';
 
-/** Minimal shape `compositionFromItems` needs from a bundle item. */
+/**
+ * Minimal shape `compositionFromItems` needs from a bundle item.
+ *
+ * `price` is per-unit in MAJOR units (dollars) — the Rust function's
+ * `BundleComponent.price` is a major-unit float, not minor units. The bundle
+ * routes convert from the stored minor units before calling in. It is
+ * required: a component the cart transform prices at 0 is a component given
+ * away free at checkout, so there is no honest default to fall back on.
+ */
 export interface BundleItemLike {
   variantId: string;
   qty: number;
-  price?: number; // per-unit dollars; missing treated as 0
+  price: number;
 }
 
 /**
@@ -42,11 +50,12 @@ function toSafeQuantity(qty: number): number {
 }
 
 // `price` is `f64` on the Rust side, which parses fine from any finite JSON
-// number — but a non-finite (NaN/Infinity) or missing value would either
-// serialize as `null` (deserialization failure) or fail `JSON.stringify`
-// entirely. Fall back to 0 rather than propagate garbage.
-function toSafePrice(price: number | undefined): number {
-  return typeof price === 'number' && Number.isFinite(price) ? price : 0;
+// number — but a non-finite (NaN/Infinity) value would serialize as `null`
+// (deserialization failure) or fail `JSON.stringify` entirely. The type now
+// makes `price` required, so this guards only the non-finite case: fall back
+// to 0 rather than propagate garbage into the cart transform.
+function toSafePrice(price: number): number {
+  return Number.isFinite(price) ? price : 0;
 }
 
 /**
@@ -197,7 +206,10 @@ export interface MergeBundleConfig {
   title?: string;
 }
 
-/** Minimal shape `mergeConfigEntry` needs from a bundle. */
+/** Minimal shape `mergeConfigEntry` needs from a bundle. `items` only supplies
+ *  the `sources` variant ids — a merge bundle's price is the BUNDLE's, not any
+ *  item's — but it is typed as `BundleItemLike` so both metafield transports
+ *  take the one item shape. */
 export interface MergeBundleLike {
   parentVariantId: string;
   price: number; // dollars

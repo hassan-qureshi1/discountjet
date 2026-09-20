@@ -12,7 +12,6 @@ export interface BundleItem {
   qty: number;
   priceAdjustment?: number;
   titleOverride?: string;
-  imageOverride?: string;
   /**
    * Per-unit price in dollars, used to build the `bundle.composition_v2`
    * metafield for `expand` bundles. Populated by the editor from the picked

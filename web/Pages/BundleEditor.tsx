@@ -260,7 +260,6 @@ export default function BundleEditor() {
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [updatePriceAdjustment, setUpdatePriceAdjustment] = useState('');
   const [updateTitleOverride, setUpdateTitleOverride] = useState('');
-  const [updateImageOverride, setUpdateImageOverride] = useState('');
   const [bannerError, setBannerError] = useState<string | null>(null);
 
   // Populate form state from the loaded bundle exactly once — react-query
@@ -279,7 +278,6 @@ export default function BundleEditor() {
       const [override] = bundle.items;
       setUpdatePriceAdjustment(override.priceAdjustment != null ? String(override.priceAdjustment) : '');
       setUpdateTitleOverride(override.titleOverride ?? '');
-      setUpdateImageOverride(override.imageOverride ?? '');
     }
     initializedRef.current = true;
   }, [isEdit, bundle]);
@@ -439,7 +437,6 @@ export default function BundleEditor() {
           qty: 1,
           priceAdjustment: updatePriceAdjustment ? parseFloat(updatePriceAdjustment) : undefined,
           titleOverride: updateTitleOverride.trim() || undefined,
-          imageOverride: updateImageOverride.trim() || undefined,
         }
         : undefined;
       return {
@@ -510,7 +507,7 @@ export default function BundleEditor() {
         )}
         {isUpdateLocked && (
           <Banner tone="warning" title="This bundle can only be saved as a Draft">
-            <p>Overriding a cart line&apos;s price, title, or image requires Shopify Plus. It won&apos;t go live until this store is on Plus and the bundle is re-saved.</p>
+            <p>Overriding a cart line&apos;s price or title requires Shopify Plus. It won&apos;t go live until this store is on Plus and the bundle is re-saved.</p>
           </Banner>
         )}
 
@@ -762,7 +759,7 @@ export default function BundleEditor() {
                       Variant picker is available inside the Shopify admin.
                     </Text>
                   )}
-                  <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
+                  <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                     <TextField
                       label="New price"
                       type="number"
@@ -775,13 +772,6 @@ export default function BundleEditor() {
                       label="New title"
                       value={updateTitleOverride}
                       onChange={setUpdateTitleOverride}
-                      autoComplete="off"
-                    />
-                    <TextField
-                      label="New image URL"
-                      placeholder="https://…"
-                      value={updateImageOverride}
-                      onChange={setUpdateImageOverride}
                       autoComplete="off"
                     />
                   </InlineGrid>

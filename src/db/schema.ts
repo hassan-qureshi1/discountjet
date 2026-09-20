@@ -105,7 +105,7 @@ export const bundle = sqliteTable(
 
     name: text('name').notNull(),
     operation: text('operation', { enum: ['merge', 'expand', 'update'] }).notNull(),
-    // JSON string: [{variantId, qty, priceAdjustment?, titleOverride?, imageOverride?}]
+    // JSON string: [{variantId, qty, price?, priceAdjustment?, titleOverride?}]
     items: text('items').notNull(),
 
     parentVariantId: text('parent_variant_id'),

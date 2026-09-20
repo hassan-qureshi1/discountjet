@@ -39,3 +39,13 @@ See `README.md` for setup. See `wrangler.jsonc` for which Cloudflare bindings ar
 - **Never use raw `KV.get()` + `JSON.parse()` for sessions** — always use `KVSessionStorage.loadSession()`.
 - **Fail loudly on data integrity issues** — never use `?? ''` or fallbacks to mask a missing domain, ID, or required field.
 - **Never pass secrets through queue messages** — fetch tokens from KV at processing time.
+
+---
+
+## Database Diagram
+
+`docs/erd.dbml` is the ERD for the D1 schema, in [dbdiagram.io](https://dbdiagram.io/d) DBML format. Paste the file's contents into dbdiagram.io to render it.
+
+**When a new feature changes the schema:** propose the DB design first and wait for the user to approve it. Once approved — and in the same change as the Drizzle schema edit and the migration — update `docs/erd.dbml` to match. Never update the diagram ahead of approval, and never land a schema change that leaves it stale.
+
+Keep the DBML faithful to `src/db/schema.ts`: enum values and `0/1` boolean semantics go in column `note`s, named indexes are mirrored in `indexes { }`, and a `shopId` FK is drawn as a `ref` with its `ON DELETE CASCADE` noted.

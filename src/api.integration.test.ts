@@ -872,6 +872,16 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // state still says nothing was written — never a false `Written`.
     expect(repos.bundles.rows).toHaveLength(1);
     expect(repos.bundles.rows[0]).toMatchObject({ metafieldState: 'NotYet', metafieldGid: null });
+    // ...and so are its verified components: `replaceForBundle` commits before
+    // the metafield write is attempted, so a Shopify-side failure never leaves
+    // a bundle with no components.
+    expect(repos.bundleItems.rows).toHaveLength(1);
+    expect(repos.bundleItems.rows[0]).toMatchObject({
+      bundleId: repos.bundles.rows[0].id,
+      variantId: 'gid://shopify/ProductVariant/1',
+      price: 1500,
+      qty: 2,
+    });
   });
 
   it('POST /api/bundles overwrites the client price with Shopify\'s', async () => {
@@ -1041,13 +1051,22 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       ],
     });
     mockVariantResolution([null]);
+    // Resending `items` also re-writes the composition, so answer that call too.
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+    });
 
     const res = await app.request(
       '/api/bundles/bundle-1',
       {
         method: 'PUT',
         headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'Renamed' }),
+        // The body DOES resend the items — that is what makes this the
+        // re-resolution path, where the variant comes back deleted.
+        body: JSON.stringify({
+          name: 'Renamed',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+        }),
       },
       env('development'),
     );
@@ -1058,22 +1077,22 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(kept?.name).toBe('Blue T-Shirt / Large');
   });
 
-  it('PUT /api/bundles/:id does not re-convert a stored priceAdjustment when the body sends no items', async () => {
+  it('PUT /api/bundles/:id leaves the stored item rows byte-identical when the body sends no items', async () => {
+    const stored = bundleItemRow({
+      id: 'i1',
+      bundleId: 'bundle-1',
+      price: 1500,
+      qty: 2,
+      priceAdjustment: 250, // already minor units: $2.50
+      titleOverride: 'Freebie',
+    });
     const repos = seed({
       shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
-      bundleItems: [
-        bundleItemRow({
-          id: 'i1',
-          bundleId: 'bundle-1',
-          price: 1500,
-          qty: 2,
-          priceAdjustment: 250, // already minor units: $2.50
-          titleOverride: 'Freebie',
-        }),
-      ],
+      bundleItems: [{ ...stored }],
     });
-    mockVariantResolution([variantNode({ price: '15.00' })]);
+    // Deliberately no `mockVariantResolution` here: Shopify is never asked, and
+    // an unconsumed `mockResolvedValueOnce` would leak into the next test.
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -1086,12 +1105,18 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     );
 
     expect(res.status).toBe(200);
-    // 250, not 25000 — a stored adjustment must not go through toMinorUnits twice.
-    expect(repos.bundleItems.rows[0]).toMatchObject({
-      priceAdjustment: 250,
-      titleOverride: 'Freebie',
-      qty: 2,
-    });
+    // Same id (no `replaceForBundle` churn), same price (no silent re-pricing
+    // behind the composition metafield's back), same already-minor adjustment
+    // (never run through toMinorUnits a second time into 25000).
+    expect(repos.bundleItems.rows).toEqual([stored]);
+    expect(adminGraphql).not.toHaveBeenCalled();
+
+    // The response reports those same untouched rows.
+    const json = (await res.json()) as {
+      bundle: { items: { price: { amount: string } }[]; sumOfItems: { amount: string } };
+    };
+    expect(json.bundle.items[0].price).toEqual({ amount: '15.00', currencyCode: 'AUD' });
+    expect(json.bundle.sumOfItems).toEqual({ amount: '30.00', currencyCode: 'AUD' });
   });
 
   it('PUT /api/bundles/:id converts a major-unit priceAdjustment when the body DOES send items', async () => {
@@ -1325,9 +1350,6 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // exist for this bundle — needs at least one seeded here, or the guard
     // (correctly) rejects it.
     const repos = seed({ bundles: [existing], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
-    // Prices are re-verified on EVERY save, so even a rename resolves the
-    // bundle's components — that one call is all the Admin traffic allowed.
-    mockVariantResolution([variantNode({ price: '15.00' })]);
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -1349,12 +1371,11 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
     });
-    // Exactly one Admin call, and it is the variant lookup — no metafield
-    // read, write or delete on a rename-only PUT.
-    expect(adminGraphql).toHaveBeenCalledTimes(1);
-    const [, , resolveQuery] = vi.mocked(adminGraphql).mock.calls[0];
-    expect(resolveQuery).toContain('nodes(ids: $ids)');
-    expect(resolveQuery).not.toContain('metafields');
+    // No Admin traffic whatsoever. A body with no `items` has no client price
+    // to verify, so the rows are not re-resolved — which is also what keeps
+    // `bundle_item.price` and the composition metafield from diverging, since
+    // the composition is deliberately not rewritten on a rename either.
+    expect(adminGraphql).not.toHaveBeenCalled();
   });
 
   it('PUT /api/bundles/:id transitions expand -> merge: clears composition and writes $app:cart-transform.merge_bundles', async () => {

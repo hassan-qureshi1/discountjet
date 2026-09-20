@@ -172,9 +172,10 @@ async function verifyItems(
   currency: string,
   items: BundleItemInput[],
   existing: BundleItemRow[],
-  // False when `items` was rebuilt from stored rows on a PUT that did not send
-  // any: those `priceAdjustment` values are ALREADY in minor units, and running
-  // them through `toMinorUnits` again would scale them by the exponent twice.
+  // True when `items` came off a request body, where `priceAdjustment` is in
+  // MAJOR units. False for items rebuilt from stored rows, whose adjustments
+  // are ALREADY minor units — running those through `toMinorUnits` again would
+  // scale them by the currency exponent twice.
   convertAdjustment: boolean,
 ): Promise<BundleItemDraft[]> {
   const adjustment = (value: number | undefined): number | null => {
@@ -577,8 +578,9 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // Rust cart-transform function entirely).
   //
   // A PUT that doesn't touch `items` keeps the bundle's current components,
-  // rebuilt from the stored rows. No `price` is carried across: prices are
-  // re-resolved from Shopify below for every save, touched or not.
+  // rebuilt from the stored rows. Used ONLY by the guards below — such a PUT
+  // never re-resolves or rewrites those rows (see the `drafts` block), so no
+  // `price` needs carrying across.
   const effectiveOperation = body.operation ?? existing.operation;
   const effectiveItems: BundleItemInput[] =
     body.items ??
@@ -622,21 +624,34 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
   if (body.status !== undefined) patch.status = body.status;
 
-  // Re-resolve BEFORE the row is touched, so an unverifiable price aborts the
+  // Re-resolution exists to verify prices the CLIENT sent. A PUT that carries
+  // no `items` has nothing to verify — the stored rows were verified when they
+  // were last written — so it leaves them alone entirely: no Admin round-trip,
+  // no `replaceForBundle`, no re-minted ids.
+  //
+  // This is not just an optimisation. The composition rewrite below is
+  // deliberately skipped on a rename (`compositionInputsChanged`), so
+  // re-pricing the rows here would move `bundle_item.price` — and with it
+  // `sumOfItems` and everything the merchant sees — while `composition_v2`
+  // kept charging the old price at checkout. Displaying one price and billing
+  // another is worse than both being equally stale.
+  //
+  // Resolved BEFORE the row is touched, so an unverifiable price aborts the
   // whole PUT rather than leaving a half-applied edit behind.
-  let drafts: BundleItemDraft[];
-  try {
-    // `body.items` carries major-unit adjustments; rows rebuilt from storage
-    // above already hold minor units and must not be converted twice.
-    drafts = await verifyItems(c, currency, effectiveItems, existingItems, body.items !== undefined);
-  } catch (err) {
-    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
-    throw err;
+  let drafts: BundleItemDraft[] | null = null;
+  if (body.items !== undefined) {
+    try {
+      // Always major units here: this branch only runs for client-sent items.
+      drafts = await verifyItems(c, currency, effectiveItems, existingItems, true);
+    } catch (err) {
+      if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
   }
 
   // The stored row, straight back from the write — no re-deriving it locally.
   const merged: Row = await bundleRepo.update(id, patch);
-  const itemRows = await bundleItems.replaceForBundle(id, drafts);
+  const itemRows = drafts === null ? existingItems : await bundleItems.replaceForBundle(id, drafts);
   const sum = await bundleItems.sumFor(id);
   const forMetafield = toMetafieldItems(itemRows, currency);
 

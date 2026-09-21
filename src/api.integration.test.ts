@@ -126,6 +126,15 @@ const variantNode = (
   },
 });
 
+/**
+ * The bundle's TARGET variant, as the same `nodes` call returns it. A save now
+ * resolves the target alongside the items in ONE call, so any test that saves a
+ * bundle carrying a `parentVariantId` has to supply this too — otherwise the
+ * target reads as deleted and the save is correctly rejected.
+ */
+const parentNode = (id: string) =>
+  variantNode({ id, title: 'Bundle', productTitle: 'Camp Kit Bundle' });
+
 /** Queues the next `adminGraphql` call to answer the variant-resolution query. */
 const mockVariantResolution = (nodes: unknown[]) => {
   vi.mocked(adminGraphql).mockResolvedValueOnce({ data: { nodes } } as never);
@@ -639,7 +648,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles writes composition for an expand bundle with a parentVariantId', async () => {
     const repos = seed();
-    mockVariantResolution([variantNode({ price: '15.00' })]);
+    mockVariantResolution([variantNode({ price: '15.00' }), parentNode('gid://shopify/ProductVariant/999')]);
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         metafieldsSet: {
@@ -694,7 +703,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles writes $app:cart-transform.merge_bundles (never composition) for a merge bundle', async () => {
     const repos = seed();
-    mockVariantResolution([variantNode()]);
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
       .mockResolvedValueOnce({
@@ -790,7 +799,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles writes $app:cart-transform.merge_bundles for a merge bundle with a parentVariantId', async () => {
     const repos = seed();
-    mockVariantResolution([variantNode()]);
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } })
       .mockResolvedValueOnce({
@@ -839,7 +848,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles returns a 502 JSON error when the metafield write fails', async () => {
     const repos = seed();
-    mockVariantResolution([variantNode()]);
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: {
         metafieldsSet: {
@@ -886,7 +895,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles overwrites the client price with Shopify\'s', async () => {
     const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
-    mockVariantResolution([variantNode({ price: '15.00' })]);
+    mockVariantResolution([variantNode({ price: '15.00' }), parentNode('gid://shopify/ProductVariant/7')]);
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
     });
@@ -965,7 +974,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('POST /api/bundles rejects a variant that does not exist', async () => {
     const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
-    mockVariantResolution([null]);
+    mockVariantResolution([null, parentNode('gid://shopify/ProductVariant/7')]);
 
     const res = await app.request(
       '/api/bundles',
@@ -1050,7 +1059,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
         }),
       ],
     });
-    mockVariantResolution([null]);
+    mockVariantResolution([null, parentNode('gid://shopify/ProductVariant/7')]);
     // Resending `items` also re-writes the composition, so answer that call too.
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
@@ -1637,7 +1646,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // Call order: the variant resolution for the body's items, then
     // clearComposition (metafieldsDelete) for the OLD transport, then
     // upsertMergeConfig's read + write for the NEW transport.
-    mockVariantResolution([variantNode()]);
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({
         data: {
@@ -1869,6 +1878,198 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(readQuery).toContain('merge_bundles');
     const [, , deleteQuery] = vi.mocked(adminGraphql).mock.calls[1];
     expect(deleteQuery).toContain('metafieldsDelete');
+  });
+
+  // ─── target ("parent") variant verification ───────────────────────
+  //
+  // The target variant is the one variant a bundle depends on that is NOT a
+  // `bundle_item` row, so nothing else on the save path verifies it. Left
+  // unchecked, deleting the target product in Shopify kept saving cleanly while
+  // the cart transform emitted a `linesMerge`/`composition_v2` pointing at a
+  // dead gid.
+
+  it('POST /api/bundles rejects a target variant that no longer exists', async () => {
+    const repos = seed();
+    // Only the ITEM resolves. The target (999) is absent from `nodes`, which is
+    // how Shopify reports a deleted variant.
+    mockVariantResolution([variantNode()]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+  headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'merge',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 49.99,
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain('ProductVariant/999');
+    // Nothing persisted, and no metafield write was attempted.
+    expect(repos.bundles.rows).toHaveLength(0);
+    expect(repos.bundleItems.rows).toHaveLength(0);
+    expect(vi.mocked(adminGraphql)).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /api/bundles resolves the items and the target in ONE Admin call', async () => {
+    seed();
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } } as never)
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      } as never);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+  headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Camp Kit',
+          operation: 'merge',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 49.99,
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    // The FIRST Admin call is the resolution, and it carries BOTH ids — the
+    // target costs no extra round-trip.
+    const [, , , vars] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(vars).toEqual({
+      ids: ['gid://shopify/ProductVariant/1', 'gid://shopify/ProductVariant/999'],
+    });
+  });
+
+  it('PUT /api/bundles/:id rejects a rename when the stored target is deleted', async () => {
+    const repos = seed({
+        bundles: [bundleRow({
+          id: 'bundle-1',
+          operation: 'merge',
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 4999,
+          status: 'Active',
+        })],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+    // The target does not resolve.
+    mockVariantResolution([]);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+  headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain('ProductVariant/999');
+    expect(repos.bundles.rows[0].name).toBe('Camp Kit');
+  });
+
+  it('PUT /api/bundles/:id lets a merchant FIX a dead target by choosing a live one', async () => {
+    const repos = seed({
+        bundles: [bundleRow({
+          id: 'bundle-1',
+          operation: 'merge',
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 4999,
+          status: 'Active',
+        })],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+    // The NEW target resolves; the dead stored one is never asked about.
+    mockVariantResolution([parentNode('gid://shopify/ProductVariant/888')]);
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shop: { id: 'gid://shopify/Shop/1', metafield: null } } } as never)
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/3' }], userErrors: [] } },
+      } as never);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+  headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ parentVariantId: 'gid://shopify/ProductVariant/888' }),
+      },
+      env('development'),
+    );
+
+    // The EFFECTIVE target is verified, not the stored one — otherwise the
+    // block would be a trap with no way out.
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].parentVariantId).toBe('gid://shopify/ProductVariant/888');
+  });
+
+  it('PUT /api/bundles/:id lets a broken bundle be switched off to Draft', async () => {
+    const repos = seed({
+        bundles: [bundleRow({
+          id: 'bundle-1',
+          operation: 'merge',
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 4999,
+          status: 'Active',
+        })],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+  headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'Draft' }),
+      },
+      env('development'),
+    );
+
+    // Draft is inactive, so the target is not checked at all — a merchant is
+    // never trapped with a live bundle they can neither fix nor disable, and
+    // no Admin call is made.
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].status).toBe('Draft');
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /api/bundles/:id still works when the target is deleted', async () => {
+    const repos = seed({
+        bundles: [bundleRow({
+          id: 'bundle-1',
+          operation: 'merge',
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 4999,
+          status: 'Active',
+        })],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'DELETE',
+  headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      },
+      env('development'),
+    );
+
+    // Removing a broken bundle must never be blocked.
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows).toHaveLength(0);
   });
 });
 

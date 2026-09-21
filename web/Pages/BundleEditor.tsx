@@ -476,6 +476,14 @@ export default function BundleEditor() {
   );
   const deadItems = items.filter((it) => deadVariantIds.has(it.variantId));
 
+  // The target variant is NOT a bundle item, so it needs its own branch: it
+  // cannot be "removed" the way a component can — the bundle needs one — so the
+  // only fix is to choose a different variant, and the copy has to say that.
+  // The server rejects a save whose target is gone (unless the bundle ends up
+  // Draft or Ended), so surfacing it here is what stops that being a surprise.
+  const targetVariantDeleted = parentVariantId !== undefined
+    && deadVariantIds.has(parentVariantId);
+
   const canSave = name.trim().length > 0
     && (operation === 'update' ? Boolean(parentVariantId) : Boolean(parentVariantId) && items.length > 0);
   // `canSave` already blocks the primary action when a merge/expand bundle has
@@ -568,6 +576,33 @@ export default function BundleEditor() {
         {isUpdateLocked && (
           <Banner tone="warning" title="This bundle can only be saved as a Draft">
             <p>Overriding a cart line&apos;s price or title requires Shopify Plus. It won&apos;t go live until this store is on Plus and the bundle is re-saved.</p>
+          </Banner>
+        )}
+        {targetVariantDeleted && (
+          <Banner tone="critical" title="This bundle's target product was deleted in Shopify">
+            <BlockStack gap="200">
+              <Text as="p">
+                {operation === 'merge'
+                  ? 'Merged carts have nothing left to display, so this bundle cannot be saved until you choose a new target variant.'
+                  : 'This bundle has nothing left to attach to, so it cannot be saved until you choose a new target variant.'}
+                {' '}
+                You can still set it to Draft to switch it off.
+              </Text>
+              <InlineStack gap="200">
+                <Button
+                  onClick={pickParentVariant}
+                  disabled={!pickerAvailable}
+                  accessibilityLabel="Choose a new target variant for this bundle"
+                >
+                  Choose a new target variant
+                </Button>
+              </InlineStack>
+              {!pickerAvailable && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  The variant picker is available inside the Shopify admin.
+                </Text>
+              )}
+            </BlockStack>
           </Banner>
         )}
         {deadItems.length > 0 && (

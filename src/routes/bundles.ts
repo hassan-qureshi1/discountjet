@@ -13,7 +13,13 @@ import {
 } from '../lib/bundleMetafields';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import { requireShopDomain } from '../lib/shopDomain';
-import { resolveVariants, variantDisplayName, VARIANT_GID, MAX_VARIANT_IDS } from '../lib/variantResolver';
+import {
+  resolveVariants,
+  variantDisplayName,
+  VARIANT_GID,
+  MAX_VARIANT_IDS,
+  type ResolvedVariant,
+} from '../lib/variantResolver';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
@@ -167,6 +173,65 @@ class HttpError extends Error {
  * is no such row, so the save is rejected — `bundle_item.price` is NOT NULL and
  * there is nothing honest to put in it.
  */
+async function resolveOrThrow(
+  c: Context<AppEnv>,
+  ids: string[],
+): Promise<Map<string, ResolvedVariant>> {
+  const shopDomain = requireShopDomain(c);
+  try {
+    return await resolveVariants(shopDomain, c.env, ids);
+  } catch (err) {
+    // `resolveVariants` already prefixes both of its failure modes with
+    // "Failed to resolve variants: " — surface its message verbatim rather
+    // than wrapping it a second time.
+    throw new HttpError(502, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * The bundle's target ("parent") variant must still exist in Shopify.
+ *
+ * It is the one variant a bundle depends on that is NOT a `bundle_item` row,
+ * so nothing else on the save path verifies it. Left unchecked, a merchant who
+ * deletes the target product keeps saving cleanly while the cart transform
+ * emits a `linesMerge`/`composition_v2` pointing at a dead gid.
+ *
+ * Unlike a component, a dead target cannot be removed — the bundle needs one —
+ * so the fix is to choose a different variant, and the message says so.
+ */
+function assertParentResolves(
+  parentVariantId: string,
+  resolved: Map<string, ResolvedVariant>,
+): void {
+  if (!resolved.get(parentVariantId)?.exists) {
+    throw new HttpError(
+      400,
+      `The target variant ${parentVariantId} no longer exists in Shopify. Choose a new target variant, or set this bundle to Draft.`,
+    );
+  }
+}
+
+/** Rejects a target variant id that isn't a ProductVariant gid at all. */
+function assertParentShape(parentVariantId: string): void {
+  if (!VARIANT_GID.test(parentVariantId)) {
+    throw new HttpError(400, `Not a ProductVariant id: ${parentVariantId}`);
+  }
+}
+
+/**
+ * A PUT may skip the target-variant check when the bundle ends up inactive.
+ *
+ * Without this a merchant whose target product was deleted could neither fix
+ * the bundle NOR switch it off — the block would trap them with a live, broken
+ * bundle. Draft and Ended are both inactive, so letting those through costs
+ * nothing at checkout. A CREATE never takes this path: `status` defaults to
+ * `Draft`, so honouring it there would disable the check for almost every new
+ * bundle.
+ */
+function isInactiveStatus(status: Row['status'] | undefined): boolean {
+  return status === 'Draft' || status === 'Ended';
+}
+
 async function verifyItems(
   c: Context<AppEnv>,
   currency: string,
@@ -177,7 +242,10 @@ async function verifyItems(
   // are ALREADY minor units — running those through `toMinorUnits` again would
   // scale them by the currency exponent twice.
   convertAdjustment: boolean,
-): Promise<BundleItemDraft[]> {
+  // Resolved in the SAME `nodes(ids:)` call as the items. The bundle's target
+  // variant goes here so verifying it costs no extra Admin round-trip.
+  extraIds: string[] = [],
+): Promise<{ drafts: BundleItemDraft[]; resolved: Map<string, ResolvedVariant> }> {
   const adjustment = (value: number | undefined): number | null => {
     if (value === undefined) return null;
     return convertAdjustment ? toMinorUnits(value, currency) : value;
@@ -232,24 +300,11 @@ async function verifyItems(
     );
   }
 
-  const shopDomain = requireShopDomain(c);
-  let resolved;
-  try {
-    resolved = await resolveVariants(
-      shopDomain,
-      c.env,
-      items.map((i) => i.variantId),
-    );
-  } catch (err) {
-    // `resolveVariants` already prefixes both of its failure modes with
-    // "Failed to resolve variants: " — surface its message verbatim rather
-    // than wrapping it a second time.
-    throw new HttpError(502, err instanceof Error ? err.message : String(err));
-  }
+  const resolved = await resolveOrThrow(c, [...items.map((i) => i.variantId), ...extraIds]);
 
   const priorByVariant = new Map(existing.map((row) => [row.variantId, row]));
 
-  return items.map((item) => {
+  const drafts = items.map((item) => {
     const live = resolved.get(item.variantId);
     const prior = priorByVariant.get(item.variantId);
 
@@ -281,6 +336,8 @@ async function verifyItems(
       titleOverride: item.titleOverride ?? null,
     };
   });
+
+  return { drafts, resolved };
 }
 
 /**
@@ -528,9 +585,26 @@ bundleRoutes.post('/api/bundles', async (c) => {
   // Before the row exists: a price we cannot verify must not become a row at
   // all. There is no prior `bundle_item` to fall back on for a create, so an
   // unresolvable variant is a 400, not a zero.
+  // A create ALWAYS verifies the target variant, whatever its status. The
+  // inactive-status escape hatch exists so an existing broken bundle can be
+  // switched off; `status` defaults to `Draft` here, so honouring it would
+  // disable the check for almost every new bundle.
   let drafts: BundleItemDraft[];
   try {
-    drafts = await verifyItems(c, currency, body.items, [], true);
+    const parentVariantId = body.parentVariantId;
+    if (parentVariantId !== undefined) assertParentShape(parentVariantId);
+
+    const verified = await verifyItems(
+      c,
+      currency,
+      body.items,
+      [],
+      true,
+      parentVariantId === undefined ? [] : [parentVariantId],
+    );
+    drafts = verified.drafts;
+
+    if (parentVariantId !== undefined) assertParentResolves(parentVariantId, verified.resolved);
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
     throw err;
@@ -701,15 +775,44 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   //
   // Resolved BEFORE the row is touched, so an unverifiable price aborts the
   // whole PUT rather than leaving a half-applied edit behind.
+  //
+  // The bundle's TARGET variant is checked separately from its items, because
+  // it is not a `bundle_item` row. The EFFECTIVE target is verified — whatever
+  // this PUT sets, else whatever is stored — so a merchant whose target was
+  // deleted can still fix the bundle by choosing a live one. Skipped when the
+  // bundle ends up Draft or Ended, so a broken bundle can always be switched
+  // off rather than trapping its owner.
+  const effectiveParentVariantId =
+    body.parentVariantId !== undefined ? body.parentVariantId : existing.parentVariantId;
+  const effectiveStatus = body.status ?? existing.status;
+  const checksParent = Boolean(effectiveParentVariantId) && !isInactiveStatus(effectiveStatus);
+
   let drafts: BundleItemDraft[] | null = null;
-  if (replacesItems) {
-    try {
+  try {
+    if (checksParent) assertParentShape(effectiveParentVariantId as string);
+
+    if (replacesItems) {
       // Always major units here: this branch only runs for client-sent items.
-      drafts = await verifyItems(c, currency, effectiveItems, existingItems, true);
-    } catch (err) {
-      if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
-      throw err;
+      const verified = await verifyItems(
+        c,
+        currency,
+        effectiveItems,
+        existingItems,
+        true,
+        checksParent ? [effectiveParentVariantId as string] : [],
+      );
+      drafts = verified.drafts;
+      if (checksParent) assertParentResolves(effectiveParentVariantId as string, verified.resolved);
+    } else if (checksParent) {
+      // No items to re-resolve, but the target still has to be real. One
+      // `nodes(ids:)` call with a single id — a read used to reject, which
+      // writes nothing and so cannot reintroduce a price desync.
+      const resolved = await resolveOrThrow(c, [effectiveParentVariantId as string]);
+      assertParentResolves(effectiveParentVariantId as string, resolved);
     }
+  } catch (err) {
+    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    throw err;
   }
 
   // The stored row, straight back from the write — no re-deriving it locally.

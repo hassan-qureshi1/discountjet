@@ -43,7 +43,22 @@ export async function apiFetch<T = unknown>(
   const headers = { 'Content-Type': 'application/json', ...(init.headers ?? {}) };
   const res = await authenticatedFetch(path, { ...init, headers });
   if (!res.ok) {
-    throw new Error(`Request to ${path} failed: ${res.status} ${res.statusText}`);
+    // The Worker returns `{ error: "..." }` on every failure path, and that
+    // message is usually the only place the underlying cause appears (a
+    // Shopify userError behind a 502, say). Dropping it left the UI showing a
+    // bare status code with nothing to act on. The `failed: <status>` prefix
+    // is preserved — 404 detection in the detail pages matches on it.
+    const detail = await res
+      .clone()
+      .json()
+      .then((body) => (body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : ''))
+      .catch(() => '');
+
+    throw new Error(
+      `Request to ${path} failed: ${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`,
+    );
   }
   return res.json() as Promise<T>;
 }

@@ -1,4 +1,4 @@
-use discount_tier::config::{PlatformCfg, PriorityCode, Selector, SelectorType};
+use discount_tier::config::{PlatformCfg, SelectorType};
 use discount_tier::shared::*;
 use std::collections::BTreeSet;
 
@@ -29,18 +29,8 @@ fn product_selector_falls_back_to_variant() {
 }
 
 #[test]
-fn platform_and_yield_rules() {
+fn platform_rules() {
     assert!(matches!(current_platform(Some("pos")), PlatformCfg::Pos));
     assert!(platform_allowed(PlatformCfg::Both, PlatformCfg::Pos));
     assert!(!platform_allowed(PlatformCfg::Pos, PlatformCfg::Checkout));
-
-    let codes = vec![PriorityCode {
-        code: "VIP".into(),
-        selector: Selector::Prefix,
-    }];
-    // code-triggered run: never yield
-    assert!(!should_yield(Some("ANY"), Some("VIPXYZ"), &codes));
-    // automatic run + prefix match: yield
-    assert!(should_yield(None, Some("VIPXYZ"), &codes));
-    assert!(!should_yield(None, Some("NOPE"), &codes));
 }

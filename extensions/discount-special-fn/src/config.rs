@@ -45,22 +45,6 @@ pub enum PlatformCfg {
     Checkout,
 }
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Selector {
-    Prefix,
-    Suffix,
-    #[default]
-    Exact,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PriorityCode {
-    pub code: String,
-    #[serde(default)]
-    pub selector: Selector,
-}
-
 fn default_true() -> bool {
     true
 }

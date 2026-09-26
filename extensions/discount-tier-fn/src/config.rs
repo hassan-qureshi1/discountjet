@@ -55,23 +55,6 @@ pub enum PlatformCfg {
     Checkout,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[derive(Default)]
-pub enum Selector {
-    Prefix,
-    Suffix,
-    #[default]
-    Exact,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PriorityCode {
-    pub code: String,
-    #[serde(default)]
-    pub selector: Selector,
-}
-
 #[derive(Debug, Default, Deserialize)]
 pub struct TierEntry {
     #[serde(default)]

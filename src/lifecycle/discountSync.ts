@@ -1,10 +1,6 @@
-import { and, eq, isNull } from 'drizzle-orm';
-import type { createDb } from '../db/db';
-import { discount, webhookEvent } from '../db/schema';
+import type { IDiscountRepository, Repositories } from '../db/repositories';
 import type { Env } from '../types/env';
 import { adminGraphql, type GraphqlResult } from '../lib/graphqlAdmin';
-
-type Db = ReturnType<typeof createDb>;
 
 export type DiscountKind = 'tier' | 'bundle' | 'special';
 export type DiscountMethod = 'automatic' | 'code';
@@ -164,7 +160,8 @@ export function gidsToTombstone(existingGids: string[], liveGids: Set<string>): 
 // ─── DB-driven webhook sync ───────────────────────────────────────────────────
 
 export interface SyncDeps {
-  db: Db;
+  /** Already bound to `shopId` — nothing here builds a repository or a Db. */
+  repos: Repositories;
   env: Env;
   shopId: string;
   shopDomain: string;
@@ -182,13 +179,9 @@ export type SyncOutcome =
 
 /** True if this delivery id has not been seen before (records it if new). */
 async function recordDelivery(deps: SyncDeps, shopifyGid: string | null): Promise<boolean> {
-  const existing = await deps.db
-    .select({ id: webhookEvent.id })
-    .from(webhookEvent)
-    .where(eq(webhookEvent.id, deps.deliveryId))
-    .get();
-  if (existing) return false;
-  await deps.db.insert(webhookEvent).values({
+  const events = deps.repos.events;
+  if (await events.deliverySeen(deps.deliveryId)) return false;
+  await events.record({
     id: deps.deliveryId,
     topic: deps.topic,
     shopId: deps.shopId,
@@ -213,10 +206,7 @@ export async function syncDiscountFromWebhook(deps: SyncDeps): Promise<SyncOutco
 
   // Delete: tombstone by GID (delete always wins, regardless of timestamp).
   if (deps.topic === 'discounts/delete') {
-    await deps.db
-      .update(discount)
-      .set({ deletedAt: new Date().toISOString() })
-      .where(and(eq(discount.shopId, deps.shopId), eq(discount.shopifyGid, shopifyGid)));
+    await deps.repos.discounts.tombstoneByGid(shopifyGid, new Date().toISOString());
     return { result: 'tombstoned' };
   }
 
@@ -230,7 +220,7 @@ export async function syncDiscountFromWebhook(deps: SyncDeps): Promise<SyncOutco
   const c = classifyNode(node, deps.payload.title ?? '');
   if (!c.isAppOwned) return { result: 'native' };
 
-  return upsertClassified(deps.db, deps.shopId, shopifyGid, c, {
+  return upsertClassified(deps.repos.discounts, shopifyGid, c, {
     updatedAt: deps.payload.updated_at,
     createdAt: deps.payload.created_at,
   });
@@ -242,44 +232,35 @@ export async function syncDiscountFromWebhook(deps: SyncDeps): Promise<SyncOutco
  * so mapping never diverges. A create/update also clears any prior tombstone.
  */
 async function upsertClassified(
-  db: Db,
-  shopId: string,
+  discounts: IDiscountRepository,
   shopifyGid: string,
   c: Classification,
   fallback: { updatedAt?: string; createdAt?: string } = {},
 ): Promise<SyncOutcome> {
   const incomingUpdatedAt = c.updatedAt ?? fallback.updatedAt ?? new Date().toISOString();
 
-  const existing = await db
-    .select({ id: discount.id, updatedAt: discount.updatedAt })
-    .from(discount)
-    .where(and(eq(discount.shopId, shopId), eq(discount.shopifyGid, shopifyGid)))
-    .get();
+  const existing = await discounts.findVersionByGid(shopifyGid);
 
   if (existing) {
     // Ordering guard: ignore a delivery older than what we already stored.
     if (existing.updatedAt && incomingUpdatedAt < existing.updatedAt) {
       return { result: 'ignored_stale' };
     }
-    await db
-      .update(discount)
-      .set({
-        name: c.name,
-        type: c.type,
-        method: c.method,
-        status: c.status,
-        products: c.products,
-        deletedAt: null, // a fresh create/update un-tombstones
-        updatedAt: incomingUpdatedAt,
-      })
-      .where(eq(discount.id, existing.id));
+    await discounts.updateMirror(existing.id, {
+      name: c.name,
+      type: c.type,
+      method: c.method,
+      status: c.status,
+      products: c.products,
+      deletedAt: null, // a fresh create/update un-tombstones
+      updatedAt: incomingUpdatedAt,
+    });
     return { result: 'upserted', id: existing.id };
   }
 
   const id = crypto.randomUUID();
-  await db.insert(discount).values({
+  await discounts.insertMirror({
     id,
-    shopId,
     shopifyGid,
     name: c.name,
     type: c.type,
@@ -295,7 +276,8 @@ async function upsertClassified(
 // ─── Backfill / reconcile / sync-health (E4-5) ────────────────────────────────
 
 export interface SyncContext {
-  db: Db;
+  /** Already bound to `shopId` — nothing here builds a repository or a Db. */
+  repos: Repositories;
   env: Env;
   shopId: string;
   shopDomain: string;
@@ -360,7 +342,7 @@ export async function backfillDiscounts(ctx: SyncContext): Promise<{ liveGids: S
       liveGids.add(node.id);
       const c = classifyNode(node);
       if (!c.isAppOwned) continue; // native discounts are not mirrored
-      const outcome = await upsertClassified(ctx.db, ctx.shopId, node.id, c);
+      const outcome = await upsertClassified(ctx.repos.discounts, node.id, c);
       if (outcome.result === 'upserted') upserted++;
     }
 
@@ -379,25 +361,16 @@ export async function backfillDiscounts(ctx: SyncContext): Promise<{ liveGids: S
 export async function reconcileDiscounts(ctx: SyncContext): Promise<{ upserted: number; tombstoned: number }> {
   const { liveGids, upserted } = await backfillDiscounts(ctx);
 
-  const rows = await ctx.db
-    .select({ shopifyGid: discount.shopifyGid })
-    .from(discount)
-    .where(and(eq(discount.shopId, ctx.shopId), isNull(discount.deletedAt)))
-    .all();
+  const discounts = ctx.repos.discounts;
+  const mirroredGids = await discounts.listLiveGids();
 
   const now = new Date().toISOString();
-  const stale = gidsToTombstone(
-    rows.map((r) => r.shopifyGid),
-    liveGids,
-  );
+  const stale = gidsToTombstone(mirroredGids, liveGids);
   for (const gid of stale) {
-    await ctx.db
-      .update(discount)
-      .set({ deletedAt: now })
-      .where(and(eq(discount.shopId, ctx.shopId), eq(discount.shopifyGid, gid)));
+    await discounts.tombstoneByGid(gid, now);
   }
 
-  await ctx.db.insert(webhookEvent).values({
+  await ctx.repos.events.record({
     id: crypto.randomUUID(),
     topic: RECONCILE_TOPIC,
     shopId: ctx.shopId,
@@ -419,12 +392,8 @@ export interface SyncHealth {
  * reconcile, and the number of mirrored rows still missing their engine type
  * (config metafield not yet seen).
  */
-export async function getSyncHealth(db: Db, shopId: string): Promise<SyncHealth> {
-  const events = await db
-    .select({ topic: webhookEvent.topic, receivedAt: webhookEvent.receivedAt })
-    .from(webhookEvent)
-    .where(eq(webhookEvent.shopId, shopId))
-    .all();
+export async function getSyncHealth(repos: Repositories, shopId: string): Promise<SyncHealth> {
+  const events = await repos.events.list(shopId);
 
   let lastWebhookAt: string | null = null;
   let lastReconcileAt: string | null = null;
@@ -436,11 +405,7 @@ export async function getSyncHealth(db: Db, shopId: string): Promise<SyncHealth>
     }
   }
 
-  const unknown = await db
-    .select({ id: discount.id })
-    .from(discount)
-    .where(and(eq(discount.shopId, shopId), isNull(discount.deletedAt), isNull(discount.type)))
-    .all();
+  const unknownCount = await repos.discounts.countUnknownType();
 
-  return { lastWebhookAt, lastReconcileAt, unknownCount: unknown.length };
+  return { lastWebhookAt, lastReconcileAt, unknownCount };
 }

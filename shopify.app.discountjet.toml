@@ -1,0 +1,29 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "905bb0eed902d4df978cc4e0705dffbf"
+name = "DiscountJet"
+application_url = "https://helena-seats-introductory-mathematics.trycloudflare.com/shopify/install"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  topics = [
+  "discounts/update",
+  "app/uninstalled",
+  "discounts/create",
+  "discounts/delete"
+  ]
+  uri = "https://helena-seats-introductory-mathematics.trycloudflare.com/shopify/webhooks"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_discounts,read_orders,read_price_rules,read_products,write_discounts,write_price_rules,read_cart_transforms,write_cart_transforms,write_products"
+
+[auth]
+redirect_urls = [ "https://helena-seats-introductory-mathematics.trycloudflare.com/shopify/callback" ]
+

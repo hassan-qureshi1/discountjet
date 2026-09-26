@@ -101,6 +101,7 @@ export default function Home() {
                     { term: 'Currency', description: show(shop.currency) },
                     { term: 'Primary domain', description: show(shop.domain) },
                     { term: 'Installed', description: asDate(shop.installedAt) },
+                    { term: 'Plan ', description: asDate(shop.plan) },
                   ]}
                 />
               </BlockStack>

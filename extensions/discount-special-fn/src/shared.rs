@@ -1,6 +1,6 @@
 //! Shared cart-input helpers for the special function.
 
-use crate::config::{PlatformCfg, PriorityCode, Selector, SelectionStrategy, SelectorType};
+use crate::config::{PlatformCfg, SelectionStrategy, SelectorType};
 use std::collections::BTreeSet;
 
 pub fn id_from_gid(gid: &str) -> Option<i64> {
@@ -38,27 +38,6 @@ pub fn platform_allowed(cfg: PlatformCfg, current: PlatformCfg) -> bool {
             (cfg, current),
             (PlatformCfg::Pos, PlatformCfg::Pos) | (PlatformCfg::Checkout, PlatformCfg::Checkout)
         )
-}
-
-pub fn should_yield(
-    triggering_code: Option<&str>,
-    cart_code: Option<&str>,
-    codes: &[PriorityCode],
-) -> bool {
-    if let Some(t) = triggering_code {
-        if !t.is_empty() {
-            return false;
-        }
-    }
-    let cart = match cart_code {
-        Some(c) if !c.is_empty() => c,
-        _ => return false,
-    };
-    codes.iter().any(|c| match c.selector {
-        Selector::Prefix => cart.starts_with(&c.code),
-        Selector::Suffix => cart.ends_with(&c.code),
-        Selector::Exact => cart == c.code,
-    })
 }
 
 pub fn strategy_enum(s: SelectionStrategy) -> &'static str {

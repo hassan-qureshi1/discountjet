@@ -2,9 +2,7 @@ import { Hono } from 'hono';
 import { createShopify, createSessionStorage } from '../shopify';
 import { onShopInstall } from '../lifecycle/install';
 import type { Env } from '../types/env';
-import { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
-import { eq, and } from 'drizzle-orm';
+import { createShopRepository } from '../db/repositories';
 
 export const authRoutes = new Hono<{ Bindings: Env }>();
 
@@ -21,12 +19,8 @@ authRoutes.get('/shopify/install', async (c) => {
   // actually need to start a fresh OAuth flow. For an existing install we'd
   // otherwise loop: escape → top-level redirect to / → Shopify admin re-loads
   // the iframe at the configured App URL (/shopify/install) → escape again.
-  const db = createDb(c.env.DB);
-  const existing = await db
-    .select({ id: shopifyShop.id })
-    .from(shopifyShop)
-    .where(and(eq(shopifyShop.myshopifyDomain, shop), eq(shopifyShop.status, 'installed')))
-    .get();
+  const shops = createShopRepository(c.env.DB);
+  const existing = await shops.findInstalledByDomain(shop);
 
   console.log(`[install] existing record=${!!existing}`);
   if (existing) {
@@ -135,11 +129,12 @@ authRoutes.get('/shopify/callback', async (c) => {
     console.log(`[auth:callback] KV verify: loaded=${!!verifySession}, id=${verifySession?.id}`);
 
     // Upsert shop record
-    const db = createDb(c.env.DB);
-    await db
-      .insert(shopifyShop)
-      .values({ id: session.id, myshopifyDomain: shopDomain, status: 'installed', createdAt: now, updatedAt: now })
-      .onConflictDoUpdate({ target: shopifyShop.id, set: { status: 'installed', updatedAt: now } });
+    await createShopRepository(c.env.DB).upsertInstalled({
+      id: session.id,
+      myshopifyDomain: shopDomain,
+      createdAt: now,
+      updatedAt: now,
+    });
 
     // Run install lifecycle hook
     await onShopInstall(shopDomain, { shop: session.shop, accessToken: session.accessToken ?? '', id: session.id }, c.env);

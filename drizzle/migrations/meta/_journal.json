@@ -15,6 +15,34 @@
       "when": 1779488408656,
       "tag": "0001_e04_discount_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788941081145,
+      "tag": "0002_lying_prism",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788942790764,
+      "tag": "0003_eager_jackpot",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788949032184,
+      "tag": "0004_sharp_ares",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789932631068,
+      "tag": "0005_nappy_boomer",
+      "breakpoints": true
     }
   ]
 }

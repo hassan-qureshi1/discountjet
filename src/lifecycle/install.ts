@@ -1,9 +1,9 @@
 import type { Env } from '../types/env';
 import { registerWebhooks } from './webhooks';
 import { backfillDiscounts } from './discountSync';
-import { createDb } from '../db/db';
-import { shopifyShop } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { ensureCartTransform } from '../lib/cartTransformRegistration';
+import { removeCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
+import { createRepositories, createShopRepository } from '../db/repositories';
 
 // Called from src/routes/auth.ts after Shopify OAuth completes.
 // The starter ships with the minimum: hydrate the shop row, register webhooks.
@@ -14,7 +14,9 @@ export async function onShopInstall(
   env: Env,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const db = createDb(env.DB);
+  // Unscoped: at this point the shop row may not exist yet, so there is no
+  // tenant to bind a scoped repository to.
+  const shops = createShopRepository(env.DB);
 
   // 1. Fetch shop details from Shopify REST.
   let name = '';
@@ -52,24 +54,11 @@ export async function onShopInstall(
   }
 
   // 2. Upsert shop row.
-  await db
-    .update(shopifyShop)
-    .set({
-      name,
-      email,
-      city,
-      countryName,
-      domain,
-      shopOwner,
-      currency,
-      ianaTimezone,
-      primaryLocale,
-      plan,
-      installDate: now,
-      status: 'installed',
-      updatedAt: now,
-    })
-    .where(eq(shopifyShop.myshopifyDomain, shopDomain));
+  await shops.markInstalled(
+    shopDomain,
+    { name, email, city, countryName, domain, shopOwner, currency, ianaTimezone, primaryLocale, plan },
+    now,
+  );
 
   // 3. Register webhooks with Shopify.
   // Starter only registers APP_UNINSTALLED. Add more topics in src/lifecycle/webhooks.ts.
@@ -78,16 +67,49 @@ export async function onShopInstall(
   // 4. Backfill the discount mirror (E4-5). Webhooks only cover changes after
   // install, so seed the mirror with existing app-owned discounts now. Best-effort:
   // a failure here (e.g. token not yet readable) is recoverable via reconcile.
+  let shopId: string | null = null;
   try {
-    const shopRow = await db
-      .select({ id: shopifyShop.id })
-      .from(shopifyShop)
-      .where(eq(shopifyShop.myshopifyDomain, shopDomain))
-      .get();
-    if (shopRow?.id) {
-      await backfillDiscounts({ db, env, shopId: shopRow.id, shopDomain });
+    shopId = await shops.findIdByDomain(shopDomain);
+    if (shopId) {
+      // The row exists now, so the scoped set can be built.
+      await backfillDiscounts({
+        repos: createRepositories(env.DB, shopId),
+        env,
+        shopId,
+        shopDomain,
+      });
     }
   } catch (err) {
     console.error(`[install] discount backfill failed for ${shopDomain}:`, err);
+  }
+
+  // 5. Register the cart-transform function (E6). Best-effort: a failure
+  // here (e.g. the function not yet deployed) is recoverable — the
+  // activation-status endpoint retries this on next load.
+  try {
+    if (shopId) {
+      const result = await ensureCartTransform(env, shopDomain, shops, shopId);
+      if ('conflict' in result) {
+        console.error(`[install] cart transform registration conflict for ${shopDomain}: a foreign transform already exists`);
+      } else {
+        console.log(
+          `[install] cart transform ${result.created ? 'created' : 'adopted'} for ${shopDomain}: ${result.gid}`,
+        );
+      }
+    }
+  } catch (err) {
+    console.error(`[install] cart transform registration failed for ${shopDomain}:`, err);
+  }
+
+  // 6. Remove the `$app:cart-transform` metafield definitions (E6) if any
+  // exist — a definition with `access.admin: MERCHANT_READ` causes Shopify to
+  // reject this app's own `metafieldsSet` writes to that namespace/key, so
+  // this app never creates them; this call only cleans up ones a prior
+  // version of the app may have created. Non-fatal: a failure here must never
+  // fail install.
+  try {
+    await removeCartTransformMetafieldDefinitions(env, shopDomain);
+  } catch (err) {
+    console.error(`[install] cart-transform metafield definition removal failed for ${shopDomain}:`, err);
   }
 }

@@ -1,0 +1,138 @@
+// DiscountJet — database ERD
+//
+// Paste this whole file into https://dbdiagram.io/d to render the diagram.
+// Source of truth: src/db/schema.ts (Drizzle, Cloudflare D1 / SQLite).
+//
+// Conventions:
+//   - All IDs are crypto.randomUUID() stored as text.
+//   - Timestamps are ISO 8601 strings stored as text (SQLite has no datetime).
+//   - Booleans are integers 0/1 (SQLite has no native boolean).
+//   - Every tenant table references shopify_shop.id via a non-null shop_id FK
+//     with ON DELETE CASCADE (the GDPR SHOP_REDACT pattern).
+
+Project discountjet {
+  database_type: 'SQLite (Cloudflare D1)'
+  Note: 'Shopify embedded app — discounts, bundles and webhook ledger, partitioned by shop.'
+}
+
+Table shopify_shop {
+  id text [pk, note: 'crypto.randomUUID()']
+
+  install_date text
+  plan text
+
+  myshopify_domain text
+  domain text
+  name text
+  email text
+  shop_owner text
+  city text
+  country_name text
+  currency text
+  iana_timezone text
+  primary_locale text
+
+  status text [note: 'installed | uninstalled']
+
+  shopify_plus integer [note: '0/1, null = not yet queried']
+  partner_development integer [note: '0/1, null = not yet queried']
+  plan_name text [note: 'plan-signal cache, filled on first /api/shop/plan read']
+
+  cart_transform_gid text [note: 'Shopify Functions cart transform admin_graphql_api_id']
+
+  created_at text
+  updated_at text
+
+  Note: 'The tenant root. One row per installed shop; deleting it cascades to every other table.'
+}
+
+Table discount {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE']
+
+  shopify_gid text [not null, note: 'admin_graphql_api_id — upsert key with shop_id']
+
+  name text [not null]
+  type text [note: 'tier | bundle | special — null until $app: config metafield exists']
+  method text [note: 'automatic | code']
+  status text [note: 'active | inactive']
+  products integer [not null, default: 0, note: 'targeted variant count; 0 when unknown']
+
+  campaign_id text [note: 'ownership lock written by campaigns (E8); read-only here']
+
+  deleted_at text [note: 'tombstone from discounts/delete or the reconcile diff']
+
+  created_at text
+  updated_at text [note: 'mirror of Shopify updated_at; drives the ordering guard']
+
+  indexes {
+    (shop_id, shopify_gid) [unique, name: 'discount_shop_gid_unq']
+  }
+
+  Note: 'App-owned mirror of Shopify discounts (E4). Shopify is the source of truth; only discounts created by this app Functions are mirrored.'
+}
+
+Table bundle {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE']
+
+  name text [not null]
+  operation text [not null, note: 'merge | expand | update']
+
+  parent_variant_id text
+  price integer [note: 'minor units']
+
+  metafield_state text [not null, default: 'NotYet', note: 'NotYet | Written | Cleared']
+  metafield_gid text
+
+  schedule_start text
+  schedule_end text
+  status text [not null, note: 'Active | Scheduled | Ended | Draft']
+  block_on_failure integer [not null, default: 0, note: '0/1']
+
+  created_at text [not null]
+  updated_at text [not null]
+
+  indexes {
+    shop_id [name: 'bundle_shop_id_idx']
+  }
+
+  Note: 'E6 bundles. This table is the source of truth; items are materialized into a Cart Transform Function config and a variant metafield.'
+}
+
+Table bundle_item {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE — redundant via bundle_id, carried so the repository can be shop-scoped']
+  bundle_id text [not null, ref: > bundle.id, note: 'ON DELETE CASCADE']
+
+  variant_id text [not null, note: 'ProductVariant GID']
+  name text [not null, note: 'title snapshot — READ ONLY when the variant fails to resolve']
+  qty integer [not null]
+  price integer [not null, note: 'per-unit, minor units']
+
+  price_adjustment integer [note: 'minor units; update operation only']
+  title_override text [note: 'update operation only']
+
+  created_at text [not null]
+  updated_at text [not null]
+
+  indexes {
+    bundle_id [name: 'bundle_item_bundle_id_idx']
+    (bundle_id, variant_id) [unique, name: 'bundle_item_bundle_variant_unq']
+  }
+
+  Note: 'Bundle components. The bundle total is not stored — it is sum(price * qty) over these rows, so it cannot disagree with them. No position column: the editor has no reorder UI, so items are ordered by name.'
+}
+
+Table webhook_event {
+  id text [pk, note: 'X-Shopify-Webhook-Id — PK conflict = duplicate delivery, skip']
+  topic text [not null]
+  shop_id text [note: 'nullable, logical link only — no DB-level FK, so the ledger survives shop deletion']
+  shopify_gid text
+  received_at text [not null]
+
+  Note: 'Idempotency + sync-health ledger. Intentionally NOT cascade-deleted with the shop.'
+}
+
+// Logical (not enforced) link — remove this line if you prefer the ledger drawn detached.
+Ref: webhook_event.shop_id > shopify_shop.id

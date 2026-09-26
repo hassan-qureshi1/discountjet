@@ -1,11 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getCurrentShopId } from './shopAuth';
+import { getCurrentShop } from './shopAuth';
 import type { Context } from 'hono';
 import type { Env } from '../types/env';
-
-vi.mock('../db/db', () => ({
-  createDb: vi.fn(),
-}));
+import type { AppEnv } from '../types/env.d';
+import { InMemoryShopRepository, shopRow } from '../db/repositories/inMemory';
 
 // Mock createShopify so decodeSessionToken is controllable in tests.
 // The real implementation calls SHOPIFY_API_SECRET for HMAC verification
@@ -20,20 +18,17 @@ vi.mock('../shopify', () => ({
   })),
 }));
 
-import { createDb } from '../db/db';
 import { createShopify } from '../shopify';
 
-function createMockDb(dbResult: { id: string } | null) {
-  const getMock = vi.fn().mockResolvedValue(dbResult);
-  return {
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          get: getMock,
-        }),
-      }),
-    }),
-  };
+/**
+ * The installed shops `getCurrentShop` can resolve against. A real store
+ * implementation rather than a stubbed query chain, so these tests assert on
+ * the lookup's result rather than on how the lookup was built.
+ */
+function shopsWith(...rows: Array<{ id: string; myshopifyDomain: string }>) {
+  return new InMemoryShopRepository(
+    rows.map((r) => shopRow({ id: r.id, myshopifyDomain: r.myshopifyDomain })),
+  );
 }
 
 function mockDecodeSessionToken(dest: string) {
@@ -56,7 +51,7 @@ function createMockContext(options: {
   headers?: Record<string, string>;
   query?: Record<string, string>;
   env?: Partial<Env>;
-}): Context<{ Bindings: Env }> {
+}): Context<AppEnv> {
   return {
     req: {
       header: (name: string) => {
@@ -72,35 +67,35 @@ function createMockContext(options: {
       DB: {} as unknown as D1Database,
       ...options.env,
     },
-  } as unknown as Context<{ Bindings: Env }>;
+  } as unknown as Context<AppEnv>;
 }
 
-describe('getCurrentShopId', () => {
+describe('getCurrentShop', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('extracts shop id from a valid verified JWT Bearer token', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb({ id: 'shop-123' }) as any);
+  it('extracts the shop identity from a valid verified JWT Bearer token', async () => {
+    const shops = shopsWith({ id: 'shop-123', myshopifyDomain: 'myshop.myshopify.com' });
     mockDecodeSessionToken('https://myshop.myshopify.com');
 
     const ctx = createMockContext({
       headers: { authorization: 'Bearer valid.signed.token' },
     });
 
-    const result = await getCurrentShopId(ctx);
-    expect(result).toBe('shop-123');
+    const result = await getCurrentShop(ctx, shops);
+    expect(result).toEqual({ id: 'shop-123', myshopifyDomain: 'myshop.myshopify.com' });
   });
 
   it('returns null when Authorization header is missing', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb(null) as any);
+    const shops = shopsWith();
     const ctx = createMockContext({});
-    const result = await getCurrentShopId(ctx);
+    const result = await getCurrentShop(ctx, shops);
     expect(result).toBeNull();
   });
 
   it('falls back to x-shop-domain header in local dev when JWT verification fails', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb({ id: 'shop-456' }) as any);
+    const shops = shopsWith({ id: 'shop-456', myshopifyDomain: 'fallback.myshopify.com' });
     mockDecodeSessionTokenThrows();
 
     const ctx = createMockContext({
@@ -111,12 +106,12 @@ describe('getCurrentShopId', () => {
       env: { ENVIRONMENT: 'development' },
     });
 
-    const result = await getCurrentShopId(ctx);
-    expect(result).toBe('shop-456');
+    const result = await getCurrentShop(ctx, shops);
+    expect(result).toEqual({ id: 'shop-456', myshopifyDomain: 'fallback.myshopify.com' });
   });
 
   it('ignores x-shop-domain header in production when JWT verification fails', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb({ id: 'shop-456' }) as any);
+    const shops = shopsWith({ id: 'shop-456', myshopifyDomain: 'fallback.myshopify.com' });
     mockDecodeSessionTokenThrows();
 
     const ctx = createMockContext({
@@ -126,43 +121,43 @@ describe('getCurrentShopId', () => {
       },
     });
 
-    const result = await getCurrentShopId(ctx);
+    const result = await getCurrentShop(ctx, shops);
     expect(result).toBeNull();
   });
 
   it('ignores x-shopify-shop-domain header (removed to prevent auth bypass)', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb({ id: 'shop-789' }) as any);
+    const shops = shopsWith({ id: 'shop-789', myshopifyDomain: 'shopify-header.myshopify.com' });
     const ctx = createMockContext({
       headers: {
         'x-shopify-shop-domain': 'shopify-header.myshopify.com',
       },
     });
 
-    const result = await getCurrentShopId(ctx);
+    const result = await getCurrentShop(ctx, shops);
     expect(result).toBeNull();
   });
 
   it('returns null when shop is uninstalled (no DB row)', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb(null) as any);
+    const shops = shopsWith();
     mockDecodeSessionToken('https://uninstalled.myshopify.com');
 
     const ctx = createMockContext({
       headers: { authorization: 'Bearer valid.signed.token' },
     });
 
-    const result = await getCurrentShopId(ctx);
+    const result = await getCurrentShop(ctx, shops);
     expect(result).toBeNull();
   });
 
   it('returns null when JWT verification throws (forged/expired token)', async () => {
-    vi.mocked(createDb).mockReturnValue(createMockDb({ id: 'shop-123' }) as any);
+    const shops = shopsWith({ id: 'shop-123', myshopifyDomain: 'myshop.myshopify.com' });
     mockDecodeSessionTokenThrows(new Error('JWT expired'));
 
     const ctx = createMockContext({
       headers: { authorization: 'Bearer expired.token.here' },
     });
 
-    const result = await getCurrentShopId(ctx);
+    const result = await getCurrentShop(ctx, shops);
     expect(result).toBeNull();
   });
 });

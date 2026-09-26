@@ -1,0 +1,48 @@
+query Input {
+  cart {
+    lines {
+      id
+      quantity
+      cost {
+        amountPerQuantity {
+          amount
+        }
+        subtotalAmount {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          title
+          product {
+            id
+            title
+          }
+          component_reference: metafield(
+            namespace: "custom"
+            key: "component_reference"
+          ) {
+            jsonValue
+          }
+          composition: metafield(namespace: "$app:cart-transform", key: "composition") {
+            value
+          }
+        }
+      }
+    }
+    platform_source: attribute(key: "platform_source") {
+      key
+      value
+    }
+  }
+  shop {
+    metafield(namespace: "checkout", key: "discount_engine") {
+      value
+    }
+    merge_bundles: metafield(namespace: "$app:cart-transform", key: "merge_bundles") {
+      value
+    }
+  }
+}

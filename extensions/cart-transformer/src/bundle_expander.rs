@@ -75,7 +75,17 @@ pub fn expand(line: &CartLine) -> Option<Result<LineExpandOp, String>> {
             merchandise_id: c.id,
             quantity: c.quantity,
             attributes: vec![("_Bundle".to_string(), bundle_title.clone())],
-            price_amount: if is_discounted { None } else { Some(format_num(c.price)) },
+            // Shopify rejects an operation carrying BOTH an overall price
+            // adjustment and per-component prices:
+            //   cannot_combine_price_adjustment_and_price_per_component
+            // A target price is expressed as the overall adjustment, so the
+            // per-component amounts must be omitted and Shopify distributes
+            // the adjusted total across the components itself.
+            price_amount: if is_discounted || percentage_decrease.is_some() {
+                None
+            } else {
+                Some(format_num(c.price))
+            },
         })
         .collect();
 
@@ -122,6 +132,34 @@ mod tests {
         let op = expand(&bundle_line(WITH_PRICE, "100.00")).unwrap().unwrap();
         let pct = op.percentage_decrease.expect("a target price must produce an adjustment");
         assert!((pct - 20.0).abs() < 1e-9, "expected 20%, got {pct}");
+    }
+
+    #[test]
+    fn a_target_price_and_per_component_prices_are_never_emitted_together() {
+        // Shopify rejects the whole operation otherwise:
+        //   InvalidOutputError — cannot_combine_price_adjustment_and_price_per_component
+        //   "Cannot combine both an overall price adjustment and individual
+        //    prices for components."
+        // Observed in a real function run: the expansion returned three
+        // fixedPricePerUnit amounts alongside an 8.16% decrease and the cart
+        // transform was discarded entirely.
+        let op = expand(&bundle_line(WITH_PRICE, "100.00")).unwrap().unwrap();
+        assert!(op.percentage_decrease.is_some(), "this fixture sets a target price");
+        assert!(
+            op.expanded_items.iter().all(|i| i.price_amount.is_none()),
+            "per-component prices must be omitted when an overall adjustment is present",
+        );
+    }
+
+    #[test]
+    fn per_component_prices_are_still_emitted_when_no_target_price_is_set() {
+        // The other half of the exclusivity rule: without an overall
+        // adjustment the components must carry their own prices, or the
+        // expansion loses them.
+        let legacy = r#"[{"id":"gid://shopify/ProductVariant/1","quantity":1,"price":10.0}]"#;
+        let op = expand(&bundle_line(legacy, "10.00")).unwrap().unwrap();
+        assert_eq!(op.percentage_decrease, None);
+        assert_eq!(op.expanded_items[0].price_amount.as_deref(), Some("10"));
     }
 
     #[test]

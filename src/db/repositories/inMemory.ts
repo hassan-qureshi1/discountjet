@@ -250,6 +250,7 @@ export class InMemoryBundleRepository
       metafieldGid: null,
       scheduleStart: null,
       scheduleEnd: null,
+      scheduleError: null,
       blockOnFailure: 0,
       ...data,
       id,

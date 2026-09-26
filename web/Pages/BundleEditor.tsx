@@ -465,6 +465,11 @@ export default function BundleEditor() {
         name: trimmedName,
         operation,
         items: overrideItem ? [overrideItem] : [],
+        // An `update` bundle writes no metafield, so this column is the ONLY
+        // record of which variant the override targets. Omitting it saved the
+        // row with a null parent and the editor then had nothing to show —
+        // the variant appeared to vanish on save.
+        parentVariantId,
         status: nextStatus,
       };
     }

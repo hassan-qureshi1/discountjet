@@ -482,6 +482,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const body = {
       name: 'Camp Kit',
       operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
       items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
       price: 29.99,
     };
@@ -933,6 +934,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
         body: JSON.stringify({
           name: 'Camp Kit',
           operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
           items: [
             { variantId: 'gid://shopify/ProductVariant/1', qty: 1, priceAdjustment: 2.5, titleOverride: 'Freebie' },
           ],
@@ -1009,6 +1011,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
         body: JSON.stringify({
           name: 'Camp Kit',
           operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
           items: [{ variantId: 'gid://shopify/Product/456', qty: 1 }],
         }),
       },
@@ -1032,6 +1035,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
         body: JSON.stringify({
           name: 'Camp Kit',
           operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
           items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
         }),
       },
@@ -1172,6 +1176,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
         body: JSON.stringify({
           name: 'Camp Kit',
           operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
           items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2.6 }],
         }),
       },
@@ -1201,6 +1206,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
           body: JSON.stringify({
             name: 'Camp Kit',
             operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
             items: [{ variantId: 'gid://shopify/ProductVariant/1', qty }],
           }),
         },
@@ -1287,7 +1293,8 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       {
         method: 'POST',
         headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'Camp Kit', operation: 'update', items }),
+        body: JSON.stringify({ name: 'Camp Kit', operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1', items }),
       },
       env('development'),
     );
@@ -1311,6 +1318,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
         body: JSON.stringify({
           name: 'Camp Kit',
           operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
           items: [
             { variantId: 'gid://shopify/ProductVariant/1', qty: 1 },
             { variantId: 'gid://shopify/ProductVariant/2', qty: 1 },
@@ -1365,7 +1373,8 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       {
         method: 'POST',
         headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'Camp Kit', operation: 'update', items: {} }),
+        body: JSON.stringify({ name: 'Camp Kit', operation: 'update',
+      parentVariantId: 'gid://shopify/ProductVariant/1', items: {} }),
       },
       env('development'),
     );
@@ -2065,6 +2074,66 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(body.error).toBeTruthy();
     // The cause has to survive into the body, not just the server log.
     expect(body.error).toContain('currency');
+  });
+
+  // ─── update target variant ─────────────────────────────────────────────────
+  //
+  // An `update` bundle writes no metafield, so `parentVariantId` is the ONLY
+  // record of which cart line the override applies to. The editor used to omit
+  // it on save: the row stored a null parent and the chosen variant appeared to
+  // vanish the moment the merchant hit save.
+
+  it('POST /api/bundles persists the target variant of an update bundle', async () => {
+    const repos = seed();
+    mockVariantResolution([variantNode({ price: '15.00' })]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Gift wrap',
+          operation: 'update',
+          parentVariantId: 'gid://shopify/ProductVariant/1',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1, priceAdjustment: 12.5 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    // Stored, and echoed back — the editor reads this to re-render the chip.
+    expect(repos.bundles.rows[0].parentVariantId).toBe('gid://shopify/ProductVariant/1');
+    const { bundle } = (await res.json()) as { bundle: { parentVariantId?: string } };
+    expect(bundle.parentVariantId).toBe('gid://shopify/ProductVariant/1');
+  });
+
+  it('POST /api/bundles rejects an update bundle with no target variant', async () => {
+    const repos = seed();
+    // No resolution mock queued on purpose: the guard runs before Shopify is
+    // asked anything, and an unconsumed mockResolvedValueOnce survives
+    // vi.clearAllMocks() and leaks into the next test.
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Gift wrap',
+          operation: 'update',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+        }),
+      },
+      env('development'),
+    );
+
+    // Without a target the row is meaningless and nothing can render it.
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/target variant/i);
+    expect(repos.bundles.rows).toHaveLength(0);
+    expect(adminGraphql).not.toHaveBeenCalled();
   });
 
   // ─── expand price ──────────────────────────────────────────────────────────

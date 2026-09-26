@@ -639,6 +639,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
     }
   }
 
+  // An `update` bundle writes no metafield, so `parentVariantId` is the only
+  // record of which cart line the override applies to. Without it the row is
+  // meaningless and the editor has nothing to render.
+  if (body.operation === 'update' && !body.parentVariantId) {
+    return c.json({ error: 'An update bundle needs a target variant.' }, 400);
+  }
+
   if (hasSumOfItems(body)) {
     return c.json(
       { error: 'sumOfItems is computed from the bundle’s items and cannot be set.' },

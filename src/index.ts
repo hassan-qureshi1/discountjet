@@ -13,6 +13,26 @@ import { requireShop } from './middleware/requireShop';
 
 const app = new Hono<AppEnv>();
 
+/**
+ * Every unhandled throw becomes `{ error }` JSON.
+ *
+ * Without this an exception escapes as an opaque platform error with no body,
+ * so the client's `apiFetch` — which reads `error` off the response to explain
+ * the failure — has nothing to show and falls back to a bare status code. A
+ * merchant then sees "Request to /api/bundles failed: 502" with no cause, and
+ * neither do we.
+ *
+ * The status is deliberately 500: this handler only sees failures nothing
+ * planned for. Routes that KNOW what went wrong (a Shopify userError, an
+ * unresolvable variant) return their own 4xx/502 with a specific message and
+ * never reach here.
+ */
+app.onError((err, c) => {
+  console.error(`[unhandled] ${c.req.method} ${c.req.path}:`, err);
+  const message = err instanceof Error ? err.message : String(err);
+  return c.json({ error: `Unexpected server error: ${message}` }, 500);
+});
+
 // All /api/* routes require an authenticated shop — see middleware/requireShop.ts
 app.use('/api/*', requireShop);
 

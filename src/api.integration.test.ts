@@ -2046,6 +2046,27 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
+  it('surfaces an unhandled server error as { error } JSON, not an opaque status', async () => {
+    // A shop row with no currency makes `shopCurrency` throw a plain Error,
+    // outside any route-level catch. Before the global handler that escaped as
+    // a body-less platform error, so the client's apiFetch — which reads
+    // `error` off the response — had nothing to show and fell back to a bare
+    // status code. A merchant saw "failed: 502" with no cause, and so did we.
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: null })] });
+
+    const res = await app.request(
+      '/api/bundles',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBeTruthy();
+    // The cause has to survive into the body, not just the server log.
+    expect(body.error).toContain('currency');
+  });
+
   // ─── merge price sanity ────────────────────────────────────────────────────
   //
   // `linesMerge` can only REDUCE a price: the Rust cart transform turns the

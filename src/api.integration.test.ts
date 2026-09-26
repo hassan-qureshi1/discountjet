@@ -816,7 +816,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       operation: 'merge',
       items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
       parentVariantId: 'gid://shopify/ProductVariant/999',
-      price: 49.99,
+      price: 9.99,
     };
     const res = await app.request(
       '/api/bundles',
@@ -1639,7 +1639,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       parentVariantId: 'gid://shopify/ProductVariant/999',
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
-      price: 4999,
+      price: 999,
     });
     const repos = seed({ bundles: [existing] });
 
@@ -1664,7 +1664,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const body = {
       operation: 'merge',
       items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
-      price: 39.99,
+      price: 9.99,
     };
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -1904,7 +1904,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
           operation: 'merge',
           items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
           parentVariantId: 'gid://shopify/ProductVariant/999',
-          price: 49.99,
+          price: 9.99,
         }),
       },
       env('development'),
@@ -1937,7 +1937,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
           operation: 'merge',
           items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
           parentVariantId: 'gid://shopify/ProductVariant/999',
-          price: 49.99,
+          price: 9.99,
         }),
       },
       env('development'),
@@ -1958,7 +1958,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
           id: 'bundle-1',
           operation: 'merge',
           parentVariantId: 'gid://shopify/ProductVariant/999',
-          price: 4999,
+          price: 999,
           status: 'Active',
         })],
         bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
@@ -1987,7 +1987,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
           id: 'bundle-1',
           operation: 'merge',
           parentVariantId: 'gid://shopify/ProductVariant/999',
-          price: 4999,
+          price: 999,
           status: 'Active',
         })],
         bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
@@ -2022,7 +2022,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
           id: 'bundle-1',
           operation: 'merge',
           parentVariantId: 'gid://shopify/ProductVariant/999',
-          price: 4999,
+          price: 999,
           status: 'Active',
         })],
         bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
@@ -2046,13 +2046,107 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
+  // ─── merge price sanity ────────────────────────────────────────────────────
+  //
+  // `linesMerge` can only REDUCE a price: the Rust cart transform turns the
+  // target into a percentage off the live subtotal and clamps it to 0..=100.
+  // A target at or above what the components cost asks for a negative discount,
+  // clamps to zero, and renders the merged line at full price with no error
+  // anywhere. Checkout looks like nothing happened, so the save is the only
+  // place a merchant can be told.
+
+  it('POST /api/bundles rejects a merge price at or above the components', async () => {
+    const repos = seed();
+    mockVariantResolution([variantNode({ price: '32.00' }), parentNode('gid://shopify/ProductVariant/999')]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'New bundle',
+          operation: 'merge',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 3 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          // Components come to 96.00; asking 1600.00 can never discount.
+          price: 1600,
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    // The message has to carry both numbers — "invalid price" would leave the
+    // merchant guessing which way to move it.
+    expect(error).toContain('96.00');
+    expect(error).toContain('1600.00');
+    expect(repos.bundles.rows).toHaveLength(0);
+  });
+
+  it('POST /api/bundles rejects a merge price exactly equal to the components', async () => {
+    seed();
+    mockVariantResolution([variantNode({ price: '32.00' }), parentNode('gid://shopify/ProductVariant/999')]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'New bundle',
+          operation: 'merge',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 32,
+        }),
+      },
+      env('development'),
+    );
+
+    // A 0% discount is still a bundle that does nothing.
+    expect(res.status).toBe(400);
+  });
+
+  it('PUT /api/bundles/:id rejects a price-only edit that lifts it above the components', async () => {
+    const repos = seed({
+      bundles: [bundleRow({
+        id: 'bundle-1',
+        operation: 'merge',
+        parentVariantId: 'gid://shopify/ProductVariant/999',
+        price: 999,
+        status: 'Active',
+      })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1', price: 3200, qty: 1 })],
+    });
+    // The target still resolves — only the price is wrong.
+    mockVariantResolution([parentNode('gid://shopify/ProductVariant/999')]);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ price: 50 }),
+      },
+      env('development'),
+    );
+
+    // A price-only PUT sends no items, which is exactly the edit most likely
+    // to push the price past the components — so the guard cannot live inside
+    // the items branch.
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows[0].price).toBe(999);
+  });
+
   it('DELETE /api/bundles/:id still works when the target is deleted', async () => {
     const repos = seed({
         bundles: [bundleRow({
           id: 'bundle-1',
           operation: 'merge',
           parentVariantId: 'gid://shopify/ProductVariant/999',
-          price: 4999,
+          price: 999,
           status: 'Active',
         })],
         bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],

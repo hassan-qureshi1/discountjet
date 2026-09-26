@@ -8,8 +8,29 @@ describe('currencyExponent', () => {
     expect(currencyExponent('KWD')).toBe(3);
   });
 
-  it('throws on an unknown currency instead of defaulting', () => {
+  it('throws on a malformed currency instead of defaulting', () => {
     expect(() => currencyExponent('NOPE')).toThrow(/NOPE/);
+    expect(() => currencyExponent('')).toThrow();
+  });
+
+  // Regression: this was read from Intl, which reports CLDR *display* digits.
+  // Those differ between ICU builds — workerd resolved PKR to 0 while Node
+  // resolved it to 2 — so the same amount was stored as 32 on the server and
+  // meant 0.32 elsewhere. The exponent is a property of the currency, not of
+  // whoever is rendering it.
+  it('uses ISO 4217 minor units, not the runtime\'s CLDR display digits', () => {
+    expect(currencyExponent('PKR')).toBe(2);
+    expect(toMinorUnits('32.00', 'PKR')).toBe(3200);
+    expect(toMoney(3200, 'PKR')).toEqual({ amount: '32.00', currencyCode: 'PKR' });
+  });
+
+  it('agrees with the value Intl would give for the common cases', () => {
+    // Where CLDR and ISO 4217 concur, nothing changed.
+    (['AUD', 'USD', 'EUR', 'JPY', 'KWD'] as const).forEach((code) => {
+      const viaIntl = new Intl.NumberFormat('en', { style: 'currency', currency: code })
+        .resolvedOptions().maximumFractionDigits;
+      expect(currencyExponent(code)).toBe(viaIntl);
+    });
   });
 });
 

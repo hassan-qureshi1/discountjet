@@ -211,6 +211,39 @@ function assertParentResolves(
   }
 }
 
+/**
+ * A merge bundle's price must be BELOW what its components cost.
+ *
+ * `linesMerge` can only ever reduce a price: the Rust cart transform turns the
+ * target into a percentage off the live cart subtotal, and clamps the result to
+ * `0..=100`. A target at or above the subtotal therefore asks for a negative
+ * discount, which clamps to zero — the merged line silently renders at full
+ * price with no error anywhere. Rejecting it here is the only place a merchant
+ * can be told, because at checkout it looks like nothing happened.
+ *
+ * The comparison uses stored component prices as a proxy for the cart subtotal.
+ * A shopper's real subtotal can differ (quantities, a sale price), so this
+ * catches the configuration that can NEVER discount, not every case that might
+ * not.
+ */
+function assertPriceBelowComponents(
+  priceMinor: number,
+  items: Array<{ price: number; qty: number }>,
+  currency: string,
+): void {
+  if (items.length === 0) return;
+  const componentsMinor = items.reduce((total, i) => total + i.price * i.qty, 0);
+  if (priceMinor < componentsMinor) return;
+
+  const asked = toMoney(priceMinor, currency)!.amount;
+  const worth = toMoney(componentsMinor, currency)!.amount;
+  throw new HttpError(
+    400,
+    `A merge bundle's price has to be less than its components, which come to ${worth} ${currency}. `
+    + `At ${asked} ${currency} there is nothing to discount, so the bundle would show at full price.`,
+  );
+}
+
 /** Rejects a target variant id that isn't a ProductVariant gid at all. */
 function assertParentShape(parentVariantId: string): void {
   if (!VARIANT_GID.test(parentVariantId)) {
@@ -605,6 +638,10 @@ bundleRoutes.post('/api/bundles', async (c) => {
     drafts = verified.drafts;
 
     if (parentVariantId !== undefined) assertParentResolves(parentVariantId, verified.resolved);
+
+    if (body.operation === 'merge' && body.price !== undefined) {
+      assertPriceBelowComponents(toMinorUnits(body.price, currency), drafts, currency);
+    }
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
     throw err;
@@ -809,6 +846,18 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       // writes nothing and so cannot reintroduce a price desync.
       const resolved = await resolveOrThrow(c, [effectiveParentVariantId as string]);
       assertParentResolves(effectiveParentVariantId as string, resolved);
+    }
+
+    // Outside the items branch on purpose: a PUT that changes only the PRICE
+    // sends no items, and that is exactly the edit most likely to push the
+    // price above what the components are worth.
+    if (effectiveOperation === 'merge') {
+      const effectivePriceMinor = body.price !== undefined
+        ? toMinorUnits(body.price, currency)
+        : existing.price;
+      if (effectivePriceMinor !== null) {
+        assertPriceBelowComponents(effectivePriceMinor, drafts ?? existingItems, currency);
+      }
     }
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);

@@ -250,20 +250,17 @@ export async function runBundleSchedule(
     }
 
     if (mergePending.length > 0) {
+      // Only the Admin call is inside this try. A D1 failure while persisting
+      // must NOT be read as a batch failure: Shopify has already agreed, and
+      // stamping `scheduleError` on rows whose status did persist would leave a
+      // merchant-visible warning on a bundle that is fine — one the next pass
+      // never clears, because `target === row.status` makes it a no-op.
+      let batch: { metafieldGid: string | null } | null = null;
       try {
-        const { metafieldGid } = await deps.transports.applyMergeBatch(env, domain, {
+        batch = await deps.transports.applyMergeBatch(env, domain, {
           upserts: mergeUpserts,
           removeParentVariantIds: mergeRemovals,
         });
-        for (const { bundleId, target } of mergePending) {
-          const live = shouldBeLive(target);
-          await repos.bundles.setMetafieldState(
-            bundleId,
-            live ? 'Written' : 'Cleared',
-            live ? metafieldGid : null,
-          );
-          await repos.bundles.update(bundleId, { status: target, scheduleError: null });
-        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[bundleSchedule] merge batch failed for ${domain}:`, err);
@@ -272,6 +269,33 @@ export async function runBundleSchedule(
         // bundle in it keeps its old status and retries next pass.
         for (const { bundleId } of mergePending) {
           await repos.bundles.update(bundleId, { scheduleError: message });
+        }
+      }
+
+      if (batch !== null) {
+        for (const { bundleId, target } of mergePending) {
+          const live = shouldBeLive(target);
+          try {
+            await repos.bundles.setMetafieldState(
+              bundleId,
+              live ? 'Written' : 'Cleared',
+              live ? batch.metafieldGid : null,
+            );
+            await repos.bundles.update(bundleId, { status: target, scheduleError: null });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[bundleSchedule] bundle ${bundleId} (${domain}) failed to persist ${target}:`, err);
+            // Per row, so one bad write does not report failure on the rows
+            // beside it. The metafield is already live and the writes are
+            // idempotent, so the next pass simply redoes this one.
+            try {
+              await repos.bundles.update(bundleId, { scheduleError: message });
+            } catch (nested) {
+              // The error write is the thing failing; there is nowhere left to
+              // record it, and the remaining rows still deserve their status.
+              console.error(`[bundleSchedule] could not record the failure for ${bundleId}:`, nested);
+            }
+          }
         }
       }
     }

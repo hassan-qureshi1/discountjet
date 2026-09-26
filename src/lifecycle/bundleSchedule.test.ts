@@ -307,6 +307,33 @@ describe('runBundleSchedule transports', () => {
     expect(m2.scheduleError).toContain('merge_bundles write rejected');
   });
 
+  // A D1 failure AFTER the batch succeeded is not a batch failure: Shopify has
+  // already agreed, so the rows that persisted must not be left carrying a
+  // merchant-visible error that no later pass ever clears.
+  it('leaves the merge bundles that persisted clean when one row fails to persist', async () => {
+    const rows = [
+      bundleRow({ id: 'm1', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p1', price: 1000, scheduleStart: PAST }),
+      bundleRow({ id: 'm2', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p2', price: 2000, scheduleStart: PAST }),
+    ];
+    const { deps, transports, reposFor } = harness(rows, [shop('shop-a')]);
+    const repos = reposFor('shop-a');
+    const real = repos.bundles.setMetafieldState.bind(repos.bundles);
+    repos.bundles.setMetafieldState = vi.fn(async (id, state, gid) => {
+      if (id === 'm1') throw new Error('D1 write failed');
+      return real(id, state, gid);
+    });
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect(transports.applyMergeBatch).toHaveBeenCalledTimes(1);
+    const m1 = (await repos.bundles.findById('m1'))!;
+    const m2 = (await repos.bundles.findById('m2'))!;
+    expect(m1.status).toBe('Scheduled');
+    expect(m1.scheduleError).toContain('D1 write failed');
+    expect(m2.status).toBe('Active');
+    expect(m2.scheduleError).toBeNull();
+  });
+
   // Guessing USD would price a JPY shop's bundle a hundredfold wrong.
   it('refuses to convert prices for a shop with no currency', async () => {
     const rows = [expandRow({ scheduleStart: PAST })];

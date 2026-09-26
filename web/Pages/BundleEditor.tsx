@@ -21,6 +21,7 @@ import {
   InlineStack,
   Link,
   List,
+  Modal,
   Page,
   Spinner,
   Tag,
@@ -29,7 +30,8 @@ import {
   Thumbnail,
 } from '@shopify/polaris';
 import {
-  useBundleQuery, useCreateBundle, useShopPlanQuery, useUpdateBundle, useVariantsQuery,
+  useBundleQuery, useCreateBundle, useDeleteBundle, useShopPlanQuery, useUpdateBundle,
+  useVariantsQuery,
 } from '../bundles/hooks';
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
@@ -274,6 +276,7 @@ export default function BundleEditor() {
   const [updatePriceAdjustment, setUpdatePriceAdjustment] = useState('');
   const [updateTitleOverride, setUpdateTitleOverride] = useState('');
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // Populate form state from the loaded bundle exactly once — react-query
   // may hand us a new object reference on background refetch and we don't
@@ -316,6 +319,7 @@ export default function BundleEditor() {
 
   const createMutation = useCreateBundle();
   const updateMutation = useUpdateBundle();
+  const deleteMutation = useDeleteBundle();
   const isSaving = createMutation.isPending || updateMutation.isPending;
 
   if (isEdit && isLoading) {
@@ -541,7 +545,22 @@ export default function BundleEditor() {
     }
   };
 
-  const mutationError = createMutation.error ?? updateMutation.error;
+  const handleDelete = async () => {
+    if (!id) return;
+    setBannerError(null);
+    try {
+      await deleteMutation.mutateAsync(id);
+      navigate('/bundles');
+    } catch (err) {
+      // Keep the merchant on the page with the reason: the bundle still
+      // exists, so sending them back to a list that still shows it would be
+      // the one outcome that misrepresents what happened.
+      setConfirmingDelete(false);
+      setBannerError(err instanceof Error ? err.message : 'Failed to delete bundle.');
+    }
+  };
+
+  const mutationError = createMutation.error ?? updateMutation.error ?? deleteMutation.error;
 
   let primaryActionLabel: string;
   if (isUpdateLocked) primaryActionLabel = 'Save draft';
@@ -559,8 +578,50 @@ export default function BundleEditor() {
         loading: isSaving,
         disabled: !canSave || isSaving,
       }}
-      secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
+      secondaryActions={
+        isEdit
+          ? [
+            { content: 'Discard', onAction: () => navigate('/bundles') },
+            {
+              content: 'Delete bundle',
+              destructive: true,
+              onAction: () => setConfirmingDelete(true),
+              disabled: isSaving || deleteMutation.isPending,
+            },
+          ]
+          : [{ content: 'Discard', onAction: () => navigate('/bundles') }]
+      }
     >
+      <Modal
+        open={confirmingDelete}
+        onClose={() => setConfirmingDelete(false)}
+        title={`Delete ${bundle?.name ?? 'this bundle'}?`}
+        primaryAction={{
+          content: 'Delete bundle',
+          destructive: true,
+          onAction: handleDelete,
+          loading: deleteMutation.isPending,
+        }}
+        secondaryActions={[
+          {
+            content: 'Cancel',
+            onAction: () => setConfirmingDelete(false),
+            disabled: deleteMutation.isPending,
+          },
+        ]}
+      >
+        <Modal.Section>
+          <BlockStack gap="200">
+            <Text as="p">
+              This removes the bundle and its components from the app. It can&apos;t be undone.
+            </Text>
+            <Text as="p" tone="subdued">
+              The products themselves aren&apos;t touched — only this bundle. Shoppers will stop
+              seeing it at checkout.
+            </Text>
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
       <BlockStack gap="400">
         {(bannerError || mutationError) && (
           <Banner tone="critical" onDismiss={() => setBannerError(null)}>

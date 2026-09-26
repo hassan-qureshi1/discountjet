@@ -46,6 +46,7 @@ import type {
   WebhookEventRow,
   WebhookEventInsert,
 } from './WebhookEventRepository';
+import type { DueBundle, IDueBundleScanner } from './DueBundleScanner';
 
 /**
  * The generic half of every fake, mirroring `BaseRepository`: id and timestamp
@@ -446,6 +447,26 @@ export class InMemoryWebhookEventRepository implements IWebhookEventRepository {
     return this.rows
       .filter((r) => r.shopId === shopId)
       .map((r) => ({ topic: r.topic, receivedAt: r.receivedAt }));
+  }
+}
+
+/**
+ * The in-memory twin of `DueBundleScanner`, for the cron's lifecycle tests.
+ * Mirrors the real predicates — including that it returns ids only.
+ */
+export class InMemoryDueBundleScanner implements IDueBundleScanner {
+  constructor(private readonly rows: BundleRow[]) {}
+
+  async findDue(now: string): Promise<DueBundle[]> {
+    const due: DueBundle[] = [];
+    for (const r of this.rows) {
+      if (r.status === 'Scheduled' && r.scheduleStart !== null && r.scheduleStart <= now) {
+        due.push({ shopId: r.shopId, bundleId: r.id, to: 'Active' });
+      } else if (r.status === 'Active' && r.scheduleEnd !== null && r.scheduleEnd <= now) {
+        due.push({ shopId: r.shopId, bundleId: r.id, to: 'Ended' });
+      }
+    }
+    return due;
   }
 }
 

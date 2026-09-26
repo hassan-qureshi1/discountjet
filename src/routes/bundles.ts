@@ -1128,8 +1128,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     // survive alongside the new one — and since Pass 3 in the Rust
     // cart-transform function matches by variant id, the stale entry can
     // still win and merge into the wrong variant. Best-effort, like the
-    // other Phase 1 clears above: `metafieldState`/`metafieldGid` are left
-    // alone here (Phase 2 rewrites them for the new parent regardless).
+    // other Phase 1 clears above.
     try {
       const shopDomain = requireShopDomain(c);
       await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
@@ -1140,6 +1139,20 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       );
     }
     oldTransportHandled = true;
+
+    // `metafieldState`/`metafieldGid` are normally left alone here, because
+    // Phase 2 rewrites them for the new parent. But Phase 2 is gated on the
+    // bundle being live, so a PUT that changes the parent AND lands the
+    // bundle outside its window (or on `Draft`) writes nothing — and the
+    // window-exit clear below is suppressed by `oldTransportHandled`. Without
+    // this the row would keep claiming `Written` with the gid of an entry
+    // that no longer exists, and nothing would ever revisit it: the due-scan
+    // only looks at `Scheduled`/`Active` rows.
+    if (!shouldBeLive(merged.status)) {
+      merged.metafieldState = 'Cleared';
+      merged.metafieldGid = null;
+      await bundleRepo.setMetafieldState(id, 'Cleared', null);
+    }
   }
 
   // Leaving the live window (or being switched to Draft) clears the transport,

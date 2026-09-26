@@ -3008,6 +3008,72 @@ describe('bundle scheduling', () => {
     expect(repos.bundles.rows[0]).toMatchObject({ status: 'Ended', metafieldState: 'Cleared', metafieldGid: null });
   });
 
+  it('PUT: a parent change that also ends the bundle leaves no row claiming a metafield', async () => {
+    // Phase 1 removes the OLD parent's entry, and Phase 2 is gated off because
+    // the bundle is no longer live — so nothing rewrites `metafieldState`.
+    // The row must not be left claiming `Written` with a dead gid: the due-scan
+    // only revisits `Scheduled`/`Active` rows, so nothing would ever fix it.
+    const OLD_PARENT = 'gid://shopify/ProductVariant/999';
+    const NEW_PARENT = 'gid://shopify/ProductVariant/111';
+    const repos = seed({
+      bundles: [bundleRow({
+        id: 'bundle-1',
+        operation: 'merge',
+        parentVariantId: OLD_PARENT,
+        price: 2999,
+        status: 'Active',
+        metafieldState: 'Written',
+        metafieldGid: 'gid://shopify/Metafield/1',
+      })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+    });
+    // removeMergeConfig's read + delete for the OLD parent, and nothing else.
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: {
+          shop: {
+            id: 'gid://shopify/Shop/1',
+            metafield: {
+              id: 'gid://shopify/Metafield/1',
+              value: JSON.stringify([
+                { parentVariantId: OLD_PARENT, price: 29.99, sources: ['gid://shopify/ProductVariant/1'] },
+              ]),
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: { metafieldsDelete: { deletedMetafields: [], userErrors: [] } },
+      });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ parentVariantId: NEW_PARENT, scheduleEnd: '2020-02-01T00:00:00.000Z' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const { bundle } = (await res.json()) as {
+      bundle: { status: string; metafieldState: string; metafieldGid?: string };
+    };
+    expect(bundle.status).toBe('Ended');
+    expect(bundle.metafieldState).toBe('Cleared');
+    expect(bundle.metafieldGid).toBeUndefined();
+    // The stored row agrees — no dangling gid for an entry that is gone.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      status: 'Ended',
+      metafieldState: 'Cleared',
+      metafieldGid: null,
+    });
+    // Only the old entry's removal happened; nothing was written.
+    expect(metafieldWrites()).toHaveLength(0);
+    expect(adminGraphql).toHaveBeenCalledTimes(2);
+  });
+
   it('honours Draft as the manual off-switch whatever the window says', async () => {
     seed();
     mockSaveReads();

@@ -5,8 +5,17 @@ import {
 } from '../db/repositories';
 import type { DueBundle, IDueBundleScanner, IShopRepository, Repositories } from '../db/repositories';
 import { getShopAccessToken } from '../lib/getShopAccessToken';
-import { applyMergeBatch, clearComposition, writeComposition } from '../lib/bundleMetafields';
-import { deriveStatus } from '../lib/scheduleWindow';
+import {
+  applyMergeBatch,
+  clearComposition,
+  mergeConfigEntry,
+  toVariantGid,
+  writeComposition,
+} from '../lib/bundleMetafields';
+import type { MergeBundleConfig } from '../lib/bundleMetafields';
+import { toMoney } from '../lib/money';
+import { deriveStatus, shouldBeLive } from '../lib/scheduleWindow';
+import { isPlusPlan, planGateReason } from '../lib/shopPlan';
 import type { Env } from '../types/env';
 
 /**
@@ -50,6 +59,26 @@ export function createBundleScheduleDeps(env: Env): BundleScheduleDeps {
     getToken: (domain) => getShopAccessToken(domain, env),
     transports: { writeComposition, clearComposition, applyMergeBatch },
   };
+}
+
+/**
+ * Minor units -> major units, the unit both metafield transports speak.
+ *
+ * Loud on both halves of the conversion. A missing price is not zero: a bundle
+ * that reaches the cron without one would otherwise be published at 0.00. A
+ * missing currency is not USD either — guessing it would send a JPY shop's
+ * 1000-yen bundle to Shopify as 10.00, priced a hundredfold wrong at checkout.
+ * Both throws land in the per-bundle catch, so they become a `scheduleError`
+ * on that one row rather than a status the Admin API never agreed to.
+ */
+function toMajorNumber(minorUnits: number | null, currency: string | null): number {
+  if (minorUnits === null) {
+    throw new Error('[bundleSchedule] a bundle reached the cron with no price');
+  }
+  if (!currency) {
+    throw new Error('[bundleSchedule] the shop row has no currency; cannot convert prices');
+  }
+  return Number(toMoney(minorUnits, currency)!.amount);
 }
 
 function groupByShop(due: DueBundle[]): Map<string, DueBundle[]> {
@@ -106,6 +135,17 @@ export async function runBundleSchedule(
     // scanner reads as absent rather than reaching another tenant's row.
     const repos = deps.reposFor(shopId);
 
+    const currency = shop.currency ?? null;
+    const plan = shop.planName ?? shop.plan ?? null;
+
+    // Merge bundles share ONE shop-level metafield, so their changes are
+    // collected across the whole group and applied in a single
+    // read-modify-write. N separate calls would each clobber the last.
+    // Per-variant `expand` changes are independent and go one at a time.
+    const mergeUpserts: MergeBundleConfig[] = [];
+    const mergeRemovals: string[] = [];
+    const mergePending: Array<{ bundleId: string; target: 'Active' | 'Ended' | 'Scheduled' }> = [];
+
     for (const { bundleId } of group) {
       const row = await repos.bundles.findById(bundleId);
       if (!row) continue;
@@ -120,7 +160,85 @@ export async function runBundleSchedule(
       if (target === row.status) continue;
 
       try {
-        // Task 7 performs the Admin transport here, before the status write.
+        // The same plan gate the route applies. Leaving it `Scheduled` with a
+        // reason is the honest outcome: neither silently live, nor silently
+        // ended.
+        if (row.operation === 'update' && target === 'Active' && !isPlusPlan(plan)) {
+          await repos.bundles.update(bundleId, {
+            scheduleError: `Update bundles are not available on this plan. ${planGateReason(plan)}`,
+          });
+          continue;
+        }
+
+        if (row.operation === 'merge') {
+          if (!row.parentVariantId) {
+            throw new Error(`[bundleSchedule] merge bundle ${bundleId} has no parent variant`);
+          }
+          if (shouldBeLive(target)) {
+            const items = await repos.bundleItems.listForBundle(bundleId);
+            mergeUpserts.push(
+              mergeConfigEntry({
+                parentVariantId: row.parentVariantId,
+                price: toMajorNumber(row.price, currency),
+                items: items.map((i) => ({
+                  variantId: i.variantId,
+                  qty: i.qty,
+                  price: toMajorNumber(i.price, currency),
+                })),
+                title: row.name,
+              }),
+            );
+          } else {
+            // Normalised the same way `mergeConfigEntry` normalises an upsert:
+            // `applyMergeBatch` matches removals against the stored entries by
+            // exact string, so a bare variant id here would fail to match the
+            // GID the activation wrote and leave the sale live past its window.
+            mergeRemovals.push(toVariantGid(row.parentVariantId));
+          }
+          // Planned, not applied: the batch below decides its fate, so nothing
+          // is persisted for it here.
+          mergePending.push({ bundleId, target });
+          continue;
+        }
+
+        let metafieldState: 'Written' | 'Cleared' | null = null;
+        let metafieldGid: string | null = null;
+
+        if (row.operation === 'expand') {
+          if (!row.parentVariantId) {
+            throw new Error(`[bundleSchedule] expand bundle ${bundleId} has no parent variant`);
+          }
+          if (shouldBeLive(target)) {
+            const items = await repos.bundleItems.listForBundle(bundleId);
+            const written = await deps.transports.writeComposition(
+              env,
+              domain,
+              row.parentVariantId,
+              items.map((i) => ({
+                variantId: i.variantId,
+                qty: i.qty,
+                price: toMajorNumber(i.price, currency),
+              })),
+              row.price === null ? null : toMajorNumber(row.price, currency),
+            );
+            metafieldState = 'Written';
+            metafieldGid = written.metafieldGid;
+          } else if (row.metafieldState === 'Written') {
+            await deps.transports.clearComposition(env, domain, row.parentVariantId);
+            metafieldState = 'Cleared';
+          }
+        }
+
+        // Shopify has agreed, so record the transport bookkeeping BEFORE the
+        // status, and the status LAST. Between the two writes a concurrent
+        // read sees the old status with the new `metafieldState`, which is the
+        // conservative pairing: a reader deciding whether a clear is owed sees
+        // `Written` and clears, where the reverse order would briefly show
+        // `Active` with `NotYet` and let a later end-transition skip the clear
+        // — a sale left live after its window closed.
+        if (metafieldState !== null) {
+          await repos.bundles.setMetafieldState(bundleId, metafieldState, metafieldGid);
+        }
         await repos.bundles.update(bundleId, { status: target, scheduleError: null });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -128,6 +246,33 @@ export async function runBundleSchedule(
         // Status deliberately untouched: a bundle is never `Active` with
         // nothing written at checkout. One broken bundle does not stop the pass.
         await repos.bundles.update(bundleId, { scheduleError: message });
+      }
+    }
+
+    if (mergePending.length > 0) {
+      try {
+        const { metafieldGid } = await deps.transports.applyMergeBatch(env, domain, {
+          upserts: mergeUpserts,
+          removeParentVariantIds: mergeRemovals,
+        });
+        for (const { bundleId, target } of mergePending) {
+          const live = shouldBeLive(target);
+          await repos.bundles.setMetafieldState(
+            bundleId,
+            live ? 'Written' : 'Cleared',
+            live ? metafieldGid : null,
+          );
+          await repos.bundles.update(bundleId, { status: target, scheduleError: null });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[bundleSchedule] merge batch failed for ${domain}:`, err);
+        // The batch is all-or-nothing by construction — one metafield, one
+        // write — and nothing was persisted for these rows before it, so every
+        // bundle in it keeps its old status and retries next pass.
+        for (const { bundleId } of mergePending) {
+          await repos.bundles.update(bundleId, { scheduleError: message });
+        }
       }
     }
   }

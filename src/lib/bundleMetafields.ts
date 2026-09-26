@@ -32,7 +32,7 @@ export interface CompositionEntry {
 const VARIANT_GID_PREFIX = 'gid://shopify/ProductVariant/';
 
 /** Normalizes a bare numeric variant id to a GID; passes an existing GID through unchanged. */
-function toVariantGid(variantId: string): string {
+export function toVariantGid(variantId: string): string {
   return variantId.startsWith('gid://') ? variantId : `${VARIANT_GID_PREFIX}${variantId}`;
 }
 

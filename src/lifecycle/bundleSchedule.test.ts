@@ -15,6 +15,9 @@ function shop(id: string): ShopRow {
     myshopifyDomain: `${id}.myshopify.com`,
     status: 'installed',
     planName: 'Shopify Plus',
+    // Real shop rows carry a currency; the cron converts minor units to the
+    // major units both metafield transports speak and refuses to guess one.
+    currency: 'USD',
   } as ShopRow;
 }
 
@@ -169,5 +172,167 @@ describe('runBundleSchedule', () => {
 
     expect((await reposFor('shop-a').bundles.findById('b1'))!.status).toBe('Active');
     expect((await reposFor('shop-b').bundles.findById('b2'))!.status).toBe('Active');
+  });
+});
+
+describe('runBundleSchedule transports', () => {
+  function expandRow(over: Partial<BundleRow>): BundleRow {
+    return bundleRow({
+      id: 'b1',
+      shopId: 'shop-a',
+      operation: 'expand',
+      parentVariantId: 'gid://shopify/ProductVariant/1',
+      price: 1000,
+      ...over,
+    } as Partial<BundleRow> & { id: string; shopId: string });
+  }
+
+  it('writes the composition metafield when an expand bundle activates', async () => {
+    const rows = [expandRow({ scheduleStart: PAST })];
+    const { deps, transports, reposFor } = harness(rows, [shop('shop-a')]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect(transports.writeComposition).toHaveBeenCalledTimes(1);
+    const row = (await reposFor('shop-a').bundles.findById('b1'))!;
+    expect(row.status).toBe('Active');
+    expect(row.metafieldState).toBe('Written');
+  });
+
+  it('clears the composition metafield when an expand bundle ends', async () => {
+    const rows = [expandRow({ status: 'Active', scheduleEnd: PAST, metafieldState: 'Written' })];
+    const { deps, transports, reposFor } = harness(rows, [shop('shop-a')]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect(transports.clearComposition).toHaveBeenCalledTimes(1);
+    const row = (await reposFor('shop-a').bundles.findById('b1'))!;
+    expect(row.status).toBe('Ended');
+    expect(row.metafieldState).toBe('Cleared');
+  });
+
+  it('batches every merge change in a shop into ONE applyMergeBatch call', async () => {
+    const rows = [
+      bundleRow({ id: 'm1', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p1', price: 1000, scheduleStart: PAST }),
+      bundleRow({ id: 'm2', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p2', price: 2000, scheduleStart: PAST }),
+      bundleRow({ id: 'm3', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p3', price: 3000, status: 'Active', scheduleEnd: PAST, metafieldState: 'Written' }),
+    ];
+    const { deps, transports } = harness(rows, [shop('shop-a')]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect(transports.applyMergeBatch).toHaveBeenCalledTimes(1);
+    const [, , changes] = vi.mocked(transports.applyMergeBatch).mock.calls[0];
+    // Both sides are normalised to variant GIDs — `applyMergeBatch` matches a
+    // removal against a stored entry by exact string.
+    expect(changes.upserts.map((u) => u.parentVariantId).sort()).toEqual([
+      'gid://shopify/ProductVariant/p1',
+      'gid://shopify/ProductVariant/p2',
+    ]);
+    expect(changes.removeParentVariantIds).toEqual(['gid://shopify/ProductVariant/p3']);
+  });
+
+  it('records the failure and leaves status untouched when the Admin write throws', async () => {
+    const rows = [expandRow({ scheduleStart: PAST })];
+    const transports = noopTransports();
+    transports.writeComposition = vi.fn(async () => { throw new Error('Shopify is down'); });
+    const { deps, reposFor } = harness(rows, [shop('shop-a')], transports);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    const row = (await reposFor('shop-a').bundles.findById('b1'))!;
+    expect(row.status).toBe('Scheduled');
+    expect(row.scheduleError).toContain('Shopify is down');
+  });
+
+  it('keeps processing the group after one bundle fails', async () => {
+    const rows = [
+      expandRow({ id: 'b1', scheduleStart: PAST }),
+      expandRow({ id: 'b2', parentVariantId: 'gid://shopify/ProductVariant/2', scheduleStart: PAST }),
+    ];
+    const transports = noopTransports();
+    transports.writeComposition = vi.fn(async (_e, _d, parent) => {
+      if (parent.endsWith('/1')) throw new Error('nope');
+      return { metafieldGid: 'gid://shopify/Metafield/2' };
+    });
+    const { deps, reposFor } = harness(rows, [shop('shop-a')], transports);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect((await reposFor('shop-a').bundles.findById('b1'))!.status).toBe('Scheduled');
+    expect((await reposFor('shop-a').bundles.findById('b2'))!.status).toBe('Active');
+  });
+
+  it('clears scheduleError on a later successful transition', async () => {
+    const rows = [expandRow({ scheduleStart: PAST, scheduleError: 'an old failure' })];
+    const { deps, reposFor } = harness(rows, [shop('shop-a')]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect((await reposFor('shop-a').bundles.findById('b1'))!.scheduleError).toBeNull();
+  });
+
+  it('refuses to activate an update bundle on a non-Plus shop, and says why', async () => {
+    const rows = [bundleRow({ id: 'u1', shopId: 'shop-a', operation: 'update', scheduleStart: PAST })];
+    const basic = { ...shop('shop-a'), planName: 'Basic', shopifyPlus: 0 } as ShopRow;
+    const { deps, reposFor } = harness(rows, [basic]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    const row = (await reposFor('shop-a').bundles.findById('u1'))!;
+    expect(row.status).toBe('Scheduled');
+    expect(row.scheduleError).toMatch(/plan/i);
+  });
+
+  // A failed batch is all-or-nothing: one metafield, one write. No bundle in it
+  // may come out half-applied.
+  it('leaves every bundle in a failed merge batch with its old status', async () => {
+    const rows = [
+      bundleRow({ id: 'm1', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p1', price: 1000, scheduleStart: PAST }),
+      bundleRow({ id: 'm2', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p2', price: 2000, status: 'Active', scheduleEnd: PAST, metafieldState: 'Written' }),
+    ];
+    const transports = noopTransports();
+    transports.applyMergeBatch = vi.fn(async () => { throw new Error('merge_bundles write rejected'); });
+    const { deps, reposFor } = harness(rows, [shop('shop-a')], transports);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    const m1 = (await reposFor('shop-a').bundles.findById('m1'))!;
+    const m2 = (await reposFor('shop-a').bundles.findById('m2'))!;
+    expect(m1.status).toBe('Scheduled');
+    expect(m1.metafieldState).toBe('NotYet');
+    expect(m2.status).toBe('Active');
+    expect(m2.metafieldState).toBe('Written');
+    expect(m1.scheduleError).toContain('merge_bundles write rejected');
+    expect(m2.scheduleError).toContain('merge_bundles write rejected');
+  });
+
+  // Guessing USD would price a JPY shop's bundle a hundredfold wrong.
+  it('refuses to convert prices for a shop with no currency', async () => {
+    const rows = [expandRow({ scheduleStart: PAST })];
+    const noCurrency = { ...shop('shop-a'), currency: null } as ShopRow;
+    const { deps, transports, reposFor } = harness(rows, [noCurrency]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect(transports.writeComposition).not.toHaveBeenCalled();
+    const row = (await reposFor('shop-a').bundles.findById('b1'))!;
+    expect(row.status).toBe('Scheduled');
+    expect(row.scheduleError).toMatch(/currency/i);
+  });
+
+  // A merge bundle with no price must not be published at 0.00.
+  it('refuses to publish a merge bundle that has no price', async () => {
+    const rows = [
+      bundleRow({ id: 'm1', shopId: 'shop-a', operation: 'merge', parentVariantId: 'p1', price: null, scheduleStart: PAST }),
+    ];
+    const { deps, transports, reposFor } = harness(rows, [shop('shop-a')]);
+
+    await runBundleSchedule(ENV, NOW, deps);
+
+    expect(transports.applyMergeBatch).not.toHaveBeenCalled();
+    const row = (await reposFor('shop-a').bundles.findById('m1'))!;
+    expect(row.status).toBe('Scheduled');
+    expect(row.scheduleError).toMatch(/no price/i);
   });
 });

@@ -1,3 +1,4 @@
+import { isPlusPlan, planGateReason } from '../lib/shopPlan';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { BundleRow, BundleItemRow, BundleItemDraft } from '../db/repositories';
@@ -106,6 +107,27 @@ async function shopCurrency(c: Context<AppEnv>): Promise<string> {
     throw new Error(`[bundles] shop ${c.get('shopId')} has no currency on its row`);
   }
   return shop.currency;
+}
+
+/**
+ * Refuses an `update` bundle on a store whose plan does not allow it.
+ *
+ * Enforced here as well as in the UI, because the UI gate is only a disabled
+ * menu row: anything posting straight to the API would otherwise store a
+ * bundle the store cannot run. The plan is read from the shop row exactly as
+ * Shopify reported it, and only the comparison is ours.
+ */
+async function assertOperationAllowed(
+  c: Context<AppEnv>,
+  operation: Row['operation'] | undefined,
+): Promise<void> {
+  if (operation !== 'update') return;
+
+  const shop = await c.get('repos').shops.findById(c.get('shopId'));
+  const plan = shop?.planName ?? shop?.plan ?? null;
+  if (isPlusPlan(plan)) return;
+
+  throw new HttpError(400, `Update bundles are not available on this plan. ${planGateReason(plan)}`);
 }
 
 /** Minor units -> a plain JS number of major units, for numeric validation/config building. */
@@ -646,6 +668,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
     return c.json({ error: 'An update bundle needs a target variant.' }, 400);
   }
 
+  try {
+    await assertOperationAllowed(c, body.operation);
+  } catch (err) {
+    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    throw err;
+  }
+
   if (hasSumOfItems(body)) {
     return c.json(
       { error: 'sumOfItems is computed from the bundle’s items and cannot be set.' },
@@ -879,6 +908,10 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   let drafts: BundleItemDraft[] | null = null;
   let resolvedParent: ResolvedVariant | undefined;
   try {
+    // The EFFECTIVE operation, so switching an existing bundle TO `update` on
+    // a store that cannot run it is refused as firmly as creating one.
+    await assertOperationAllowed(c, effectiveOperation);
+
     if (checksParent) assertParentShape(effectiveParentVariantId as string);
 
     if (replacesItems) {

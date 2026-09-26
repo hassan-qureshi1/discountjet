@@ -24,6 +24,16 @@ describe('gateOperation', () => {
     expect(gateOperation('update', false).reason).toMatch(/Plus/);
   });
 
+  it('names the current plan in the reason when one is known', () => {
+    // The API refuses this too, with the same wording. Two different
+    // explanations for one refusal is worse than none.
+    expect(gateOperation('update', false, 'Advanced').reason).toContain('Advanced');
+  });
+
+  it('falls back cleanly when the plan is unknown', () => {
+    expect(gateOperation('update', false, null).reason).toBe('Requires Shopify Plus.');
+  });
+
   it('does not leak a reason when an operation is allowed', () => {
     expect(gateOperation('expand', false).reason).toBeUndefined();
   });

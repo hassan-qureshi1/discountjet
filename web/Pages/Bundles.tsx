@@ -100,6 +100,7 @@ export default function Bundles() {
         <OperationPicker
           label="Create bundle"
           updateOpEligible={planData?.updateOpEligible ?? false}
+          planName={planData?.planName}
           // The operation rides in the URL rather than in router state, so the
           // choice survives a refresh, a back-navigation and a shared link —
           // and the editor has no hidden precondition for opening correctly.

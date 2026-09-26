@@ -51,15 +51,26 @@ export interface GateResult {
  * - `merge` and `expand` are always enabled.
  * - `update` requires Shopify Plus (updateOpEligible = true).
  */
-export function gateOperation(op: BundleOperation, updateOpEligible: boolean): GateResult {
+export function gateOperation(
+  op: BundleOperation,
+  updateOpEligible: boolean,
+  /** The shop's plan, so a refusal can name it instead of being a mystery. */
+  planName?: string | null,
+): GateResult {
   if (op === 'merge' || op === 'expand') {
     return { enabled: true };
   }
 
   if (op === 'update') {
-    return updateOpEligible
-      ? { enabled: true }
-      : { enabled: false, reason: 'Requires Shopify Plus' };
+    if (updateOpEligible) return { enabled: true };
+    return {
+      enabled: false,
+      // Matches the server's wording — the API enforces this too, and two
+      // different explanations for one refusal is worse than none.
+      reason: planName
+        ? `Requires Shopify Plus — this store is on ${planName}.`
+        : 'Requires Shopify Plus.',
+    };
   }
 
   return { enabled: false, reason: `Unknown operation: ${op}` };

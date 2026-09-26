@@ -61,7 +61,10 @@ function seed(rows: {
   discounts?: DiscountRow[];
 } = {}): InMemoryRepositories {
   const repos = createInMemoryRepositories(SHOP.id, {
-    shops: [shopRow({ ...SHOP, status: 'installed' })],
+    // Plus by default: most tests here are not about plan gating, and several
+    // use `operation: 'update'` precisely BECAUSE it sidesteps the merge
+    // guards. The plan-gating tests seed their own shop explicitly.
+    shops: [shopRow({ ...SHOP, status: 'installed', planName: 'Shopify Plus' })],
     ...rows,
   });
   // Auth resolves the shop through the unscoped repository; the handlers then
@@ -256,6 +259,63 @@ describe('GET /api/shop/plan (protected by requireShop)', () => {
     });
   });
 
+  it('returns updateOpEligible=false for a partner DEVELOPMENT store', async () => {
+    // Shopify's own rule is broader than ours: "development stores or stores
+    // on a Shopify Plus plan" can use lineUpdate. We gate on `shopify_plus`
+    // alone, because the cart-transform function implements no lineUpdate
+    // pass — so offering `update` on a dev store let a merchant save a bundle
+    // that silently did nothing at checkout.
+    seed({ shops: [shopRow({ ...SHOP })] });
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        shop: {
+          plan: { shopifyPlus: false, partnerDevelopment: true, displayName: 'Developer Preview' },
+        },
+      },
+    } as never);
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      updateOpEligible: false,
+      planName: 'Developer Preview',
+      currencyCode: 'USD',
+    });
+  });
+
+  it('returns updateOpEligible=false for a CACHED partner development store', async () => {
+    // The cached branch is a separate code path from the Admin query above and
+    // had the same `|| partnerDevelopment` in it.
+    seed({
+      shops: [shopRow({
+        ...SHOP,
+        shopifyPlus: 0,
+        partnerDevelopment: 1,
+        planName: 'Developer Preview',
+      })],
+    });
+
+    const res = await app.request(
+      '/api/shop/plan',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      updateOpEligible: false,
+      planName: 'Developer Preview',
+      currencyCode: 'USD',
+    });
+    // Served from the row, so Shopify is never asked.
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
   it('queries adminGraphql and returns updateOpEligible=false for a Basic non-dev store', async () => {
     seed({ shops: [shopRow({ ...SHOP })] });
     vi.mocked(adminGraphql).mockResolvedValueOnce({
@@ -379,7 +439,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('GET /api/bundles computes sumOfItems from the item rows', async () => {
     seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', price: 2999 })],
       bundleItems: [
         bundleItemRow({ id: 'i1', bundleId: 'bundle-1', qty: 2, price: 1500 }),
@@ -400,7 +460,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('GET /api/bundles/:id returns items ordered by name with MoneyV2 prices', async () => {
     seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1' })],
       bundleItems: [
         bundleItemRow({ id: 'i1', name: 'Zebra Mug', variantId: 'gid://shopify/ProductVariant/9', price: 500, qty: 1 }),
@@ -421,7 +481,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('GET /api/bundles orders each bundle\'s items by name, straight from the repository', async () => {
     seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1' })],
       // Seeded out of order: the list route no longer re-sorts, so this
       // proves the repository's own ordering is what reaches the client.
@@ -443,7 +503,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('GET /api/bundles reports a null sum for a bundle with no items', async () => {
     seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1' })],
       bundleItems: [],
     });
@@ -895,7 +955,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles overwrites the client price with Shopify\'s', async () => {
-    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
     mockVariantResolution([variantNode({ price: '15.00' }), parentNode('gid://shopify/ProductVariant/7')]);
     vi.mocked(adminGraphql).mockResolvedValueOnce({
       data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
@@ -923,7 +983,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles converts a major-unit priceAdjustment into minor units', async () => {
-    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
     mockVariantResolution([variantNode({ price: '15.00' })]);
 
     const res = await app.request(
@@ -951,7 +1011,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles rejects a body containing sumOfItems', async () => {
-    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
 
     const res = await app.request(
       '/api/bundles',
@@ -975,7 +1035,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles rejects a variant that does not exist', async () => {
-    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
     mockVariantResolution([null, parentNode('gid://shopify/ProductVariant/7')]);
 
     const res = await app.request(
@@ -1050,7 +1110,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('PUT /api/bundles/:id keeps a deleted variant\'s stored price and name', async () => {
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'expand', parentVariantId: 'gid://shopify/ProductVariant/7', metafieldState: 'NotYet' })],
       bundleItems: [
         bundleItemRow({
@@ -1100,7 +1160,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       titleOverride: 'Freebie',
     });
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
       bundleItems: [{ ...stored }],
     });
@@ -1134,7 +1194,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('PUT /api/bundles/:id converts a major-unit priceAdjustment when the body DOES send items', async () => {
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
       bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1', priceAdjustment: 250 })],
     });
@@ -1166,7 +1226,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   // ---------------------------------------------------------------------
 
   it('POST /api/bundles rejects a fractional qty, naming the variant and the value', async () => {
-    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
 
     const res = await app.request(
       '/api/bundles',
@@ -1196,7 +1256,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   it('POST /api/bundles rejects a zero/negative/non-numeric qty', async () => {
     for (const qty of [0, -1, 'two', null]) {
       vi.clearAllMocks();
-      seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+      seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
 
       const res = await app.request(
         '/api/bundles',
@@ -1223,7 +1283,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('PUT /api/bundles/:id rejects a fractional qty rather than storing it', async () => {
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
       bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1', qty: 2 })],
     });
@@ -1257,7 +1317,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       priceAdjustment: 500, // already minor units: A$5.00
     });
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
       bundleItems: [{ ...stored }],
     });
@@ -1282,7 +1342,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles rejects more items than the variant resolver will accept', async () => {
-    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
     const items = Array.from({ length: 51 }, (_, i) => ({
       variantId: `gid://shopify/ProductVariant/${i + 1}`,
       qty: 1,
@@ -1308,7 +1368,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles rejects two rows for the same variant, naming the repeat', async () => {
-    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
 
     const res = await app.request(
       '/api/bundles',
@@ -1340,7 +1400,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('PUT /api/bundles/:id rejects two rows for the same variant', async () => {
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
       bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1' })],
     });
@@ -1366,7 +1426,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
   });
 
   it('POST /api/bundles rejects a non-array `items` with a 400, not a 500', async () => {
-    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })] });
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
 
     const res = await app.request(
       '/api/bundles',
@@ -1386,7 +1446,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
   it('PUT /api/bundles/:id rejects a non-array `items` with a 400, not a 500', async () => {
     const repos = seed({
-      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' })],
+      shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })],
       bundles: [bundleRow({ id: 'bundle-1', operation: 'update' })],
       bundleItems: [bundleItemRow({ id: 'i1', bundleId: 'bundle-1' })],
     });
@@ -2061,7 +2121,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // a body-less platform error, so the client's apiFetch — which reads
     // `error` off the response — had nothing to show and fell back to a bare
     // status code. A merchant saw "failed: 502" with no cause, and so did we.
-    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: null })] });
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: null , planName: 'Shopify Plus' })] });
 
     const res = await app.request(
       '/api/bundles',
@@ -2074,6 +2134,123 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(body.error).toBeTruthy();
     // The cause has to survive into the body, not just the server log.
     expect(body.error).toContain('currency');
+  });
+
+  // ─── update is gated on the shop's plan ────────────────────────────────────
+  //
+  // The UI gate is only a disabled menu row, so the API enforces it too:
+  // anything posting directly would otherwise store a bundle the store cannot
+  // run. The plan is whatever Shopify reported, stored verbatim; only the
+  // comparison is ours.
+
+  it('POST /api/bundles refuses an update bundle on a non-Plus plan', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', planName: 'Advanced' })],
+    });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Gift wrap',
+          operation: 'update',
+          parentVariantId: 'gid://shopify/ProductVariant/1',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    // Name the plan, so the limit is not a mystery.
+    expect(error).toContain('Advanced');
+    expect(repos.bundles.rows).toHaveLength(0);
+    // Refused before Shopify is asked anything.
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/bundles refuses an update bundle on a development store', async () => {
+    // Shopify would ALLOW lineUpdate here — "development stores or Plus" — but
+    // this app has no lineUpdate pass, so the bundle would save and then do
+    // nothing at checkout. Gating on the plan name keeps dev stores out.
+    seed({ shops: [shopRow({ ...SHOP, status: 'installed', planName: 'Developer Preview' })] });
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Gift wrap',
+          operation: 'update',
+          parentVariantId: 'gid://shopify/ProductVariant/1',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  it('PUT /api/bundles/:id refuses switching an existing bundle TO update', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', planName: 'Basic' })],
+      bundles: [bundleRow({ id: 'bundle-1', operation: 'expand', parentVariantId: 'gid://shopify/ProductVariant/999' })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'update' }),
+      },
+      env('development'),
+    );
+
+    // The EFFECTIVE operation is gated, not just the one on the stored row.
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows[0].operation).toBe('expand');
+  });
+
+  it('PUT /api/bundles/:id still allows editing a non-update bundle on a non-Plus plan', async () => {
+    const repos = seed({
+      shops: [shopRow({ ...SHOP, status: 'installed', planName: 'Basic' })],
+      // Active, so the target variant IS verified and the queued resolution
+      // is consumed. A Draft bundle skips that check, and an unconsumed
+      // mockResolvedValueOnce survives vi.clearAllMocks() and leaks onward.
+      bundles: [bundleRow({
+        id: 'bundle-1',
+        operation: 'expand',
+        parentVariantId: 'gid://shopify/ProductVariant/999',
+        status: 'Active',
+        // No target price: bundleRow defaults to 2999, which is above what the
+        // parent resolves at (15.00), and the expand price guard would refuse
+        // it for a reason that has nothing to do with this test.
+        price: null,
+      })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+    });
+    mockVariantResolution([parentNode('gid://shopify/ProductVariant/999')]);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      },
+      env('development'),
+    );
+
+    // The gate must catch `update` only — it is not a general plan paywall.
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].name).toBe('Renamed');
   });
 
   // ─── update target variant ─────────────────────────────────────────────────

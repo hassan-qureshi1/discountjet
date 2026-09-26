@@ -970,6 +970,7 @@ export default function BundleEditor() {
                   variant="plain"
                   selected={operation}
                   updateOpEligible={updateOpEligible}
+                  planName={planData?.planName}
                   onSelect={setOperation}
                 />
               </Box>

@@ -20,6 +20,7 @@ export function OperationPicker({
   updateOpEligible,
   onSelect,
   label,
+  planName,
   variant = 'primary',
   selected,
   disabled = false,
@@ -27,6 +28,8 @@ export function OperationPicker({
   updateOpEligible: boolean;
   onSelect: (operation: BundleOperation) => void;
   label: string;
+  /** The shop's plan, so a disabled row can say which plan it is on. */
+  planName?: string | null;
   variant?: 'primary' | 'plain';
   /** Marks the operation already in effect, so the list shows where you are. */
   selected?: BundleOperation;
@@ -35,7 +38,7 @@ export function OperationPicker({
   const [open, setOpen] = useState(false);
 
   const items = OPERATIONS.map((op) => {
-    const gate = gateOperation(op.id, updateOpEligible);
+    const gate = gateOperation(op.id, updateOpEligible, planName);
     return {
       content: op.label,
       // The reason replaces the description when a row is unavailable: a

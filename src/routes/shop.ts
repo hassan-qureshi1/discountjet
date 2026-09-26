@@ -1,3 +1,4 @@
+import { isPlusPlan } from '../lib/shopPlan';
 import { Hono } from 'hono';
 import { adminGraphql } from '../lib/graphqlAdmin';
 import type { AppEnv } from '../types/env.d';
@@ -48,7 +49,10 @@ shopRoutes.get('/api/shop/plan', async (c) => {
 
   if (shop.shopifyPlus !== null && shop.partnerDevelopment !== null) {
     const dto: ShopPlanDto = {
-      updateOpEligible: shop.shopifyPlus === 1 || shop.partnerDevelopment === 1,
+      // Derived from the stored plan NAME — see src/lib/shopPlan.ts for why
+      // the `shopify_plus` boolean is not used. The plan itself is stored
+      // exactly as Shopify reports it; only the gate is stricter.
+      updateOpEligible: isPlusPlan(shop.planName ?? shop.plan),
       planName: shop.planName,
       currencyCode: shop.currency,
     };
@@ -70,7 +74,7 @@ shopRoutes.get('/api/shop/plan', async (c) => {
   });
 
   const dto: ShopPlanDto = {
-    updateOpEligible: plan.shopifyPlus || plan.partnerDevelopment,
+    updateOpEligible: isPlusPlan(plan.displayName),
     planName: plan.displayName,
     currencyCode: shop.currency,
   };

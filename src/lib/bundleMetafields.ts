@@ -79,6 +79,23 @@ export function compositionFromItems(items: BundleItemLike[]): CompositionEntry[
   }));
 }
 
+/**
+ * The `$app:cart-transform.composition` metafield payload.
+ *
+ * Without a target price this stays a bare component array — the shape the
+ * Rust function has always read — so bundles saved before the price field
+ * existed keep working and are only rewritten when next saved. With one, it
+ * becomes an object carrying both. The Rust side accepts either.
+ */
+export function compositionPayload(
+  items: BundleItemLike[],
+  targetPrice: number | null,
+): CompositionEntry[] | { price: number; components: CompositionEntry[] } {
+  const components = compositionFromItems(items);
+  if (targetPrice === null) return components;
+  return { price: targetPrice, components };
+}
+
 const METAFIELDS_SET_MUTATION = `
   mutation SetBundleComposition($metafields: [MetafieldsSetInput!]!) {
     metafieldsSet(metafields: $metafields) {
@@ -124,8 +141,16 @@ export async function writeComposition(
   shopDomain: string,
   parentVariantGid: string,
   items: BundleItemLike[],
+  /**
+   * Target total for the expanded line, in MAJOR units, or null to leave the
+   * line at whatever the bundle product itself costs. Shopify bases a
+   * `lineExpand` adjustment on the bundle product price, so the Rust function
+   * turns this into a percentage off that — which means a target at or above
+   * the product's own price cannot be represented and is ignored there.
+   */
+  targetPrice: number | null = null,
 ): Promise<{ metafieldGid: string }> {
-  const composition = compositionFromItems(items);
+  const composition = compositionPayload(items, targetPrice);
 
   const res = await adminGraphql<MetafieldsSetResponse>(shopDomain, env, METAFIELDS_SET_MUTATION, {
     metafields: [

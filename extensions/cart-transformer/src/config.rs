@@ -113,6 +113,39 @@ pub struct BundleComponent {
     pub price: f64,
 }
 
+/// The `$app:cart-transform.composition` metafield.
+///
+/// Historically a bare array of components. It may now also be an object that
+/// carries a merchant-set target `price` alongside them. Both shapes parse, so
+/// a bundle written before the price field existed keeps working untouched —
+/// the metafield is only rewritten when the merchant next saves.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum CompositionConfig {
+    WithPrice {
+        /// Target total for the whole bundle line, in major units.
+        price: f64,
+        components: Vec<BundleComponent>,
+    },
+    ComponentsOnly(Vec<BundleComponent>),
+}
+
+impl CompositionConfig {
+    pub fn components(&self) -> &[BundleComponent] {
+        match self {
+            Self::WithPrice { components, .. } => components,
+            Self::ComponentsOnly(components) => components,
+        }
+    }
+
+    pub fn target_price(&self) -> Option<f64> {
+        match self {
+            Self::WithPrice { price, .. } => Some(*price),
+            Self::ComponentsOnly(_) => None,
+        }
+    }
+}
+
 /// One entry of the shop `checkout.merge_bundles` config array — consumed by
 /// the merge-bundle pass (`merge_applier`).
 #[derive(Debug, Clone, Deserialize)]

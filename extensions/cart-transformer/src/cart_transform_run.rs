@@ -121,7 +121,9 @@ fn build_expand_operation(
         cart_line_id,
         expanded_cart_items,
         image: None,
-        price: None,
+        price: op.percentage_decrease.map(|value| schema::PriceAdjustment {
+            percentage_decrease: Some(schema::PriceAdjustmentValue { value: Decimal(value) }),
+        }),
         title: op.title,
     })
 }

@@ -2067,6 +2067,118 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(body.error).toContain('currency');
   });
 
+  // ─── expand price ──────────────────────────────────────────────────────────
+  //
+  // Shopify bases a lineExpand adjustment on the BUNDLE PRODUCT price, not the
+  // components' sum the way linesMerge does. The price is optional: blank
+  // leaves the line at whatever the bundle product costs.
+
+  it('POST /api/bundles writes the expand target price into the composition metafield', async () => {
+    seed();
+    mockVariantResolution([
+      variantNode({ price: '20.00' }),
+      parentNode('gid://shopify/ProductVariant/999'),
+    ]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/7' }], userErrors: [] } },
+    } as never);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Kit',
+          operation: 'expand',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          // The parent (parentNode) resolves at 15.00; 9.99 is below it.
+          price: 9.99,
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    const [, , , writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    const value = JSON.parse(
+      (writeVars as { metafields: { value: string }[] }).metafields[0].value,
+    ) as { price: number; components: unknown[] };
+    // The object shape, not the bare array — that is what carries the target.
+    expect(value.price).toBe(9.99);
+    expect(value.components).toHaveLength(1);
+  });
+
+  it('POST /api/bundles keeps the bare component array when expand has no price', async () => {
+    seed();
+    mockVariantResolution([
+      variantNode({ price: '20.00' }),
+      parentNode('gid://shopify/ProductVariant/999'),
+    ]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/8' }], userErrors: [] } },
+    } as never);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Kit',
+          operation: 'expand',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+        }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(201);
+    const [, , , writeVars] = vi.mocked(adminGraphql).mock.calls[1];
+    const value = JSON.parse(
+      (writeVars as { metafields: { value: string }[] }).metafields[0].value,
+    );
+    // The shape the Rust function has always read, so a priceless bundle keeps
+    // working exactly as before.
+    expect(Array.isArray(value)).toBe(true);
+  });
+
+  it('POST /api/bundles rejects an expand price at or above the bundle product price', async () => {
+    const repos = seed();
+    mockVariantResolution([
+      variantNode({ price: '20.00' }),
+      // The parent product itself costs 15.00.
+      parentNode('gid://shopify/ProductVariant/999'),
+    ]);
+
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Kit',
+          operation: 'expand',
+          items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 1 }],
+          parentVariantId: 'gid://shopify/ProductVariant/999',
+          price: 15,
+        }),
+      },
+      env('development'),
+    );
+
+    // percentageDecrease cannot raise a price, so this would silently do
+    // nothing at checkout. The base is the PRODUCT price (15.00), not the
+    // components (20.00) — an expand priced at 18 would also be rejected even
+    // though it is below the components.
+    expect(res.status).toBe(400);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toContain('15.00');
+    expect(repos.bundles.rows).toHaveLength(0);
+  });
+
   // ─── merge price sanity ────────────────────────────────────────────────────
   //
   // `linesMerge` can only REDUCE a price: the Rust cart transform turns the

@@ -146,6 +146,9 @@ pub fn apply_config(
         cart_line_id: source_line.id.clone(),
         expanded_items: build_expanded_items(source_line, config),
         title: config.title.clone(),
+        // This pass serves the discount-engine config, which prices each
+        // expanded item directly and has no bundle-level target.
+        percentage_decrease: None,
     })
 }
 

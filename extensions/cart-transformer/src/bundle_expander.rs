@@ -10,6 +10,7 @@
 //! stamped with a `_Bundle` attribute set to the parent product's title.
 
 use crate::config::BundleComponent;
+use crate::config::CompositionConfig;
 use crate::shared::{format_num, CartLine, ExpandedItemOut, LineExpandOp};
 
 /// Mirrors JS `BundleExpander.canExpand`.
@@ -32,12 +33,13 @@ pub fn expand(line: &CartLine) -> Option<Result<LineExpandOp, String>> {
     }
 
     let composition_raw = line.composition.as_deref().unwrap();
-    let composition: Vec<BundleComponent> = match serde_json::from_str(composition_raw) {
+    let config: CompositionConfig = match serde_json::from_str(composition_raw) {
         Ok(c) => c,
         Err(e) => {
             return Some(Err(format!("Invalid bundle composition on line {}: {}", line.id, e)));
         }
     };
+    let composition: Vec<BundleComponent> = config.components().to_vec();
     if composition.is_empty() {
         return Some(Err(format!("Invalid bundle composition on line {}", line.id)));
     }
@@ -49,6 +51,21 @@ pub fn expand(line: &CartLine) -> Option<Result<LineExpandOp, String>> {
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
     let is_discounted = bundle_price > subtotal;
+
+    // Operation-level target price, when the merchant set one.
+    //
+    // Shopify bases a `lineExpand` adjustment on the BUNDLE PRODUCT price —
+    // not the components' sum, which is what `linesMerge` uses — so the
+    // percentage is computed against this line's own subtotal. `PriceAdjustment`
+    // exposes only `percentageDecrease`, so a target at or above what the
+    // bundle product already costs has no representation and is ignored rather
+    // than silently inverted into a surcharge.
+    let percentage_decrease = config.target_price().and_then(|target| {
+        if subtotal <= 0.0 || target >= subtotal {
+            return None;
+        }
+        Some(((1.0 - target / subtotal) * 100.0).clamp(0.0, 100.0))
+    });
 
     let bundle_title = line.product_title.clone().unwrap_or_default();
 
@@ -62,7 +79,12 @@ pub fn expand(line: &CartLine) -> Option<Result<LineExpandOp, String>> {
         })
         .collect();
 
-    Some(Ok(LineExpandOp { cart_line_id: line.id.clone(), expanded_items, title: None }))
+    Some(Ok(LineExpandOp {
+        cart_line_id: line.id.clone(),
+        expanded_items,
+        title: None,
+        percentage_decrease,
+    }))
 }
 
 #[cfg(test)]
@@ -81,6 +103,53 @@ mod tests {
             subtotal_amount: Some(subtotal.to_string()),
             quantity: 1,
         }
+    }
+
+    // ─── operation-level target price ──────────────────────────────────────
+    //
+    // Shopify bases a lineExpand adjustment on the BUNDLE PRODUCT price, not
+    // the components' sum (which is what linesMerge uses). `PriceAdjustment`
+    // offers only `percentageDecrease`, so the target is expressed as a
+    // percentage off this line's own subtotal.
+
+    const WITH_PRICE: &str = r#"{"price":80.0,"components":[
+        {"id":"gid://shopify/ProductVariant/1","quantity":1,"price":60.0},
+        {"id":"gid://shopify/ProductVariant/2","quantity":1,"price":40.0}]}"#;
+
+    #[test]
+    fn target_price_becomes_a_percentage_off_the_bundle_product_price() {
+        // Bundle product costs 100; the merchant wants 80 -> 20% off.
+        let op = expand(&bundle_line(WITH_PRICE, "100.00")).unwrap().unwrap();
+        let pct = op.percentage_decrease.expect("a target price must produce an adjustment");
+        assert!((pct - 20.0).abs() < 1e-9, "expected 20%, got {pct}");
+    }
+
+    #[test]
+    fn a_target_at_or_above_the_bundle_product_price_is_ignored() {
+        // percentageDecrease cannot raise a price, and a negative percentage
+        // would silently invert into a surcharge. Emitting nothing leaves the
+        // line at what the bundle product already costs.
+        for subtotal in ["80.00", "50.00"] {
+            let op = expand(&bundle_line(WITH_PRICE, subtotal)).unwrap().unwrap();
+            assert_eq!(op.percentage_decrease, None, "subtotal {subtotal} should not adjust");
+        }
+    }
+
+    #[test]
+    fn a_zero_subtotal_produces_no_adjustment_rather_than_dividing_by_zero() {
+        let op = expand(&bundle_line(WITH_PRICE, "0.00")).unwrap().unwrap();
+        assert_eq!(op.percentage_decrease, None);
+    }
+
+    #[test]
+    fn a_bare_component_array_still_parses_and_sets_no_adjustment() {
+        // The metafield shape before the price field existed. A bundle saved
+        // then must keep working untouched until it is next saved.
+        let legacy = r#"[{"id":"gid://shopify/ProductVariant/1","quantity":2,"price":10.0}]"#;
+        let op = expand(&bundle_line(legacy, "100.00")).unwrap().unwrap();
+        assert_eq!(op.percentage_decrease, None);
+        assert_eq!(op.expanded_items.len(), 1);
+        assert_eq!(op.expanded_items[0].quantity, 2);
     }
 
     #[test]

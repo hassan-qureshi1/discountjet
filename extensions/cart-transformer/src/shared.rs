@@ -48,6 +48,15 @@ pub struct LineExpandOp {
     pub cart_line_id: String,
     pub expanded_items: Vec<ExpandedItemOut>,
     pub title: Option<String>,
+    /// Operation-level `price.percentageDecrease`, when the merchant set a
+    /// target price for the bundle. `None` leaves the line at whatever the
+    /// bundle product itself costs.
+    ///
+    /// Per Shopify's Cart Transform docs the base differs by operation:
+    /// `linesMerge` adjusts against the COMPONENTS' price sum, `lineExpand`
+    /// against the BUNDLE PRODUCT price. So this percentage is computed from
+    /// the parent line's own subtotal, not from the components.
+    pub percentage_decrease: Option<f64>,
 }
 
 /// A single `linesMerge` operation. Ported behaviour-faithfully from

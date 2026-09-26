@@ -244,6 +244,40 @@ function assertPriceBelowComponents(
   );
 }
 
+/**
+ * An expand bundle's price must be BELOW what the bundle product itself costs.
+ *
+ * The base differs from merge, and that is Shopify's rule rather than ours:
+ * `linesMerge` adjusts against the components' price sum, `lineExpand` against
+ * the BUNDLE PRODUCT price. Both can only ever decrease — `PriceAdjustment`
+ * exposes `percentageDecrease` and nothing else — so a target at or above the
+ * parent's own price has no representation and the cart transform ignores it,
+ * leaving the line at full price with nothing to explain why.
+ */
+function assertExpandPriceBelowParent(
+  priceMinor: number,
+  parent: ResolvedVariant | undefined,
+  currency: string,
+): void {
+  // No live parent price to compare against: the target variant check has
+  // already run, so this is a resolve that returned no price rather than a
+  // deleted variant. Let the save through rather than block on a comparison
+  // we cannot make.
+  if (parent?.price === undefined) return;
+
+  const parentMinor = toMinorUnits(parent.price, currency);
+  if (priceMinor < parentMinor) return;
+
+  const asked = toMoney(priceMinor, currency)!.amount;
+  const product = toMoney(parentMinor, currency)!.amount;
+  throw new HttpError(
+    400,
+    `An expand bundle's price has to be less than the bundle product's own price of `
+    + `${product} ${currency}. At ${asked} ${currency} there is nothing to discount, so the `
+    + `line would show at full price.`,
+  );
+}
+
 /** Rejects a target variant id that isn't a ProductVariant gid at all. */
 function assertParentShape(parentVariantId: string): void {
   if (!VARIANT_GID.test(parentVariantId)) {
@@ -639,8 +673,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
 
     if (parentVariantId !== undefined) assertParentResolves(parentVariantId, verified.resolved);
 
-    if (body.operation === 'merge' && body.price !== undefined) {
-      assertPriceBelowComponents(toMinorUnits(body.price, currency), drafts, currency);
+    if (body.price !== undefined) {
+      const priceMinor = toMinorUnits(body.price, currency);
+      if (body.operation === 'merge') {
+        assertPriceBelowComponents(priceMinor, drafts, currency);
+      } else if (body.operation === 'expand' && parentVariantId !== undefined) {
+        assertExpandPriceBelowParent(priceMinor, verified.resolved.get(parentVariantId), currency);
+      }
     }
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
@@ -670,7 +709,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
   if (row.operation === 'expand' && row.parentVariantId) {
     try {
       const shopDomain = requireShopDomain(c);
-      const { metafieldGid } = await writeComposition(c.env, shopDomain, row.parentVariantId, forMetafield);
+      const { metafieldGid } = await writeComposition(
+        c.env,
+        shopDomain,
+        row.parentVariantId,
+        forMetafield,
+        row.price === null ? null : toMajorNumber(row.price, currency),
+      );
       row.metafieldState = 'Written';
       row.metafieldGid = metafieldGid;
       await bundleRepo.setMetafieldState(row.id, 'Written', metafieldGid);
@@ -825,6 +870,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   const checksParent = Boolean(effectiveParentVariantId) && !isInactiveStatus(effectiveStatus);
 
   let drafts: BundleItemDraft[] | null = null;
+  let resolvedParent: ResolvedVariant | undefined;
   try {
     if (checksParent) assertParentShape(effectiveParentVariantId as string);
 
@@ -839,24 +885,30 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
         checksParent ? [effectiveParentVariantId as string] : [],
       );
       drafts = verified.drafts;
-      if (checksParent) assertParentResolves(effectiveParentVariantId as string, verified.resolved);
+      if (checksParent) {
+        assertParentResolves(effectiveParentVariantId as string, verified.resolved);
+        resolvedParent = verified.resolved.get(effectiveParentVariantId as string);
+      }
     } else if (checksParent) {
       // No items to re-resolve, but the target still has to be real. One
       // `nodes(ids:)` call with a single id — a read used to reject, which
       // writes nothing and so cannot reintroduce a price desync.
       const resolved = await resolveOrThrow(c, [effectiveParentVariantId as string]);
       assertParentResolves(effectiveParentVariantId as string, resolved);
+      resolvedParent = resolved.get(effectiveParentVariantId as string);
     }
 
     // Outside the items branch on purpose: a PUT that changes only the PRICE
     // sends no items, and that is exactly the edit most likely to push the
     // price above what the components are worth.
-    if (effectiveOperation === 'merge') {
-      const effectivePriceMinor = body.price !== undefined
-        ? toMinorUnits(body.price, currency)
-        : existing.price;
-      if (effectivePriceMinor !== null) {
+    const effectivePriceMinor = body.price !== undefined
+      ? toMinorUnits(body.price, currency)
+      : existing.price;
+    if (effectivePriceMinor !== null) {
+      if (effectiveOperation === 'merge') {
         assertPriceBelowComponents(effectivePriceMinor, drafts ?? existingItems, currency);
+      } else if (effectiveOperation === 'expand') {
+        assertExpandPriceBelowParent(effectivePriceMinor, resolvedParent, currency);
       }
     }
   } catch (err) {
@@ -956,7 +1008,13 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (newOp === 'expand' && merged.parentVariantId && (newOp !== prevOp || compositionInputsChanged)) {
     try {
       const shopDomain = requireShopDomain(c);
-      const { metafieldGid } = await writeComposition(c.env, shopDomain, merged.parentVariantId, forMetafield);
+      const { metafieldGid } = await writeComposition(
+        c.env,
+        shopDomain,
+        merged.parentVariantId,
+        forMetafield,
+        merged.price === null ? null : toMajorNumber(merged.price, currency),
+      );
       merged.metafieldState = 'Written';
       merged.metafieldGid = metafieldGid;
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);

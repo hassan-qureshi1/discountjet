@@ -202,7 +202,10 @@ export default function BundleEditor() {
   const initialOperation: BundleOperation = isOperation(requestedOperation) ? requestedOperation : 'merge';
   const [operation, setOperation] = useState<BundleOperation>(initialOperation);
   const [status, setStatus] = useState<BundleStatus>('Active');
-  const [priceStr, setPriceStr] = useState('0');
+  // Blank, not '0'. For expand a price is optional and blank means "leave the
+  // bundle product's price alone" — defaulting to 0 would send a real zero and
+  // price the bundle free. Merge rejects a blank price with its own message.
+  const [priceStr, setPriceStr] = useState('');
   const [parentVariantId, setParentVariantId] = useState<string | undefined>(undefined);
   const [parentTitle, setParentTitle] = useState<string | undefined>(undefined);
   const [items, setItems] = useState<DraftItem[]>([]);
@@ -222,7 +225,7 @@ export default function BundleEditor() {
     setOperation(bundle.operation);
     setStatus(bundle.status);
     const bundlePrice = moneyAmount(bundle.price);
-    setPriceStr(bundlePrice != null ? String(bundlePrice) : '0');
+    setPriceStr(bundlePrice != null ? String(bundlePrice) : '');
     setParentVariantId(bundle.parentVariantId);
     setItems(bundle.items.map((it) => ({
       variantId: it.variantId,
@@ -384,6 +387,23 @@ export default function BundleEditor() {
   // understate it (see web/bundles/preview.ts).
   const sumOfItems = sumItemPrices(items);
   const priceNum = parseFloat(priceStr) || 0;
+
+  /**
+   * What `price` to put on the wire.
+   *
+   * `merge` always needs one — the bundle has no price of its own without it.
+   * `expand` is optional: the bundle product already has a price, and blank
+   * means "don't adjust it". `update` has no bundle-level price at all.
+   */
+  function priceSentForOperation(
+    op: BundleOperation,
+    raw: string,
+    parsed: number,
+  ): number | undefined {
+    if (op === 'merge') return parsed;
+    if (op === 'expand') return raw.trim() === '' ? undefined : parsed;
+    return undefined;
+  }
   const save = sumOfItems != null ? Math.max(0, sumOfItems - priceNum) : null;
   const selectedOp = getOp(operation);
   // Genuinely optional, not guessed: before the plan query resolves (or if it
@@ -458,7 +478,10 @@ export default function BundleEditor() {
         ...(it.titleOverride ? { titleOverride: it.titleOverride } : {}),
       })),
       parentVariantId,
-      price: operation === 'merge' ? priceNum : undefined,
+      // Expand carries a price now as well. Blank is meaningful — it means
+      // "leave the line at whatever the bundle product costs" — so an empty
+      // field sends nothing rather than a zero, which would read as free.
+      price: priceSentForOperation(operation, priceStr, priceNum),
       status: nextStatus,
     };
   };
@@ -767,6 +790,31 @@ export default function BundleEditor() {
             {/* ── EXPAND ── */}
             {operation === 'expand' && (
               <>
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">
+                      Bundle price
+                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      Optional. Leave blank to charge whatever the bundle product costs in Shopify.
+                      Set a price and the line is discounted down to it at checkout.
+                    </Text>
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                      <TextField
+                        label="Bundle price"
+                        labelHidden
+                        type="number"
+                        prefix={moneyPrefix}
+                        value={priceStr}
+                        onChange={setPriceStr}
+                        autoComplete="off"
+                        min={0}
+                        placeholder="Bundle product price"
+                        helpText="Must be below the bundle product's own price."
+                      />
+                    </InlineGrid>
+                  </BlockStack>
+                </Card>
                 <Card>
                   <BlockStack gap="300">
                     <Text as="h3" variant="headingSm">

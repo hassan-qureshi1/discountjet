@@ -22,6 +22,7 @@ import {
   type ResolvedVariant,
 } from '../lib/variantResolver';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
+import { assertWindowOrder, deriveStatus, normalizeUtc, shouldBeLive } from '../lib/scheduleWindow';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
 
 export const bundleRoutes = new Hono<AppEnv>();
@@ -52,6 +53,9 @@ interface BundleInput {
   parentVariantId?: string;
   price?: number; // dollars (major units)
   status?: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
+  /** UTC ISO-8601, or null for "no bound". Normalized server-side. */
+  scheduleStart?: string | null;
+  scheduleEnd?: string | null;
 }
 
 interface BundleItemDto {
@@ -72,6 +76,9 @@ interface BundleDto {
   price: MoneyV2 | null;
   sumOfItems: MoneyV2 | null;
   status: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
+  scheduleStart: string | null;
+  scheduleEnd: string | null;
+  scheduleError: string | null;
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
   updated: string;
@@ -130,6 +137,49 @@ async function assertOperationAllowed(
   throw new HttpError(400, `Update bundles are not available on this plan. ${planGateReason(plan)}`);
 }
 
+/**
+ * Resolve the effective window and the status it implies.
+ *
+ * `status` is not freely settable by the client any more: the schedule owns
+ * Active/Scheduled/Ended, and the client may only choose `Draft` (the manual
+ * off-switch) or leave it to the window. A client sending `Active` on a future
+ * window is ignored rather than rejected, so an older build cannot pin a bundle
+ * live past its end date.
+ *
+ * Throws `HttpError(400)` — never returns a null bound for an unparseable
+ * input, because a null bound means "no bound", i.e. permanently live.
+ */
+function resolveSchedule(
+  requested: { scheduleStart?: string | null; scheduleEnd?: string | null; status?: string },
+  current: { scheduleStart: string | null; scheduleEnd: string | null },
+  now: string,
+): { scheduleStart: string | null; scheduleEnd: string | null; status: Row['status'] } {
+  const pick = (field: 'scheduleStart' | 'scheduleEnd'): string | null => {
+    const value = requested[field];
+    if (value === undefined) return current[field];
+    if (value === null) return null;
+    try {
+      return normalizeUtc(value);
+    } catch {
+      throw new HttpError(400, `${field} is not a valid date and time.`);
+    }
+  };
+
+  const scheduleStart = pick('scheduleStart');
+  const scheduleEnd = pick('scheduleEnd');
+
+  try {
+    assertWindowOrder(scheduleStart, scheduleEnd);
+  } catch {
+    throw new HttpError(400, 'The schedule start must be before the schedule end.');
+  }
+
+  const status: Row['status'] =
+    requested.status === 'Draft' ? 'Draft' : deriveStatus(scheduleStart, scheduleEnd, now);
+
+  return { scheduleStart, scheduleEnd, status };
+}
+
 /** Minor units -> a plain JS number of major units, for numeric validation/config building. */
 function toMajorNumber(minorUnits: number, currency: string): number {
   return Number(toMoney(minorUnits, currency)!.amount);
@@ -163,6 +213,9 @@ function toDto(
     price: toMoney(row.price, currency),
     sumOfItems: toMoney(sumOfItems, currency),
     status: row.status,
+    scheduleStart: row.scheduleStart,
+    scheduleEnd: row.scheduleEnd,
+    scheduleError: row.scheduleError,
     metafieldState: row.metafieldState,
     ...(row.metafieldGid ? { metafieldGid: row.metafieldGid } : {}),
     updated: relativeTime(row.updatedAt),
@@ -722,6 +775,14 @@ bundleRoutes.post('/api/bundles', async (c) => {
     throw err;
   }
 
+  let schedule: ReturnType<typeof resolveSchedule>;
+  try {
+    schedule = resolveSchedule(body, { scheduleStart: null, scheduleEnd: null }, new Date().toISOString());
+  } catch (err) {
+    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    throw err;
+  }
+
   // No id, no shopId, no timestamps: the repository mints the first and the
   // last, and injects the tenant it was constructed with.
   const row: Row = await bundleRepo.create({
@@ -731,9 +792,10 @@ bundleRoutes.post('/api/bundles', async (c) => {
     price: body.price === undefined ? null : toMinorUnits(body.price, currency),
     metafieldState: 'NotYet',
     metafieldGid: null,
-    scheduleStart: null,
-    scheduleEnd: null,
-    status: body.status ?? 'Draft',
+    scheduleStart: schedule.scheduleStart,
+    scheduleEnd: schedule.scheduleEnd,
+    scheduleError: null,
+    status: schedule.status,
     blockOnFailure: 0,
   });
 
@@ -742,7 +804,10 @@ bundleRoutes.post('/api/bundles', async (c) => {
   const sum = await bundleItems.sumFor(row.id);
   const forMetafield = toMetafieldItems(itemRows, currency);
 
-  if (row.operation === 'expand' && row.parentVariantId) {
+  // The schedule gate. Without it, a bundle scheduled for next Friday would
+  // have its composition metafield written NOW — live at checkout a week early,
+  // while the UI shows `Scheduled`.
+  if (shouldBeLive(row.status) && row.operation === 'expand' && row.parentVariantId) {
     try {
       const shopDomain = requireShopDomain(c);
       const { metafieldGid } = await writeComposition(
@@ -764,7 +829,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
         502,
       );
     }
-  } else if (row.operation === 'merge' && row.parentVariantId) {
+  } else if (shouldBeLive(row.status) && row.operation === 'merge' && row.parentVariantId) {
     try {
       const shopDomain = requireShopDomain(c);
       // `body.price` is guaranteed a finite, positive number here — the
@@ -871,13 +936,36 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     }
   }
 
+  // Resolved BEFORE `patch` is built and before `effectiveStatus` is read, so
+  // one derivation of the window feeds the stored row, the parent-check gate
+  // and the metafield gates alike.
+  let schedule: ReturnType<typeof resolveSchedule>;
+  try {
+    schedule = resolveSchedule(
+      // `status` falls back to the STORED value, not to the window: `Draft` is
+      // the merchant's manual off-switch and a PUT that never mentions status
+      // (a rename, a price edit) must not silently switch a Draft bundle live.
+      { ...body, status: body.status ?? existing.status },
+      { scheduleStart: existing.scheduleStart, scheduleEnd: existing.scheduleEnd },
+      new Date().toISOString(),
+    );
+  } catch (err) {
+    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
+    throw err;
+  }
+
   // No `updatedAt` here — `update()` stamps it, so a patch cannot forget to.
   const patch: Partial<Row> = {};
   if (body.name !== undefined) patch.name = body.name;
   if (body.operation !== undefined) patch.operation = body.operation;
   if (body.parentVariantId !== undefined) patch.parentVariantId = body.parentVariantId;
   if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
-  if (body.status !== undefined) patch.status = body.status;
+  patch.status = schedule.status;
+  patch.scheduleStart = schedule.scheduleStart;
+  patch.scheduleEnd = schedule.scheduleEnd;
+  // A merchant edit is a fresh attempt: whatever the cron failed at last time
+  // is no longer the current state of this bundle.
+  patch.scheduleError = null;
 
   // Re-resolution exists to verify prices the CLIENT sent. A PUT that carries
   // no `items` has nothing to verify — the stored rows were verified when they
@@ -902,7 +990,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // off rather than trapping its owner.
   const effectiveParentVariantId =
     body.parentVariantId !== undefined ? body.parentVariantId : existing.parentVariantId;
-  const effectiveStatus = body.status ?? existing.status;
+  const effectiveStatus = schedule.status;
   const checksParent = Boolean(effectiveParentVariantId) && !isInactiveStatus(effectiveStatus);
 
   let drafts: BundleItemDraft[] | null = null;
@@ -981,6 +1069,10 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // an extra Admin API round-trip (or a spurious 502 if it fails), but a
   // transition INTO `expand`/`merge` must always (re)write, even if
   // items/parentVariantId happen to be unchanged from before.
+  // Entering the live window is itself a reason to (re)write, even when no
+  // input changed: a merchant who pulls a Scheduled bundle's start date to now
+  // must not have to wait for the cron to make it live.
+  const becameLive = !shouldBeLive(existing.status) && shouldBeLive(merged.status);
   const compositionInputsChanged = replacesItems || body.parentVariantId !== undefined;
   const mergeInputsChanged =
     replacesItems ||
@@ -994,6 +1086,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // reachable, but the row's tracked state is still flipped to `Cleared` so
   // it doesn't keep claiming a metafield that (from this row's perspective)
   // no longer applies.
+  // Set by any phase-1 branch that has already talked to Shopify about the
+  // OLD transport, so the window-exit clear below cannot clear it a second
+  // time (`existing.metafieldState` still reads `Written` at that point).
+  let oldTransportHandled = false;
+
   if (prevOp === 'expand' && newOp !== 'expand' && existing.metafieldState === 'Written' && existing.parentVariantId) {
     try {
       const shopDomain = requireShopDomain(c);
@@ -1001,6 +1098,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     } catch (err) {
       console.error(`[bundles] failed to clear composition_v2 for bundle ${id} on operation change:`, err);
     }
+    oldTransportHandled = true;
     merged.metafieldState = 'Cleared';
     merged.metafieldGid = null;
     await bundleRepo.setMetafieldState(id, 'Cleared', null);
@@ -1011,6 +1109,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     } catch (err) {
       console.error(`[bundles] failed to remove merge_bundles entry for bundle ${id} on operation change:`, err);
     }
+    oldTransportHandled = true;
     merged.metafieldState = 'Cleared';
     merged.metafieldGid = null;
     await bundleRepo.setMetafieldState(id, 'Cleared', null);
@@ -1040,12 +1139,35 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
         err,
       );
     }
+    oldTransportHandled = true;
+  }
+
+  // Leaving the live window (or being switched to Draft) clears the transport,
+  // the same thing the cron would do at the boundary — the cron only handles
+  // boundaries that arrive while nobody is looking.
+  if (
+    !oldTransportHandled &&
+    shouldBeLive(existing.status) &&
+    !shouldBeLive(merged.status) &&
+    existing.metafieldState === 'Written' &&
+    existing.parentVariantId
+  ) {
+    try {
+      const shopDomain = requireShopDomain(c);
+      if (prevOp === 'expand') await clearComposition(c.env, shopDomain, existing.parentVariantId);
+      else if (prevOp === 'merge') await removeMergeConfig(c.env, shopDomain, existing.parentVariantId);
+    } catch (err) {
+      console.error(`[bundles] failed to clear transport for bundle ${id} leaving its window:`, err);
+    }
+    merged.metafieldState = 'Cleared';
+    merged.metafieldGid = null;
+    await bundleRepo.setMetafieldState(id, 'Cleared', null);
   }
 
   // Phase 2 — write the NEW transport. A failure here surfaces as a 502
   // (the row's phase-1 clear, if any, already committed — never mask a
   // failed write by leaving the client thinking it succeeded).
-  if (newOp === 'expand' && merged.parentVariantId && (newOp !== prevOp || compositionInputsChanged)) {
+  if (shouldBeLive(merged.status) && newOp === 'expand' && merged.parentVariantId && (newOp !== prevOp || becameLive || compositionInputsChanged)) {
     try {
       const shopDomain = requireShopDomain(c);
       const { metafieldGid } = await writeComposition(
@@ -1068,7 +1190,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
         502,
       );
     }
-  } else if (newOp === 'merge' && merged.parentVariantId && (newOp !== prevOp || mergeInputsChanged)) {
+  } else if (shouldBeLive(merged.status) && newOp === 'merge' && merged.parentVariantId && (newOp !== prevOp || becameLive || mergeInputsChanged)) {
     try {
       const shopDomain = requireShopDomain(c);
       // `merged.price` is guaranteed a finite, positive dollar value here —

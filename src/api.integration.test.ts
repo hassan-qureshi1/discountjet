@@ -573,7 +573,10 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.price).toEqual({ amount: '29.99', currencyCode: 'USD' });
     // 2 x $15.00, resolved from Shopify and summed from the persisted rows.
     expect(json.bundle.sumOfItems).toEqual({ amount: '30.00', currencyCode: 'USD' });
-    expect(json.bundle.status).toBe('Draft');
+    // No schedule bounds means "permanently live", so a create with no window
+    // derives `Active`. There is no `Draft` default any more — `Draft` is now
+    // only ever the merchant's explicit manual off-switch.
+    expect(json.bundle.status).toBe('Active');
     expect(json.bundle.metafieldState).toBe('NotYet');
     expect(json.bundle.items).toEqual([
       {
@@ -1125,10 +1128,8 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       ],
     });
     mockVariantResolution([null, parentNode('gid://shopify/ProductVariant/7')]);
-    // Resending `items` also re-writes the composition, so answer that call too.
-    vi.mocked(adminGraphql).mockResolvedValueOnce({
-      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
-    });
+    // The seeded bundle is `Draft`, so the transport gate skips the composition
+    // rewrite entirely — only the resolution call is made.
 
     const res = await app.request(
       '/api/bundles/bundle-1',
@@ -1710,6 +1711,7 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
       price: 999,
+      status: 'Active',
     });
     const repos = seed({ bundles: [existing] });
 
@@ -1781,17 +1783,22 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       metafieldState: 'Written',
       metafieldGid: 'gid://shopify/Metafield/1',
       price: 2999, // $29.99
+      status: 'Active',
     });
-    const repos = seed({ bundles: [existing] });
+    // A live bundle, so the transport gate lets Phase 2 write. Being live also
+    // means the NEW target is verified first, which needs both a component row
+    // (the price-below-components guard) and a resolution answer.
+    const repos = seed({ bundles: [existing], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
 
     const oldEntry = {
       parentVariantId: OLD_PARENT,
       price: 29.99,
       sources: ['gid://shopify/ProductVariant/1'],
     };
-    // Call order: removeMergeConfig's read + write for the OLD parent (Phase
-    // 1, the fix under test), then upsertMergeConfig's read + write for the
-    // NEW parent (Phase 2).
+    // Call order: the NEW target's resolution, then removeMergeConfig's
+    // read + write for the OLD parent (Phase 1, the fix under test), then
+    // upsertMergeConfig's read + write for the NEW parent (Phase 2).
+    mockVariantResolution([parentNode(NEW_PARENT)]);
     vi.mocked(adminGraphql)
       .mockResolvedValueOnce({
         data: {
@@ -1841,16 +1848,16 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
 
     // Phase 1 — the OLD parent's entry is removed (read + metafieldsDelete,
     // since it was the only entry in the array).
-    expect(adminGraphql).toHaveBeenCalledTimes(4);
-    const [, , removeReadQuery] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(adminGraphql).toHaveBeenCalledTimes(5);
+    const [, , removeReadQuery] = vi.mocked(adminGraphql).mock.calls[1];
     expect(removeReadQuery).toContain('merge_bundles');
-    const [, , removeWriteQuery] = vi.mocked(adminGraphql).mock.calls[1];
+    const [, , removeWriteQuery] = vi.mocked(adminGraphql).mock.calls[2];
     expect(removeWriteQuery).toContain('metafieldsDelete');
 
     // Phase 2 — the NEW parent's entry is written.
-    const [, , upsertReadQuery] = vi.mocked(adminGraphql).mock.calls[2];
+    const [, , upsertReadQuery] = vi.mocked(adminGraphql).mock.calls[3];
     expect(upsertReadQuery).toContain('merge_bundles');
-    const [, , upsertWriteQuery, upsertWriteVars] = vi.mocked(adminGraphql).mock.calls[3];
+    const [, , upsertWriteQuery, upsertWriteVars] = vi.mocked(adminGraphql).mock.calls[4];
     expect(upsertWriteQuery).toContain('metafieldsSet');
     expect(upsertWriteVars).toEqual({
       metafields: [expect.objectContaining({ namespace: '$app:cart-transform', key: 'merge_bundles' })],
@@ -2772,5 +2779,248 @@ describe('GET /api/variants (batch variant name + admin URL resolution)', () => 
     const json = (await res.json()) as { variants: Array<Record<string, unknown>> };
     expect(json.variants[0]).toMatchObject({ imageUrl: 'https://cdn.shopify.com/hoodie-blue.jpg' });
     expect(json.variants[0]).not.toHaveProperty('imageAlt');
+  });
+});
+
+/**
+ * The schedule window, end to end through the real route.
+ *
+ * Shopify is mocked at the transport (`adminGraphql`), so `writeComposition`
+ * and `upsertMergeConfig` run for real — "no metafield was written" is asserted
+ * by confirming no `metafieldsSet` mutation ever reached the transport. The
+ * variant-resolution read still happens on every save (a create always verifies
+ * its target variant, whatever its status), so it is mocked in every test here
+ * and deliberately NOT what these assertions look at.
+ */
+describe('bundle scheduling', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const PARENT = 'gid://shopify/ProductVariant/1';
+  const ITEM = 'gid://shopify/ProductVariant/2';
+
+  /** Did any Admin call carry the metafield-write mutation? */
+  const metafieldWrites = () =>
+    vi.mocked(adminGraphql).mock.calls.filter(([, , query]) => String(query).includes('metafieldsSet'));
+
+  /** Queues the variant-resolution read every save makes first. */
+  const mockSaveReads = () =>
+    mockVariantResolution([variantNode({ id: ITEM, price: '15.00' }), parentNode(PARENT)]);
+
+  const createBundle = (extra: Record<string, unknown>) =>
+    app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          operation: 'expand',
+          parentVariantId: PARENT,
+          items: [{ variantId: ITEM, qty: 1 }],
+          ...extra,
+        }),
+      },
+      env('development'),
+    );
+
+  it('stores a future window as Scheduled and writes NO metafield', async () => {
+    seed();
+    mockSaveReads();
+
+    const res = await createBundle({ name: 'Holiday bundle', scheduleStart: '2099-01-01T00:00:00.000Z' });
+
+    expect(res.status).toBe(201);
+    const { bundle } = (await res.json()) as { bundle: { status: string; metafieldState: string } };
+    expect(bundle.status).toBe('Scheduled');
+    expect(bundle.metafieldState).toBe('NotYet');
+    expect(metafieldWrites()).toHaveLength(0);
+  });
+
+  it('stores an already-open window as Active and writes the metafield now', async () => {
+    seed();
+    mockSaveReads();
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+    });
+
+    const res = await createBundle({
+      name: 'Live bundle',
+      scheduleStart: '2020-01-01T00:00:00.000Z',
+      scheduleEnd: '2099-01-01T00:00:00.000Z',
+    });
+
+    expect(res.status).toBe(201);
+    const { bundle } = (await res.json()) as { bundle: { status: string; metafieldState: string } };
+    expect(bundle.status).toBe('Active');
+    expect(bundle.metafieldState).toBe('Written');
+    expect(metafieldWrites()).toHaveLength(1);
+  });
+
+  it('stores a window entirely in the past as Ended and writes nothing', async () => {
+    seed();
+    mockSaveReads();
+
+    const res = await createBundle({
+      name: 'Old bundle',
+      scheduleStart: '2020-01-01T00:00:00.000Z',
+      scheduleEnd: '2020-02-01T00:00:00.000Z',
+    });
+
+    expect(res.status).toBe(201);
+    const { bundle } = (await res.json()) as { bundle: { status: string } };
+    expect(bundle.status).toBe('Ended');
+    expect(metafieldWrites()).toHaveLength(0);
+  });
+
+  // Review Focus #3 — stored verbatim, a non-Z offset makes the index lie.
+  it('normalizes a non-Z offset to Z form before storing', async () => {
+    const repos = seed();
+    mockSaveReads();
+
+    const res = await createBundle({ name: 'Offset bundle', scheduleStart: '2099-10-03T19:00:00+10:00' });
+
+    expect(res.status).toBe(201);
+    const { bundle } = (await res.json()) as { bundle: { scheduleStart: string | null } };
+    expect(bundle.scheduleStart).toBe('2099-10-03T09:00:00.000Z');
+    // ...and the stored row, which is what the due-scan index orders on.
+    expect(repos.bundles.rows[0].scheduleStart).toBe('2099-10-03T09:00:00.000Z');
+  });
+
+  it('rejects an unparseable datetime with 400 rather than storing null', async () => {
+    const repos = seed();
+    mockSaveReads();
+
+    const res = await createBundle({ name: 'Bad bundle', scheduleStart: 'next tuesday' });
+
+    expect(res.status).toBe(400);
+    // A null bound means "permanently live" — a parse failure must not become one.
+    expect(repos.bundles.rows).toHaveLength(0);
+    expect(metafieldWrites()).toHaveLength(0);
+  });
+
+  it('rejects a start at or after its end with 400', async () => {
+    const repos = seed();
+    mockSaveReads();
+
+    const res = await createBundle({
+      name: 'Backwards bundle',
+      scheduleStart: '2099-02-01T00:00:00.000Z',
+      scheduleEnd: '2099-01-01T00:00:00.000Z',
+    });
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows).toHaveLength(0);
+  });
+
+  it('ignores a client trying to pin a future-windowed bundle Active', async () => {
+    seed();
+    mockSaveReads();
+
+    const res = await createBundle({
+      name: 'Pinned bundle',
+      scheduleStart: '2099-01-01T00:00:00.000Z',
+      status: 'Active',
+    });
+
+    expect(res.status).toBe(201);
+    const { bundle } = (await res.json()) as { bundle: { status: string } };
+    expect(bundle.status).toBe('Scheduled');
+    expect(metafieldWrites()).toHaveLength(0);
+  });
+
+  it('PUT: pulling the start date into the past goes live now, without waiting for the cron', async () => {
+    const repos = seed({
+      bundles: [bundleRow({
+        id: 'bundle-1',
+        operation: 'expand',
+        parentVariantId: PARENT,
+        price: 999, // $9.99, below the $15.00 target price
+        status: 'Scheduled',
+        scheduleStart: '2099-01-01T00:00:00.000Z',
+        metafieldState: 'NotYet',
+      })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+    });
+    // Now live, so the target is verified; then the composition is written.
+    mockVariantResolution([parentNode(PARENT)]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/9' }], userErrors: [] } },
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ scheduleStart: '2020-01-01T00:00:00.000Z' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const { bundle } = (await res.json()) as { bundle: { status: string; metafieldState: string } };
+    expect(bundle.status).toBe('Active');
+    expect(bundle.metafieldState).toBe('Written');
+    expect(metafieldWrites()).toHaveLength(1);
+    expect(repos.bundles.rows[0]).toMatchObject({
+      status: 'Active',
+      scheduleStart: '2020-01-01T00:00:00.000Z',
+      metafieldState: 'Written',
+    });
+  });
+
+  it('PUT: an end date in the past ends the bundle and clears its transport', async () => {
+    const repos = seed({
+      bundles: [bundleRow({
+        id: 'bundle-1',
+        operation: 'expand',
+        parentVariantId: PARENT,
+        price: 999,
+        status: 'Active',
+        metafieldState: 'Written',
+        metafieldGid: 'gid://shopify/Metafield/1',
+      })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+    });
+    // Ended is inactive, so the target is not re-verified — the only Admin
+    // call is the clear.
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsDelete: { deletedMetafields: [], userErrors: [] } },
+    });
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ scheduleEnd: '2020-02-01T00:00:00.000Z' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const { bundle } = (await res.json()) as { bundle: { status: string; metafieldState: string } };
+    expect(bundle.status).toBe('Ended');
+    expect(bundle.metafieldState).toBe('Cleared');
+    expect(metafieldWrites()).toHaveLength(0);
+    expect(adminGraphql).toHaveBeenCalledTimes(1);
+    const [, , query] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(query).toContain('metafieldsDelete');
+    expect(repos.bundles.rows[0]).toMatchObject({ status: 'Ended', metafieldState: 'Cleared', metafieldGid: null });
+  });
+
+  it('honours Draft as the manual off-switch whatever the window says', async () => {
+    seed();
+    mockSaveReads();
+
+    const res = await createBundle({
+      name: 'Off bundle',
+      scheduleStart: '2020-01-01T00:00:00.000Z',
+      status: 'Draft',
+    });
+
+    expect(res.status).toBe(201);
+    const { bundle } = (await res.json()) as { bundle: { status: string } };
+    expect(bundle.status).toBe('Draft');
+    expect(metafieldWrites()).toHaveLength(0);
   });
 });

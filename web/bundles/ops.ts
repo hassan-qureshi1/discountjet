@@ -30,7 +30,7 @@ export const OPERATIONS: OperationMeta[] = [
   {
     id: 'update',
     label: 'Update',
-    description: 'Override a line\'s price, title, or image in the cart.',
+    description: 'Override a line\'s price or title in the cart.',
   },
 ];
 
@@ -72,7 +72,7 @@ export function gateOperation(op: BundleOperation, updateOpEligible: boolean): G
 export const CART_TRANSFORM_LIMITS = [
   'A store can run only one cart transform at a time.',
   'Expanded items are capped at 2000 per cart line.',
-  'Overriding price, title, or image (Update) requires Shopify Plus.',
+  'Overriding price or title (Update) requires Shopify Plus.',
   'Cart transforms are skipped when a subscription (selling plan) is in the cart.',
 ];
 

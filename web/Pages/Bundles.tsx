@@ -9,7 +9,7 @@ import { fetchBundleAdminUrl } from '../bundles/api';
 import { getOp } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
 import { SymbolTile } from '../components/SymbolTile';
-import { CreateBundleAction } from '../components/CreateBundleAction';
+import { OperationPicker } from '../components/OperationPicker';
 import { createAuthenticatedFetch } from '../api';
 import { formatMoney, moneyAmount } from '../lib/money';
 
@@ -97,12 +97,13 @@ export default function Bundles() {
       title="Bundles"
       subtitle="Define a bundle once — the variants it merges or expands, and its base price. Schedule it and set campaign prices in a bundle campaign."
       primaryAction={(
-        <CreateBundleAction
+        <OperationPicker
+          label="Create bundle"
           updateOpEligible={planData?.updateOpEligible ?? false}
           // The operation rides in the URL rather than in router state, so the
           // choice survives a refresh, a back-navigation and a shared link —
           // and the editor has no hidden precondition for opening correctly.
-          onSelect={(operation) => navigate(`/bundles/new?operation=${operation}`)}
+          onSelect={(operation: BundleOperation) => navigate(`/bundles/new?operation=${operation}`)}
         />
       )}
     >

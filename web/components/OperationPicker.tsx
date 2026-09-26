@@ -4,24 +4,32 @@ import { OPERATIONS, gateOperation } from '../bundles/ops';
 import type { BundleOperation } from '../types/bundles';
 
 /**
- * "Create bundle" — a disclosure rather than a direct navigation.
+ * The one place an operation is chosen.
  *
- * The operation is the single most consequential choice about a bundle: it
- * decides what the merchant is asked for next, and it is awkward to change
- * afterwards. Choosing it up front replaces an editor that opened on an
- * arbitrary default with one that opens already shaped for the job.
+ * The operation is the most consequential thing about a bundle — it decides
+ * what the merchant is asked for next — so it is picked deliberately rather
+ * than defaulted into. This component serves both moments: creating a bundle
+ * from the list page, and changing one from inside the editor. Two spellings
+ * of the same choice would be free to drift apart in wording and in gating.
  *
  * `update` is shown DISABLED for non-Plus stores rather than hidden. A
  * capability that silently isn't there reads as a missing feature; a disabled
  * row with a reason reads as a plan limit, which is what it is.
  */
-export function CreateBundleAction({
+export function OperationPicker({
   updateOpEligible,
   onSelect,
+  label,
+  variant = 'primary',
+  selected,
   disabled = false,
 }: {
   updateOpEligible: boolean;
   onSelect: (operation: BundleOperation) => void;
+  label: string;
+  variant?: 'primary' | 'plain';
+  /** Marks the operation already in effect, so the list shows where you are. */
+  selected?: BundleOperation;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -30,10 +38,11 @@ export function CreateBundleAction({
     const gate = gateOperation(op.id, updateOpEligible);
     return {
       content: op.label,
-      // The reason replaces the description when the row is unavailable: a
-      // merchant who can't pick it needs to know why, not what it would do.
+      // The reason replaces the description when a row is unavailable: a
+      // merchant who cannot pick it needs to know why, not what it would do.
       helpText: gate.enabled ? op.description : gate.reason,
       disabled: !gate.enabled,
+      active: selected === op.id,
       onAction: () => {
         setOpen(false);
         onSelect(op.id);
@@ -48,12 +57,12 @@ export function CreateBundleAction({
       onClose={() => setOpen(false)}
       activator={(
         <Button
-          variant="primary"
+          variant={variant}
           disclosure
           disabled={disabled}
           onClick={() => setOpen((v) => !v)}
         >
-          Create bundle
+          {label}
         </Button>
       )}
     >

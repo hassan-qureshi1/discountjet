@@ -35,13 +35,12 @@ import {
 } from '../bundles/hooks';
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
+import { OperationPicker } from '../components/OperationPicker';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
   getOp,
   MAX_EXPAND_QTY,
-  OPERATIONS,
-  type GateResult,
 } from '../bundles/ops';
 import type { BundleOperation, BundleStatus } from '../types/bundles';
 import { formatMoney, moneyAmount, currencySymbol } from '../lib/money';
@@ -172,80 +171,6 @@ function isResourcePickerAvailable(): boolean {
   } catch {
     return false;
   }
-}
-
-/** One selectable operation, disabled + badged when gated. */
-function OperationCard({
-  label,
-  description,
-  selected,
-  gate,
-  onSelect,
-}: {
-  label: string;
-  description: string;
-  selected: boolean;
-  gate: GateResult;
-  onSelect: () => void;
-}) {
-  const locked = !gate.enabled;
-  return (
-    <div
-      role="radio"
-      aria-checked={selected}
-      aria-disabled={locked}
-      tabIndex={locked ? -1 : 0}
-      onClick={() => !locked && onSelect()}
-      onKeyDown={(e) => {
-        if (locked) return;
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-      style={{
-        padding: '12px 14px',
-        borderRadius: 10,
-        border: '1px solid var(--p-color-border)',
-        cursor: locked ? 'not-allowed' : 'pointer',
-        opacity: locked ? 0.6 : 1,
-        boxShadow: selected && !locked ? 'inset 0 0 0 2px var(--p-color-border-brand)' : undefined,
-      }}
-    >
-      <InlineStack align="space-between" blockAlign="center" wrap={false}>
-        <InlineStack gap="150" blockAlign="center">
-          <div
-            aria-hidden
-            style={{
-              width: 16,
-              height: 16,
-              borderRadius: '50%',
-              flex: '0 0 auto',
-              border: `2px solid ${selected && !locked ? 'var(--p-color-border-brand)' : 'var(--p-color-border-strong)'}`,
-              display: 'grid',
-              placeItems: 'center',
-            }}
-          >
-            {selected && !locked && (
-              <div style={{
-                width: 8, height: 8, borderRadius: '50%', background: 'var(--p-color-bg-fill-brand)',
-              }}
-              />
-            )}
-          </div>
-          <Text as="span" variant="bodyMd" fontWeight="semibold">
-            {label}
-          </Text>
-        </InlineStack>
-        {locked && gate.reason && <Badge tone="warning">{gate.reason}</Badge>}
-      </InlineStack>
-      <div style={{ paddingLeft: 24, marginTop: 2 }}>
-        <Text as="span" variant="bodySm" tone="subdued">
-          {description}
-        </Text>
-      </div>
-    </div>
-  );
 }
 
 export default function BundleEditor() {
@@ -734,25 +659,6 @@ export default function BundleEditor() {
               />
             </Card>
 
-            {/* Operation selector — gated only by Shopify Plus eligibility (update) */}
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h3" variant="headingSm">
-                  Cart transform operation
-                </Text>
-                {OPERATIONS.map((op) => (
-                  <OperationCard
-                    key={op.id}
-                    label={op.label}
-                    description={op.description}
-                    selected={operation === op.id}
-                    gate={gateOperation(op.id, updateOpEligible)}
-                    onSelect={() => setOperation(op.id)}
-                  />
-                ))}
-              </BlockStack>
-            </Card>
-
             {/* ── MERGE ── */}
             {operation === 'merge' && (
               <>
@@ -1005,6 +911,21 @@ export default function BundleEditor() {
               <Text as="span" variant="bodySm" tone="subdued">
                 {selectedOp.description}
               </Text>
+              <Box>
+                <OperationPicker
+                  label="Change operation"
+                  variant="plain"
+                  selected={operation}
+                  updateOpEligible={updateOpEligible}
+                  onSelect={setOperation}
+                />
+              </Box>
+              {isEdit && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Changing this rewrites what the bundle does at checkout, and clears the
+                  metafield the old operation wrote.
+                </Text>
+              )}
               <Divider />
               <Text as="span" variant="headingXs" tone="subdued">
                 CART TRANSFORM LIMITS

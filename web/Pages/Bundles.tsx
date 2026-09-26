@@ -4,11 +4,12 @@ import { useAppBridge } from '@shopify/app-bridge-react';
 import {
   Badge, Banner, BlockStack, Box, Button, ButtonGroup, Card, IndexTable, InlineGrid, InlineStack, Page, Spinner, Text,
 } from '@shopify/polaris';
-import { useActivationQuery, useBundlesQuery } from '../bundles/hooks';
+import { useActivationQuery, useBundlesQuery, useShopPlanQuery } from '../bundles/hooks';
 import { fetchBundleAdminUrl } from '../bundles/api';
 import { getOp } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
 import { SymbolTile } from '../components/SymbolTile';
+import { CreateBundleAction } from '../components/CreateBundleAction';
 import { createAuthenticatedFetch } from '../api';
 import { formatMoney, moneyAmount } from '../lib/money';
 
@@ -74,6 +75,7 @@ export default function Bundles() {
   const fetcher = createAuthenticatedFetch(shopify);
   const { data, isLoading, error } = useBundlesQuery();
   const { data: activation, error: activationError } = useActivationQuery();
+  const { data: planData } = useShopPlanQuery();
   const [viewError, setViewError] = useState<string | null>(null);
 
   const bundles = data?.bundles ?? [];
@@ -94,7 +96,15 @@ export default function Bundles() {
     <Page
       title="Bundles"
       subtitle="Define a bundle once — the variants it merges or expands, and its base price. Schedule it and set campaign prices in a bundle campaign."
-      primaryAction={{ content: 'Create bundle', onAction: () => navigate('/bundles/new') }}
+      primaryAction={(
+        <CreateBundleAction
+          updateOpEligible={planData?.updateOpEligible ?? false}
+          // The operation rides in the URL rather than in router state, so the
+          // choice survives a refresh, a back-navigation and a shared link —
+          // and the editor has no hidden precondition for opening correctly.
+          onSelect={(operation) => navigate(`/bundles/new?operation=${operation}`)}
+        />
+      )}
     >
       <BlockStack gap="400">
         {error && <Banner tone="critical">{error.message}</Banner>}

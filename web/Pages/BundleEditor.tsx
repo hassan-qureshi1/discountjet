@@ -7,7 +7,7 @@
 //   2. Variant selection uses the real App Bridge ResourcePicker instead of
 //      the prototype's hardcoded CATALOGUE.
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAppBridge } from '@shopify/app-bridge-react';
 import {
   Badge,
@@ -266,7 +266,16 @@ export default function BundleEditor() {
   const pickerAvailable = isResourcePickerAvailable();
 
   const [name, setName] = useState('New bundle');
-  const [operation, setOperation] = useState<BundleOperation>('merge');
+  // A create arrives from the list page's operation chooser, which puts the
+  // choice in the URL. Reading it here (rather than from router state) is what
+  // makes the link survive a refresh or a share. An unrecognised or absent
+  // value falls back to `merge` rather than failing — the in-editor selector
+  // can still change it, so a bad query string costs a click, not the page.
+  const [searchParams] = useSearchParams();
+  const requestedOperation = searchParams.get('operation');
+  const isOperation = (v: string | null): v is BundleOperation => v === 'expand' || v === 'merge' || v === 'update';
+  const initialOperation: BundleOperation = isOperation(requestedOperation) ? requestedOperation : 'merge';
+  const [operation, setOperation] = useState<BundleOperation>(initialOperation);
   const [status, setStatus] = useState<BundleStatus>('Active');
   const [priceStr, setPriceStr] = useState('0');
   const [parentVariantId, setParentVariantId] = useState<string | undefined>(undefined);

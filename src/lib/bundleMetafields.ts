@@ -383,6 +383,95 @@ export async function upsertMergeConfig(
 }
 
 /**
+ * Apply many merge-bundle changes in ONE read-modify-write.
+ *
+ * `$app:cart-transform.merge_bundles` is a SHOP-level metafield holding an
+ * array of every merge bundle the shop has. `upsertMergeConfig` /
+ * `removeMergeConfig` each do their own read-modify-write, which is right for a
+ * single save but wrong for the scheduling cron: N bundles crossing a boundary
+ * in one pass would be 2N Admin calls, and each write would clobber the array
+ * the previous one had just built.
+ *
+ * Entries the batch does not mention are preserved — this edits the array, it
+ * does not replace it.
+ *
+ * Returns a null `metafieldGid` when the batch empties the array and the
+ * metafield is deleted, so the caller records `Cleared` rather than pointing at
+ * a metafield that no longer exists.
+ */
+export async function applyMergeBatch(
+  env: Env,
+  shopDomain: string,
+  changes: { upserts: MergeBundleConfig[]; removeParentVariantIds: string[] },
+): Promise<{ metafieldGid: string | null }> {
+  const { upserts, removeParentVariantIds } = changes;
+  // A no-op batch must not cost an Admin round-trip — a cron pass where only
+  // `expand` bundles moved hits this every time.
+  if (upserts.length === 0 && removeParentVariantIds.length === 0) {
+    return { metafieldGid: null };
+  }
+
+  const { shopGid, entries } = await readShopMergeBundles(env, shopDomain);
+
+  const touched = new Set([...upserts.map((e) => e.parentVariantId), ...removeParentVariantIds]);
+  const next = [...entries.filter((e) => !touched.has(e.parentVariantId)), ...upserts];
+
+  if (next.length === 0) {
+    const res = await adminGraphql<MetafieldsDeleteResponse>(shopDomain, env, METAFIELDS_DELETE_MUTATION, {
+      metafields: [{ ownerId: shopGid, namespace: '$app:cart-transform', key: 'merge_bundles' }],
+    });
+
+    if (res.errors && res.errors.length > 0) {
+      throw new Error(
+        `[applyMergeBatch] GraphQL errors clearing merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+      );
+    }
+
+    const userErrors = res.data?.metafieldsDelete?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      throw new Error(
+        `[applyMergeBatch] metafieldsDelete userErrors for ${shopDomain}: ${JSON.stringify(userErrors)}`,
+      );
+    }
+    return { metafieldGid: null };
+  }
+
+  const res = await adminGraphql<MetafieldsSetResponse>(shopDomain, env, METAFIELDS_SET_MUTATION, {
+    metafields: [
+      {
+        ownerId: shopGid,
+        namespace: '$app:cart-transform',
+        key: 'merge_bundles',
+        type: 'json',
+        value: JSON.stringify(next),
+      },
+    ],
+  });
+
+  if (res.errors && res.errors.length > 0) {
+    throw new Error(
+      `[applyMergeBatch] GraphQL errors writing merge_bundles for ${shopDomain}: ${JSON.stringify(res.errors)}`,
+    );
+  }
+
+  const userErrors = res.data?.metafieldsSet?.userErrors ?? [];
+  if (userErrors.length > 0) {
+    throw new Error(
+      `[applyMergeBatch] metafieldsSet userErrors for ${shopDomain}: ${JSON.stringify(userErrors)}`,
+    );
+  }
+
+  const metafieldGid = res.data?.metafieldsSet?.metafields?.[0]?.id;
+  if (!metafieldGid) {
+    throw new Error(
+      `[applyMergeBatch] metafieldsSet returned no metafield id for ${shopDomain}: ${JSON.stringify(res)}`,
+    );
+  }
+
+  return { metafieldGid };
+}
+
+/**
  * Removes a bundle's entry from the shop `$app:cart-transform.merge_bundles`
  * metafield (matched by `parentVariantId`) — called when a `merge` bundle
  * that had written it is deleted. Writes the filtered array back, or clears

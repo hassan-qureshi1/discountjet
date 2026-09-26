@@ -12,8 +12,10 @@ import {
   mergeConfigEntry,
   upsertMergeConfig,
   removeMergeConfig,
+  applyMergeBatch,
 } from './bundleMetafields';
 import type { Env } from '../types/env';
+import type { MergeBundleConfig } from './bundleMetafields';
 
 describe('compositionFromItems', () => {
   it('normalizes a bare numeric variantId to a GID', () => {
@@ -390,5 +392,104 @@ describe('removeMergeConfig', () => {
         },
       });
     await expect(removeMergeConfig(env, shopDomain, parentVariantId)).rejects.toThrow(/userErrors/);
+  });
+});
+
+describe('applyMergeBatch', () => {
+  const ENV = {} as Env;
+  const SHOP = 'test.myshopify.com';
+
+  function existing(entries: MergeBundleConfig[]) {
+    // First call reads the shop metafield, second performs the write.
+    return vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: {
+          shop: {
+            id: 'gid://shopify/Shop/1',
+            metafield: { value: JSON.stringify(entries) },
+          },
+        },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/9' }], userErrors: [] } },
+      } as never);
+  }
+
+  beforeEach(() => vi.mocked(adminGraphql).mockReset());
+
+  it('applies many changes in ONE read-modify-write', async () => {
+    existing([]);
+    await applyMergeBatch(ENV, SHOP, {
+      upserts: [
+        { parentVariantId: 'v1', price: 10, sources: ['gid://shopify/ProductVariant/1'] },
+        { parentVariantId: 'v2', price: 20, sources: ['gid://shopify/ProductVariant/2'] },
+      ],
+      removeParentVariantIds: [],
+    });
+
+    expect(vi.mocked(adminGraphql)).toHaveBeenCalledTimes(2); // one read, one write
+  });
+
+  // Review Focus #4 — a replace-the-array bug here silently unpublishes every
+  // merge bundle the shop has that this pass did not touch.
+  it('preserves entries the batch does not mention', async () => {
+    existing([
+      { parentVariantId: 'untouched', price: 5, sources: ['gid://shopify/ProductVariant/7'] },
+      { parentVariantId: 'v1', price: 1, sources: ['gid://shopify/ProductVariant/1'] },
+    ]);
+
+    await applyMergeBatch(ENV, SHOP, {
+      upserts: [{ parentVariantId: 'v1', price: 99, sources: ['gid://shopify/ProductVariant/1'] }],
+      removeParentVariantIds: [],
+    });
+
+    const [, writeCall] = vi.mocked(adminGraphql).mock.calls;
+    const written = JSON.parse((writeCall[3] as { metafields: Array<{ value: string }> }).metafields[0].value);
+    expect(written).toHaveLength(2);
+    expect(written).toContainEqual(expect.objectContaining({ parentVariantId: 'untouched', price: 5 }));
+    expect(written).toContainEqual(expect.objectContaining({ parentVariantId: 'v1', price: 99 }));
+  });
+
+  it('removes and upserts in the same pass', async () => {
+    existing([
+      { parentVariantId: 'gone', price: 5, sources: ['gid://shopify/ProductVariant/7'] },
+      { parentVariantId: 'stays', price: 5, sources: ['gid://shopify/ProductVariant/8'] },
+    ]);
+
+    await applyMergeBatch(ENV, SHOP, {
+      upserts: [{ parentVariantId: 'new', price: 3, sources: ['gid://shopify/ProductVariant/9'] }],
+      removeParentVariantIds: ['gone'],
+    });
+
+    const [, writeCall] = vi.mocked(adminGraphql).mock.calls;
+    const written = JSON.parse((writeCall[3] as { metafields: Array<{ value: string }> }).metafields[0].value);
+    expect(written.map((e: MergeBundleConfig) => e.parentVariantId).sort()).toEqual(['new', 'stays']);
+  });
+
+  it('deletes the metafield and reports a null gid when the batch empties it', async () => {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: {
+          shop: {
+            id: 'gid://shopify/Shop/1',
+            metafield: { value: JSON.stringify([{ parentVariantId: 'only', price: 5, sources: [] }]) },
+          },
+        },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { metafieldsDelete: { deletedMetafields: [{ key: 'merge_bundles' }], userErrors: [] } },
+      } as never);
+
+    const result = await applyMergeBatch(ENV, SHOP, {
+      upserts: [],
+      removeParentVariantIds: ['only'],
+    });
+
+    expect(result.metafieldGid).toBeNull();
+  });
+
+  it('does not call Shopify at all for an empty batch', async () => {
+    await applyMergeBatch(ENV, SHOP, { upserts: [], removeParentVariantIds: [] });
+    expect(vi.mocked(adminGraphql)).not.toHaveBeenCalled();
   });
 });

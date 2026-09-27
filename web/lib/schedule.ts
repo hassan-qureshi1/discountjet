@@ -1,60 +1,68 @@
 /**
- * Local wall-clock ⇄ UTC conversion for the bundle schedule fields.
+ * UTC date/time handling for the bundle schedule fields.
  *
- * The merchant types a time in THEIR browser's timezone; the server stores UTC.
- * All of that conversion lives here, and only here, so there is one place to
- * test it and one place to change it if we ever switch to the store's timezone.
+ * The schedule is UTC everywhere: what the merchant types, what the API
+ * stores, what the cron compares, and what we render back. The host machine's
+ * timezone is never consulted — that is the whole point, and it is what makes
+ * a window mean the same thing to every person who opens the app, wherever
+ * they happen to be sitting.
+ *
+ * All of that lives here, and only here, so there is one place to test it and
+ * one place to change it if the product ever moves to the store's timezone.
  */
 
 /**
- * `'2026-10-03'` + `'19:00'` -> the same instant as a UTC ISO string.
+ * `'2026-10-03'` + `'09:00'` -> that instant as a UTC ISO string.
  *
- * `new Date('2026-10-03T19:00')` — note: NO trailing Z — parses as local
- * wall-clock time, which is what makes DST the platform's problem rather than
- * ours. Do not "tidy" this into a UTC parse.
+ * The explicit `Z` is load-bearing: `new Date('2026-10-03T09:00')` without it
+ * parses as the HOST's wall-clock time, which would silently shift every
+ * merchant's window by their own UTC offset. Do not "tidy" it away.
  */
 export function toUtcIso(date: string, time: string): string {
-  const parsed = new Date(`${date}T${time}`);
+  const parsed = new Date(`${date}T${time}:00.000Z`);
   if (Number.isNaN(parsed.getTime())) {
-    throw new RangeError(`[schedule] not a valid local date and time: ${date} ${time}`);
+    throw new RangeError(`[schedule] not a valid UTC date and time: ${date} ${time}`);
   }
   return parsed.toISOString();
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0');
 
-/** The inverse of `toUtcIso`, in values a date/time input accepts directly. */
+/**
+ * The inverse of `toUtcIso`, in values a date/time input accepts directly.
+ *
+ * Reads the UTC components rather than the local ones. East of UTC a local
+ * read returns the wrong DAY, not merely the wrong time, so this is not a
+ * cosmetic distinction.
+ */
 export function fromUtcIso(iso: string): { date: string; time: string } {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) {
     throw new RangeError(`[schedule] not a valid ISO datetime: ${iso}`);
   }
   return {
-    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
-    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`,
+    time: `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`,
   };
 }
 
-/** The browser's timezone, e.g. `Australia/Sydney`. */
-export function localZoneName(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;
-}
-
 /**
- * A human label for a stored UTC instant, naming the zone explicitly.
+ * A human label for a stored UTC instant — e.g. `Sat, Oct 3, 2026, 9:00 AM UTC`.
  *
- * The zone is spelled out because the window is set in the BROWSER's timezone,
- * not the store's — printing it is what keeps that from being invisible to a
- * merchant working from somewhere else.
+ * Forced to `timeZone: 'UTC'` so it agrees with the values in the editor's
+ * fields, and suffixed with a literal `UTC` rather than `timeZoneName`, which
+ * would render a host-relative abbreviation like `GMT+5` and imply the window
+ * had been converted into the reader's own zone.
  */
 export function formatWindowLabel(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  const formatted = new Date(iso).toLocaleString(undefined, {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-    timeZoneName: 'short',
+    timeZone: 'UTC',
   });
+  return `${formatted} UTC`;
 }

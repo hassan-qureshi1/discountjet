@@ -49,7 +49,7 @@ import type { BundleOperation, BundleStatus } from '../types/bundles';
 import { formatMoney, moneyAmount, currencySymbol } from '../lib/money';
 import { sumItemPrices } from '../bundles/preview';
 import {
-  formatWindowLabel, fromUtcIso, localZoneName, toUtcIso,
+  fromUtcIso, toUtcIso,
 } from '../lib/schedule';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
@@ -1037,14 +1037,14 @@ export default function BundleEditor() {
                 {hasStart && (
                   <InlineGrid columns={2} gap="300">
                     <TextField
-                      label="Start date"
+                      label="Start date (UTC)"
                       type="date"
                       value={startDate}
                       onChange={setStartDate}
                       autoComplete="off"
                     />
                     <TextField
-                      label="Start time"
+                      label="Start time (UTC)"
                       type="time"
                       value={startTime}
                       onChange={setStartTime}
@@ -1052,12 +1052,6 @@ export default function BundleEditor() {
                     />
                   </InlineGrid>
                 )}
-                {scheduleStart && (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {`Goes live ${formatWindowLabel(scheduleStart)}`}
-                  </Text>
-                )}
-
                 <Checkbox
                   label="Set an end date"
                   checked={hasEnd}
@@ -1067,14 +1061,14 @@ export default function BundleEditor() {
                 {hasEnd && (
                   <InlineGrid columns={2} gap="300">
                     <TextField
-                      label="End date"
+                      label="End date (UTC)"
                       type="date"
                       value={endDate}
                       onChange={setEndDate}
                       autoComplete="off"
                     />
                     <TextField
-                      label="End time"
+                      label="End time (UTC)"
                       type="time"
                       value={endTime}
                       onChange={setEndTime}
@@ -1082,18 +1076,13 @@ export default function BundleEditor() {
                     />
                   </InlineGrid>
                 )}
-                {scheduleEnd && (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {`Ends ${formatWindowLabel(scheduleEnd)}`}
-                  </Text>
-                )}
-
                 {scheduleFieldError && (
                   <Banner tone="critical">{scheduleFieldError}</Banner>
                 )}
 
                 <Text as="p" variant="bodySm" tone="subdued">
-                  {`Times are in your computer’s timezone (${localZoneName()}). The bundle goes live and comes down automatically within 5 minutes of each time.`}
+                  All times are UTC. The bundle goes live and comes down automatically
+                  within 5 minutes of each time.
                 </Text>
 
                 {bundle?.scheduleError && (

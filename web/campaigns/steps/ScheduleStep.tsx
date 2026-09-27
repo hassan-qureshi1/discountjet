@@ -37,38 +37,42 @@ interface SchedulePayload {
 
 const AUTOSAVE_DEBOUNCE_MS = 600;
 
+/** `campaign.startsAt`/`endsAt` split into the shape the date/time fields
+ * want, or the "unset" defaults. Pulled out so every `useState` initializer
+ * below reads the same seed rather than each re-deriving it slightly
+ * differently. */
+function seedBound(iso: string | null, defaultTime: string): { has: boolean; date: string; time: string } {
+  if (!iso) return { has: false, date: '', time: defaultTime };
+  const { date, time } = fromUtcIso(iso);
+  return { has: true, date, time };
+}
+
 export function ScheduleStep({ campaign }: { campaign: Campaign }) {
   const updateMutation = useUpdateCampaign();
-  const [mode, setMode] = useState<CampaignScheduleMode>(campaign.scheduleMode);
-  const [hasStart, setHasStart] = useState(false);
-  const [startDate, setStartDate] = useState('');
-  const [startTime, setStartTime] = useState('09:00');
-  const [hasEnd, setHasEnd] = useState(false);
-  const [endDate, setEndDate] = useState('');
-  const [endTime, setEndTime] = useState('23:59');
-  const [bannerError, setBannerError] = useState<string | null>(null);
 
-  // Seed local state from the campaign exactly once — react-query may hand us
-  // a new object reference on background refetch and we don't want to clobber
-  // an in-progress edit (see BundleEditor's `initializedRef`).
-  const initializedRef = useRef(false);
-  useEffect(() => {
-    if (initializedRef.current) return;
-    setMode(campaign.scheduleMode);
-    if (campaign.startsAt) {
-      const { date, time } = fromUtcIso(campaign.startsAt);
-      setHasStart(true);
-      setStartDate(date);
-      setStartTime(time);
-    }
-    if (campaign.endsAt) {
-      const { date, time } = fromUtcIso(campaign.endsAt);
-      setHasEnd(true);
-      setEndDate(date);
-      setEndTime(time);
-    }
-    initializedRef.current = true;
-  }, [campaign]);
+  // Seeded SYNCHRONOUSLY from `campaign` via lazy `useState` initializers —
+  // not in an effect. `CampaignBuilder` only ever mounts this step once
+  // `campaign` has loaded (see its loading/not-found gates), so there is no
+  // "campaign arrives later" case to handle here. The point of doing this in
+  // the initializer rather than an effect: an effect's `setState` calls are
+  // batched into a LATER render, so on the very first render (and especially
+  // under StrictMode's mount/unmount/remount) `currentPayload` below would be
+  // computed from pre-seed defaults — and if the unmount-flush effect's
+  // cleanup fires before that later render lands, it persists that pre-seed
+  // payload, nulling out a real saved window. Seeding synchronously means
+  // there IS no pre-seed render: the state is correct from the first paint,
+  // so there is no ordering between "seeded" and "flushable" left to get
+  // wrong. `useState(() => ...)` runs its initializer exactly once, so a
+  // background refetch handing this component a new `campaign` object later
+  // does not re-seed and clobber an in-progress edit either.
+  const [mode, setMode] = useState<CampaignScheduleMode>(() => campaign.scheduleMode);
+  const [hasStart, setHasStart] = useState(() => seedBound(campaign.startsAt, '09:00').has);
+  const [startDate, setStartDate] = useState(() => seedBound(campaign.startsAt, '09:00').date);
+  const [startTime, setStartTime] = useState(() => seedBound(campaign.startsAt, '09:00').time);
+  const [hasEnd, setHasEnd] = useState(() => seedBound(campaign.endsAt, '23:59').has);
+  const [endDate, setEndDate] = useState(() => seedBound(campaign.endsAt, '23:59').date);
+  const [endTime, setEndTime] = useState(() => seedBound(campaign.endsAt, '23:59').time);
+  const [bannerError, setBannerError] = useState<string | null>(null);
 
   let startsAt: string | null = null;
   let endsAt: string | null = null;

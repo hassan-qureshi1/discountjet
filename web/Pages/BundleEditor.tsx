@@ -1037,14 +1037,14 @@ export default function BundleEditor() {
                 {hasStart && (
                   <InlineGrid columns={2} gap="300">
                     <TextField
-                      label="Start date (UTC)"
+                      label="Start date"
                       type="date"
                       value={startDate}
                       onChange={setStartDate}
                       autoComplete="off"
                     />
                     <TextField
-                      label="Start time (UTC)"
+                      label="Start time"
                       type="time"
                       value={startTime}
                       onChange={setStartTime}
@@ -1061,14 +1061,14 @@ export default function BundleEditor() {
                 {hasEnd && (
                   <InlineGrid columns={2} gap="300">
                     <TextField
-                      label="End date (UTC)"
+                      label="End date"
                       type="date"
                       value={endDate}
                       onChange={setEndDate}
                       autoComplete="off"
                     />
                     <TextField
-                      label="End time (UTC)"
+                      label="End time"
                       type="time"
                       value={endTime}
                       onChange={setEndTime}
@@ -1081,8 +1081,8 @@ export default function BundleEditor() {
                 )}
 
                 <Text as="p" variant="bodySm" tone="subdued">
-                  All times are UTC. The bundle goes live and comes down automatically
-                  within 5 minutes of each time.
+                  Times are in your own timezone. The bundle goes live and comes down
+                  automatically within 5 minutes of each time.
                 </Text>
 
                 {bundle?.scheduleError && (

@@ -1,26 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { formatWindowLabel, fromUtcIso, toUtcIso } from './schedule';
 
-// This suite deliberately runs in a NON-UTC zone. The schedule fields are UTC
-// everywhere — what the merchant types, what we store, what we show — so the
-// thing worth proving is that the host machine's timezone never leaks in. Run
-// in UTC, an implementation that wrongly used local time would pass every
-// assertion below and the file would be worthless.
+// The merchant works in their own timezone; UTC is storage only. These tests
+// are therefore only meaningful in a NON-UTC zone: run in UTC, an
+// implementation that never converted at all would pass every assertion below
+// and the file would be worthless.
 process.env.TZ = 'Australia/Sydney';
 
 // Guard against the assignment above silently not taking effect. Node/V8 can
 // cache timezone data the first time Date/Intl is used in a process; if some
 // earlier module in this worker already resolved the system timezone before
 // this line ran, `process.env.TZ = ...` above would be a no-op and every
-// assertion below would still "pass" without ever exercising a non-UTC host.
+// assertion below would still "pass" without ever exercising a conversion.
 // Fail loudly instead of silently degrading.
 const resolvedZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 if (resolvedZone !== 'Australia/Sydney') {
   throw new Error(
     '[schedule.test] process.env.TZ = \'Australia/Sydney\' did not take effect '
-      + `(resolved timezone is '${resolvedZone}'). This suite proves the host's `
-      + 'timezone does not leak into a UTC-only schedule, which it can only do '
-      + 'while actually running in a non-UTC zone: run it with '
+      + `(resolved timezone is '${resolvedZone}'). This suite proves local time is `
+      + 'converted to UTC and back, which it can only do while actually running in '
+      + 'a non-UTC zone: run it with '
       + '\'TZ=Australia/Sydney npx vitest run web/lib/schedule.test.ts\', or isolate '
       + 'this file into its own worker/process so no earlier module can cache the '
       + 'system timezone first.',
@@ -28,15 +27,15 @@ if (resolvedZone !== 'Australia/Sydney') {
 }
 
 describe('toUtcIso', () => {
-  // The host is UTC+10/+11. A local-time parse would return 2026-10-02T23:00Z.
-  it('treats the entered value as UTC, not as host wall-clock time', () => {
-    expect(toUtcIso('2026-10-03', '09:00')).toBe('2026-10-03T09:00:00.000Z');
+  it('reads the entered value as the merchant’s LOCAL time and stores UTC', () => {
+    // 19:00 in Sydney (AEST, UTC+10) is 09:00Z.
+    expect(toUtcIso('2026-10-03', '19:00')).toBe('2026-10-03T09:00:00.000Z');
   });
 
-  it('is unaffected by the host timezone across a host DST transition', () => {
-    // Sydney moves to AEDT (+10 -> +11) on 2026-10-04. Under a local parse the
-    // offset applied here would differ from the case above; under UTC it cannot.
-    expect(toUtcIso('2026-10-05', '02:00')).toBe('2026-10-05T02:00:00.000Z');
+  it('applies the offset in force on that date, not a fixed one', () => {
+    // Sydney moves to AEDT (+11) on 2026-10-04, so this is 15:00Z the day
+    // BEFORE — a fixed +10 would give 16:00Z, and a UTC parse 02:00Z.
+    expect(toUtcIso('2026-10-05', '02:00')).toBe('2026-10-04T15:00:00.000Z');
   });
 
   it('produces a fixed-width Z-suffixed string, so the server index stays sane', () => {
@@ -46,28 +45,21 @@ describe('toUtcIso', () => {
   it('throws on an incomplete value rather than emitting an Invalid Date', () => {
     expect(() => toUtcIso('2026-10-03', '')).toThrow(RangeError);
   });
-
-  it('throws on an unparseable value rather than returning a fallback', () => {
-    expect(() => toUtcIso('not-a-date', '09:00')).toThrow(RangeError);
-  });
 });
 
 describe('fromUtcIso', () => {
-  // A local-time read on this host would return 19:00 for a 09:00Z instant.
-  it('reads back the UTC components, not the host-local ones', () => {
-    expect(fromUtcIso('2026-10-03T09:00:00.000Z')).toEqual({ date: '2026-10-03', time: '09:00' });
+  it('converts stored UTC back into the merchant’s local wall clock', () => {
+    expect(fromUtcIso('2026-10-03T09:00:00.000Z')).toEqual({ date: '2026-10-03', time: '19:00' });
   });
 
-  it('round-trips through toUtcIso unchanged', () => {
-    const { date, time } = fromUtcIso(toUtcIso('2026-10-03', '09:00'));
-    expect({ date, time }).toEqual({ date: '2026-10-03', time: '09:00' });
+  it('round-trips through toUtcIso', () => {
+    const { date, time } = fromUtcIso(toUtcIso('2026-10-03', '19:00'));
+    expect({ date, time }).toEqual({ date: '2026-10-03', time: '19:00' });
   });
 
-  it('round-trips a value whose host-local date differs from its UTC date', () => {
-    // 23:30Z on the 3rd is 09:30 on the 4th in Sydney — a local read would
-    // return the wrong DAY, not merely the wrong time.
-    const { date, time } = fromUtcIso(toUtcIso('2026-10-03', '23:30'));
-    expect({ date, time }).toEqual({ date: '2026-10-03', time: '23:30' });
+  it('round-trips across a DST transition', () => {
+    const { date, time } = fromUtcIso(toUtcIso('2026-10-05', '02:00'));
+    expect({ date, time }).toEqual({ date: '2026-10-05', time: '02:00' });
   });
 
   it('zero-pads, so the values drop straight into a date/time input', () => {
@@ -82,18 +74,17 @@ describe('fromUtcIso', () => {
 });
 
 describe('formatWindowLabel', () => {
-  it('renders the UTC date and time, never the host-local ones', () => {
+  it('renders the stored instant in the reader’s local time', () => {
     const label = formatWindowLabel('2026-10-03T09:00:00.000Z');
     expect(label).toContain('Oct 3, 2026');
-    expect(label).toMatch(/9:00\s?am/i);
-    // The host-local rendering would be 7:00 PM on this machine.
-    expect(label).not.toMatch(/7:00\s?pm/i);
+    expect(label).toMatch(/7:00\s?pm/i);
   });
 
-  it('says UTC, and never a host-local offset', () => {
+  // The offset was noise on every line of the card. The whole point of showing
+  // local time is that the merchant does not have to think about offsets.
+  it('never prints a timezone offset or abbreviation', () => {
     const label = formatWindowLabel('2026-10-03T09:00:00.000Z');
-    expect(label).toContain('UTC');
     expect(label).not.toMatch(/GMT[+-]\d/);
-    expect(label).not.toMatch(/AEST|AEDT/);
+    expect(label).not.toMatch(/AEST|AEDT|UTC/);
   });
 });

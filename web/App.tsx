@@ -8,6 +8,9 @@ import Bundles from './Pages/Bundles';
 import BundleEditor from './Pages/BundleEditor';
 import Templates from './Pages/Templates';
 import TemplateCreate from './Pages/TemplateCreate';
+import Campaigns from './Pages/Campaigns';
+import CampaignBuilder from './Pages/CampaignBuilder';
+import CampaignDetail from './Pages/CampaignDetail';
 
 export default function App() {
   return (
@@ -21,6 +24,9 @@ export default function App() {
         <Route path="/bundles/:id/edit" element={<BundleEditor />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/templates/:slug" element={<TemplateCreate />} />
+        <Route path="/campaigns" element={<Campaigns />} />
+        <Route path="/campaigns/:id/edit" element={<CampaignBuilder />} />
+        <Route path="/campaigns/:id" element={<CampaignDetail />} />
         <Route path="*" element={<Home />} />
       </Routes>
       <NavMenu>
@@ -28,6 +34,7 @@ export default function App() {
         <Link to="/discounts">Discounts</Link>
         <Link to="/bundles">Bundles</Link>
         <Link to="/templates">Templates</Link>
+        <Link to="/campaigns">Campaigns</Link>
       </NavMenu>
     </BugSnagBoundary>
   );

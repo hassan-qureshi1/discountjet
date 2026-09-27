@@ -38,6 +38,7 @@ import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/pic
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
 import { PriceCard } from '../components/PriceCard';
+import { VariantSelectCard } from '../components/VariantSelectCard';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
@@ -830,37 +831,20 @@ export default function BundleEditor() {
             {/* ── MERGE ── */}
             {operation === 'merge' && (
               <>
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Bundle line variant
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      The variant that represents the merged line at checkout.
-                    </Text>
-                    <InlineStack gap="200" blockAlign="center">
-                      {parentVariantId ? (
-                        <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
-                          <VariantLabel
-                            resolved={resolvedVariants.get(parentVariantId)}
-                            fallback={parentTitle ?? titleFor(parentVariantId)}
-                            layout="inline"
-                          />
-                        </Tag>
-                      ) : (
-                        <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
-                      )}
-                      <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
-                        {parentVariantId ? 'Change variant' : 'Choose variant'}
-                      </Button>
-                    </InlineStack>
-                    {!pickerAvailable && (
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        Product picker is available inside the Shopify admin.
-                      </Text>
-                    )}
-                  </BlockStack>
-                </Card>
+                <VariantSelectCard
+                  title="Bundle line variant"
+                  description="The variant that represents the merged line at checkout."
+                  selectedLabel={parentVariantId ? (
+                    <VariantLabel
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                      layout="inline"
+                    />
+                  ) : null}
+                  onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
+                  onPick={pickParentVariant}
+                  pickerAvailable={pickerAvailable}
+                />
 
                 <Card>
                   <BlockStack gap="300">
@@ -932,37 +916,20 @@ export default function BundleEditor() {
                   comparison={showMoney(sumOfItems)}
                   saving={hasExpandPrice && save != null && save > 0 ? showMoney(save) : null}
                 />
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Parent product
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      The line a shopper adds; it expands into the components below at checkout.
-                    </Text>
-                    <InlineStack gap="200" blockAlign="center">
-                      {parentVariantId ? (
-                        <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
-                          <VariantLabel
-                            resolved={resolvedVariants.get(parentVariantId)}
-                            fallback={parentTitle ?? titleFor(parentVariantId)}
-                            layout="inline"
-                          />
-                        </Tag>
-                      ) : (
-                        <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
-                      )}
-                      <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
-                        {parentVariantId ? 'Change variant' : 'Choose variant'}
-                      </Button>
-                    </InlineStack>
-                    {!pickerAvailable && (
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        Product picker is available inside the Shopify admin.
-                      </Text>
-                    )}
-                  </BlockStack>
-                </Card>
+                <VariantSelectCard
+                  title="Parent product"
+                  description="The line a shopper adds; it expands into the components below at checkout."
+                  selectedLabel={parentVariantId ? (
+                    <VariantLabel
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                      layout="inline"
+                    />
+                  ) : null}
+                  onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
+                  onPick={pickParentVariant}
+                  pickerAvailable={pickerAvailable}
+                />
 
                 <Card>
                   <BlockStack gap="300">

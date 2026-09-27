@@ -256,5 +256,3 @@ export const template = sqliteTable(
     activeSortIdx: index('template_active_sort_idx').on(t.active, t.sortOrder),
   }),
 );
-
-export type TemplateRow = typeof template.$inferSelect;

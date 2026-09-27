@@ -575,3 +575,60 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
 
   return c.json({ status: published, created, failed, bundleFailures });
 });
+
+// POST /api/campaigns/:id/clone — the only edit path for a non-Draft
+// campaign, since PUT/DELETE both 409 on anything past Draft. Allowed from
+// ANY source status, including Draft itself: cloning is a read of the source
+// plus inserts, so it cannot damage the source whatever state it is in, and
+// gating it would be an arbitrary restriction on a merchant who just wants a
+// second similar campaign. The source campaign and its rows are never
+// written to — only read.
+campaignRoutes.post('/api/campaigns/:id/clone', async (c) => {
+  const repos = c.get('repos');
+  const id = c.req.param('id');
+
+  const source = await repos.campaigns.findById(id);
+  if (!source) return c.json({ error: 'Campaign not found' }, 404);
+
+  const [discounts, bundles] = await Promise.all([
+    repos.campaignDiscounts.listForCampaign(id),
+    repos.campaignBundles.listForCampaign(id),
+  ]);
+
+  const clone = await repos.campaigns.create({
+    name: `${source.name} (copy)`,
+    description: source.description,
+    status: 'Draft',
+    scheduleMode: source.scheduleMode,
+    startsAt: source.startsAt,
+    endsAt: source.endsAt,
+    publishedAt: null,
+  });
+
+  for (const cd of discounts) {
+    // Sequential on purpose — see the `no-await-in-loop` convention used
+    // elsewhere in this file for repeated sequential writes.
+    // eslint-disable-next-line no-await-in-loop
+    await repos.campaignDiscounts.create({
+      name: cd.name,
+      type: cd.type,
+      method: cd.method,
+      code: cd.code,
+      configJson: cd.configJson,
+      configBytes: cd.configBytes,
+      // The one invariant this route exists to protect: a carried-over gid
+      // would make the clone point at the SOURCE's live Shopify discount.
+      shopifyGid: null,
+      publishState: 'pending',
+      publishError: null,
+      campaignId: clone.id,
+    });
+  }
+
+  for (const cb of bundles) {
+    // eslint-disable-next-line no-await-in-loop
+    await repos.campaignBundles.create({ campaignId: clone.id, bundleId: cb.bundleId });
+  }
+
+  return c.json({ campaignId: clone.id });
+});

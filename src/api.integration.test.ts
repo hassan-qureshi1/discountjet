@@ -4028,4 +4028,38 @@ describe('Campaign API', () => {
 
     expect(res.status).toBe(200);
   });
+
+  it('clones into an independent Draft with no Shopify identities', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', publishState: 'created', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    expect(campaignId).not.toBe('c1');
+
+    const clone = repos.campaigns.rows.find((r) => r.id === campaignId);
+    expect(clone).toMatchObject({ status: 'Draft', publishedAt: null });
+
+    const copied = repos.campaignDiscounts.rows.filter((r) => r.campaignId === campaignId);
+    expect(copied).toHaveLength(1);
+    // A clone that carried the original's gid would edit a LIVE discount.
+    expect(copied[0]).toMatchObject({ publishState: 'pending', shopifyGid: null });
+
+    expect(repos.campaignBundles.rows.filter((r) => r.campaignId === campaignId)).toHaveLength(1);
+
+    // The source is untouched — that is the point of clone-to-edit.
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toMatchObject({ status: 'Published' });
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toMatchObject({
+      publishState: 'created', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+    });
+  });
 });

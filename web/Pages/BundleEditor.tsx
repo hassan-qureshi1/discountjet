@@ -16,6 +16,7 @@ import {
   Box,
   Button,
   Card,
+  Checkbox,
   Divider,
   InlineGrid,
   InlineStack,
@@ -36,15 +37,20 @@ import {
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import { OperationPicker } from '../components/OperationPicker';
+import { StatusBadge } from '../components/StatusBadge';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
   getOp,
   MAX_EXPAND_QTY,
 } from '../bundles/ops';
+import { STATUS_TONE } from '../bundles/statusTone';
 import type { BundleOperation, BundleStatus } from '../types/bundles';
 import { formatMoney, moneyAmount, currencySymbol } from '../lib/money';
 import { sumItemPrices } from '../bundles/preview';
+import {
+  formatWindowLabel, fromUtcIso, localZoneName, toUtcIso,
+} from '../lib/schedule';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
  *  `price` is a plain number for the live preview only — the server re-resolves
@@ -202,6 +208,15 @@ export default function BundleEditor() {
   const initialOperation: BundleOperation = isOperation(requestedOperation) ? requestedOperation : 'merge';
   const [operation, setOperation] = useState<BundleOperation>(initialOperation);
   const [status, setStatus] = useState<BundleStatus>('Active');
+  // The window is held as the merchant typed it — local date + local time —
+  // and converted to UTC only on save. Holding UTC here would mean converting
+  // on every keystroke.
+  const [hasStart, setHasStart] = useState(false);
+  const [hasEnd, setHasEnd] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [startTime, setStartTime] = useState('09:00');
+  const [endDate, setEndDate] = useState('');
+  const [endTime, setEndTime] = useState('23:59');
   // Blank, not '0'. For expand a price is optional and blank means "leave the
   // bundle product's price alone" — defaulting to 0 would send a real zero and
   // price the bundle free. Merge rejects a blank price with its own message.
@@ -224,6 +239,18 @@ export default function BundleEditor() {
     setName(bundle.name);
     setOperation(bundle.operation);
     setStatus(bundle.status);
+    if (bundle.scheduleStart) {
+      const { date, time } = fromUtcIso(bundle.scheduleStart);
+      setHasStart(true);
+      setStartDate(date);
+      setStartTime(time);
+    }
+    if (bundle.scheduleEnd) {
+      const { date, time } = fromUtcIso(bundle.scheduleEnd);
+      setHasEnd(true);
+      setEndDate(date);
+      setEndTime(time);
+    }
     const bundlePrice = moneyAmount(bundle.price);
     setPriceStr(bundlePrice != null ? String(bundlePrice) : '');
     setParentVariantId(bundle.parentVariantId);
@@ -450,6 +477,31 @@ export default function BundleEditor() {
   // has no way to tell *why* Save stopped working.
   const needsItemsToSave = operation !== 'update' && items.length === 0;
 
+  // Converted once, and reused by both the preview and the save — so what the
+  // merchant is shown is exactly what gets sent.
+  let scheduleStart: string | null = null;
+  let scheduleEnd: string | null = null;
+  let scheduleFieldError: string | null = null;
+  try {
+    if (hasStart && startDate) scheduleStart = toUtcIso(startDate, startTime);
+    if (hasEnd && endDate) scheduleEnd = toUtcIso(endDate, endTime);
+    if (scheduleStart && scheduleEnd && scheduleStart >= scheduleEnd) {
+      scheduleFieldError = 'The start must be before the end.';
+    }
+  } catch {
+    scheduleFieldError = 'Enter a valid date and time.';
+  }
+
+  // Mirrors the server's deriveStatus so the merchant sees `Scheduled` BEFORE
+  // saving rather than after. The server still decides; this is a preview.
+  const previewStatus: BundleStatus = (() => {
+    if (status === 'Draft') return 'Draft';
+    const now = new Date().toISOString();
+    if (scheduleEnd !== null && now >= scheduleEnd) return 'Ended';
+    if (scheduleStart !== null && now < scheduleStart) return 'Scheduled';
+    return 'Active';
+  })();
+
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
     if (operation === 'update') {
@@ -471,6 +523,8 @@ export default function BundleEditor() {
         // the variant appeared to vanish on save.
         parentVariantId,
         status: nextStatus,
+        scheduleStart,
+        scheduleEnd,
       };
     }
     return {
@@ -488,10 +542,16 @@ export default function BundleEditor() {
       // field sends nothing rather than a zero, which would read as free.
       price: priceSentForOperation(operation, priceStr, priceNum),
       status: nextStatus,
+      scheduleStart,
+      scheduleEnd,
     };
   };
 
   const handleSave = async () => {
+    if (scheduleFieldError) {
+      setBannerError(scheduleFieldError);
+      return;
+    }
     setBannerError(null);
     const nextStatus: BundleStatus = isUpdateLocked ? 'Draft' : status;
     const input = buildInput(nextStatus);
@@ -949,48 +1009,134 @@ export default function BundleEditor() {
             )}
           </BlockStack>
 
-          {/* Right rail — operation reference + real Shopify limits */}
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingSm">
-                Operation
-              </Text>
-              <InlineStack gap="150" blockAlign="center">
-                <Badge tone={OP_TONE[operation]}>
-                  {selectedOp.label}
-                </Badge>
-                {operation === 'update' && !updateGate.enabled && <Badge tone="warning">{updateGate.reason}</Badge>}
-              </InlineStack>
-              <Text as="span" variant="bodySm" tone="subdued">
-                {selectedOp.description}
-              </Text>
-              <Box>
-                <OperationPicker
-                  label="Change operation"
-                  variant="plain"
-                  selected={operation}
-                  updateOpEligible={updateOpEligible}
-                  planName={planData?.planName}
-                  onSelect={setOperation}
+          {/* Right rail — schedule + operation reference + real Shopify limits */}
+          <BlockStack gap="400">
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingSm">Schedule</Text>
+                  <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
+                </InlineStack>
+
+                <Checkbox
+                  label="Set a start date"
+                  checked={hasStart}
+                  onChange={setHasStart}
+                  helpText="Leave off to start as soon as the bundle is saved."
                 />
-              </Box>
-              {isEdit && (
+                {hasStart && (
+                  <InlineGrid columns={2} gap="300">
+                    <TextField
+                      label="Start date"
+                      type="date"
+                      value={startDate}
+                      onChange={setStartDate}
+                      autoComplete="off"
+                    />
+                    <TextField
+                      label="Start time"
+                      type="time"
+                      value={startTime}
+                      onChange={setStartTime}
+                      autoComplete="off"
+                    />
+                  </InlineGrid>
+                )}
+                {scheduleStart && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {`Goes live ${formatWindowLabel(scheduleStart)}`}
+                  </Text>
+                )}
+
+                <Checkbox
+                  label="Set an end date"
+                  checked={hasEnd}
+                  onChange={setHasEnd}
+                  helpText="Leave off to run until you switch the bundle off."
+                />
+                {hasEnd && (
+                  <InlineGrid columns={2} gap="300">
+                    <TextField
+                      label="End date"
+                      type="date"
+                      value={endDate}
+                      onChange={setEndDate}
+                      autoComplete="off"
+                    />
+                    <TextField
+                      label="End time"
+                      type="time"
+                      value={endTime}
+                      onChange={setEndTime}
+                      autoComplete="off"
+                    />
+                  </InlineGrid>
+                )}
+                {scheduleEnd && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {`Ends ${formatWindowLabel(scheduleEnd)}`}
+                  </Text>
+                )}
+
+                {scheduleFieldError && (
+                  <Banner tone="critical">{scheduleFieldError}</Banner>
+                )}
+
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {`Times are in your computer’s timezone (${localZoneName()}). The bundle goes live and comes down automatically within 5 minutes of each time.`}
+                </Text>
+
+                {bundle?.scheduleError && (
+                  <Banner tone="warning" title="The last scheduled change did not go through">
+                    <p>{bundle.scheduleError}</p>
+                    <p>It will be retried automatically. Saving the bundle also retries it.</p>
+                  </Banner>
+                )}
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h3" variant="headingSm">
+                  Operation
+                </Text>
+                <InlineStack gap="150" blockAlign="center">
+                  <Badge tone={OP_TONE[operation]}>
+                    {selectedOp.label}
+                  </Badge>
+                  {operation === 'update' && !updateGate.enabled && <Badge tone="warning">{updateGate.reason}</Badge>}
+                </InlineStack>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  {selectedOp.description}
+                </Text>
+                <Box>
+                  <OperationPicker
+                    label="Change operation"
+                    variant="plain"
+                    selected={operation}
+                    updateOpEligible={updateOpEligible}
+                    planName={planData?.planName}
+                    onSelect={setOperation}
+                  />
+                </Box>
+                {isEdit && (
                 <Text as="span" variant="bodySm" tone="subdued">
                   Changing this rewrites what the bundle does at checkout, and clears the
                   metafield the old operation wrote.
                 </Text>
-              )}
-              <Divider />
-              <Text as="span" variant="headingXs" tone="subdued">
-                CART TRANSFORM LIMITS
-              </Text>
-              <List>
-                {CART_TRANSFORM_LIMITS.map((l) => (
-                  <List.Item key={l}>{l}</List.Item>
-                ))}
-              </List>
-            </BlockStack>
-          </Card>
+                )}
+                <Divider />
+                <Text as="span" variant="headingXs" tone="subdued">
+                  CART TRANSFORM LIMITS
+                </Text>
+                <List>
+                  {CART_TRANSFORM_LIMITS.map((l) => (
+                    <List.Item key={l}>{l}</List.Item>
+                  ))}
+                </List>
+              </BlockStack>
+            </Card>
+          </BlockStack>
         </InlineGrid>
       </BlockStack>
     </Page>

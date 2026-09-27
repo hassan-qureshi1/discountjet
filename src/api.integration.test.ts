@@ -41,7 +41,7 @@ import {
   shopRow,
   type InMemoryRepositories,
 } from './db/repositories/inMemory';
-import type { ShopRow, BundleRow, BundleItemRow, DiscountRow } from './db/repositories';
+import type { ShopRow, BundleRow, BundleItemRow, DiscountRow, TemplateRow } from './db/repositories';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
@@ -59,6 +59,7 @@ function seed(rows: {
   bundles?: BundleRow[];
   bundleItems?: BundleItemRow[];
   discounts?: DiscountRow[];
+  templates?: TemplateRow[];
 } = {}): InMemoryRepositories {
   const repos = createInMemoryRepositories(SHOP.id, {
     // Plus by default: most tests here are not about plan gating, and several
@@ -3229,5 +3230,95 @@ describe('bundle scheduling', () => {
     const { bundle } = (await res.json()) as { bundle: { status: string } };
     expect(bundle.status).toBe('Draft');
     expect(metafieldWrites()).toHaveLength(0);
+  });
+});
+
+describe('Template API (protected by requireShop)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const templateRow = (over: Partial<TemplateRow> = {}): TemplateRow => ({
+    id: 'tpl-1',
+    slug: 'pct-off',
+    name: 'Percentage off',
+    description: 'Take a percentage off.',
+    example: '15% off',
+    category: 'Save %',
+    symbol: '%',
+    type: 'tier',
+    defaults: JSON.stringify({ platform: 'BOTH', tiers: [] }),
+    sortOrder: 10,
+    active: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  });
+
+  it('GET /api/templates returns active templates with defaults parsed', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await app.request(
+      '/api/templates',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { templates: Array<{ slug: string; defaults: unknown }> };
+    expect(json.templates).toHaveLength(1);
+    expect(json.templates[0].slug).toBe('pct-off');
+    // Parsed, not a string — the client should not re-parse what we validated.
+    expect(json.templates[0].defaults).toEqual({ platform: 'BOTH', tiers: [] });
+  });
+
+  it('GET /api/templates omits retired templates', async () => {
+    seed({ templates: [templateRow({ slug: 'old', active: 0 })] });
+
+    const res = await app.request(
+      '/api/templates',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    const json = (await res.json()) as { templates: unknown[] };
+    expect(json.templates).toEqual([]);
+  });
+
+  it('GET /api/templates/:slug returns one', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await app.request(
+      '/api/templates/pct-off',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { template: { slug: string; type: string } };
+    expect(json.template).toMatchObject({ slug: 'pct-off', type: 'tier' });
+  });
+
+  // Review Focus #3
+  it('GET /api/templates/:slug 404s a retired template', async () => {
+    seed({ templates: [templateRow({ active: 0 })] });
+
+    const res = await app.request(
+      '/api/templates/pct-off',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /api/templates/:slug 404s an unknown slug', async () => {
+    seed({ templates: [] });
+
+    const res = await app.request(
+      '/api/templates/nope',
+      { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+      env('development'),
+    );
+
+    expect(res.status).toBe(404);
   });
 });

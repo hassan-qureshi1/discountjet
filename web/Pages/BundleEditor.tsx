@@ -432,6 +432,10 @@ export default function BundleEditor() {
     return undefined;
   }
   const save = sumOfItems != null ? Math.max(0, sumOfItems - priceNum) : null;
+  // `expand` treats a blank price as "leave the product's own price alone",
+  // so there is no bundle price to compare the components against and no
+  // saving to claim. `merge` always has a price, so only the expand card reads this.
+  const hasExpandPrice = priceStr.trim() !== '';
   const selectedOp = getOp(operation);
   // Genuinely optional, not guessed: before the plan query resolves (or if it
   // errors) we do not know the shop's currency, and guessing one (e.g. 'USD')
@@ -887,6 +891,24 @@ export default function BundleEditor() {
                         placeholder="Bundle product price"
                         helpText="Must be below the bundle product's own price."
                       />
+                      <BlockStack gap="100">
+                        <Text as="span" variant="bodyMd">
+                          Sum of items
+                        </Text>
+                        <InlineStack gap="200" blockAlign="center">
+                          <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
+                            {showMoney(sumOfItems)}
+                          </Text>
+                          {/* Gated on a non-blank field, unlike `merge`. An expand
+                              bundle's price is optional, and `priceNum` falls back
+                              to 0 when blank — so an ungated badge would announce a
+                              saving equal to the whole sum on a price the merchant
+                              never set. */}
+                          {hasExpandPrice && save != null && save > 0 && (
+                            <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>
+                          )}
+                        </InlineStack>
+                      </BlockStack>
                     </InlineGrid>
                   </BlockStack>
                 </Card>

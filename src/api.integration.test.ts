@@ -191,6 +191,46 @@ const campaignRow = (overrides: Partial<CampaignRow> = {}): CampaignRow => ({
   ...overrides,
 });
 
+/** A complete `campaign_discount` row; override only what the test is about. */
+const campaignDiscountRow = (overrides: Partial<CampaignDiscountRow> = {}): CampaignDiscountRow => ({
+  id: 'cd-1',
+  shopId: SHOP.id,
+  campaignId: 'campaign-1',
+  name: 'Volume Save',
+  type: 'tier',
+  method: 'automatic',
+  code: null,
+  configJson: JSON.stringify({
+    message: 'Buy more save more',
+    applyTo: 'price',
+    discountType: 'percentage',
+    productDiscountSelectionStrategy: 'MAXIMUM',
+    platform: 'BOTH',
+    tiers: [{
+      id: 't1', value: '20', selectorType: 'variant_id',
+      targets: JSON.stringify([{ variantId: '123' }]), min_qty: '3',
+    }],
+  }),
+  configBytes: 10,
+  shopifyGid: null,
+  publishState: 'pending',
+  publishError: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `campaign_bundle` row; override only what the test is about. */
+const campaignBundleRow = (overrides: Partial<CampaignBundleRow> = {}): CampaignBundleRow => ({
+  id: 'cb-1',
+  shopId: SHOP.id,
+  campaignId: 'campaign-1',
+  bundleId: 'bundle-1',
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:00:00.000Z',
+  ...overrides,
+});
+
 // The DB/KV/R2 bindings are mocked above and never read on this path, so we
 // pass only the variable the auth fallback actually checks.
 const env = (environment: 'development' | 'production') => ({ ENVIRONMENT: environment });
@@ -3651,6 +3691,142 @@ describe('POST /api/discounts', () => {
 
 describe('Campaign API', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  const publish = (id: string) => app.request(
+    `/api/campaigns/${id}/publish`,
+    { method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+    env('development'),
+  );
+
+  /** Queues the two `adminGraphql` calls one successful discount create makes. */
+  function mockFunctionsThenCreate() {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountAutomaticAppCreate: {
+          automaticAppDiscount: { discountId: 'gid://shopify/DiscountAutomaticNode/1' },
+          userErrors: [],
+        } },
+      } as never);
+  }
+
+  it('creates each discount with the CAMPAIGN’s window and stamps every bundle', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2099-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+    mockFunctionsThenCreate();
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    // The whole design in one assertion: the discount carries the CAMPAIGN's window.
+    expect(input.startsAt).toBe('2099-01-01T00:00:00.000Z');
+    expect(input.endsAt).toBe('2099-02-01T00:00:00.000Z');
+    // And the bundle carries the same two timestamps, so they fire together.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      scheduleStart: '2099-01-01T00:00:00.000Z',
+      scheduleEnd: '2099-02-01T00:00:00.000Z',
+      campaignId: 'c1',
+    });
+  });
+
+  // Review Focus #2
+  it('stamps an immediate campaign with now, since Shopify requires a startsAt', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate', startsAt: null, endsAt: null })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    mockFunctionsThenCreate();
+
+    await publish('c1');
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(typeof input.startsAt).toBe('string');
+    expect(input.startsAt).not.toBeNull();
+    expect(input.endsAt).toBeUndefined();
+  });
+
+  // Review Focus #1
+  it('409s a second publish, without creating a second set of discounts', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', publishState: 'created' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(409);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #3
+  it('400s a window entirely in the past rather than creating expired discounts', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('400s an empty campaign', async () => {
+    seed({ campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })] });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #5
+  it('records a failed discount and still publishes the rest', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [
+        campaignDiscountRow({ id: 'cd1', campaignId: 'c1' }),
+        campaignDiscountRow({ id: 'cd2', campaignId: 'c1' }),
+      ],
+    });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: null, userErrors: [{ field: ['title'], message: 'Title is invalid' }],
+      } } } as never)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: { discountId: 'gid://shopify/DiscountAutomaticNode/2' }, userErrors: [],
+      } } } as never);
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const states = repos.campaignDiscounts.rows.map((r) => r.publishState).sort();
+    expect(states).toEqual(['created', 'failed']);
+    const failed = repos.campaignDiscounts.rows.find((r) => r.publishState === 'failed');
+    expect(failed?.publishError).toContain('Title is invalid');
+    // Published despite the failure — the created one exists in Shopify and
+    // deleting it to "undo" would be destructive and unasked-for.
+    expect(repos.campaigns.rows[0].status).not.toBe('Draft');
+  });
 
   it('GET /api/campaigns returns campaigns with a DERIVED status', async () => {
     // Stored as Scheduled, but its window opened in the past.

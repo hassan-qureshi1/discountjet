@@ -4,6 +4,8 @@ import type { CampaignRow, CampaignBundleRow, CampaignDiscountRow, Repositories 
 import { deriveCampaignStatus, isCampaignLocking, type CampaignStatus } from '../lib/campaignStatus';
 import { assertWindowOrder, normalizeUtc } from '../lib/scheduleWindow';
 import { getAdapter, type DiscountEngineType } from '../lib/discountEngines/adapters';
+import { createDiscountInShopify } from '../lib/createDiscount';
+import { requireShopDomain } from '../lib/shopDomain';
 
 export const campaignRoutes = new Hono<AppEnv>();
 
@@ -415,4 +417,92 @@ campaignRoutes.delete('/api/campaigns/:id', async (c) => {
   await repos.campaigns.delete(id);
 
   return c.json({ ok: true });
+});
+
+// POST /api/campaigns/:id/publish — stamps the campaign's window onto every
+// member: each discount is created in Shopify with that window as its own
+// startsAt/endsAt, and each bundle gets the same two timestamps in
+// scheduleStart/scheduleEnd for the existing cron to pick up. Both halves
+// carry the SAME two timestamps, so they fire together by construction.
+campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
+  const repos = c.get('repos');
+  const id = c.req.param('id');
+  const now = new Date().toISOString();
+
+  const row = await repos.campaigns.findById(id);
+  if (!row) return c.json({ error: 'Campaign not found' }, 404);
+
+  // Publishing twice would create a second set of live discounts. The status is
+  // derived, so a campaign whose window has simply passed is `Ended` and is
+  // refused here too — republishing is what cloning is for.
+  const status = deriveCampaignStatus(row.status, row.startsAt, row.endsAt, now);
+  if (status !== 'Draft') {
+    return c.json({ error: `A ${status.toLowerCase()} campaign cannot be published again. Clone it to make changes.` }, 409);
+  }
+
+  const discounts = await repos.campaignDiscounts.listForCampaign(id);
+  const bundles = await repos.campaignBundles.listForCampaign(id);
+  if (discounts.length === 0 && bundles.length === 0) {
+    return c.json({ error: 'Add at least one discount or bundle before publishing.' }, 400);
+  }
+
+  // `immediate` stores no window; Shopify requires a startsAt, so publish is
+  // the moment it begins.
+  const startsAt = row.scheduleMode === 'immediate' ? now : row.startsAt;
+  if (!startsAt) return c.json({ error: 'A scheduled campaign needs a start date.' }, 400);
+  const endsAt = row.scheduleMode === 'immediate' ? null : row.endsAt;
+
+  // A window already closed would create discounts Shopify expires immediately
+  // — live-looking rows that can never fire.
+  if (endsAt && endsAt <= now) {
+    return c.json({ error: 'This campaign’s window has already closed. Change the dates before publishing.' }, 400);
+  }
+
+  const shopDomain = requireShopDomain(c);
+  let created = 0;
+  let failed = 0;
+
+  for (const cd of discounts) {
+    // Sequential on purpose: each create is its own Admin call and a failure
+    // must not abandon the rest.
+    // eslint-disable-next-line no-await-in-loop
+    const outcome = await createDiscountInShopify(c.env, shopDomain, {
+      engineType: cd.type,
+      form: JSON.parse(cd.configJson),
+      method: cd.method,
+      title: cd.name,
+      code: cd.code ?? undefined,
+      startsAt,
+      ...(endsAt ? { endsAt } : {}),
+    });
+
+    if (outcome.ok) {
+      created += 1;
+      // eslint-disable-next-line no-await-in-loop
+      await repos.campaignDiscounts.setPublishResult(cd.id, {
+        shopifyGid: outcome.discountId, publishState: 'created', publishError: null,
+      });
+    } else {
+      failed += 1;
+      // eslint-disable-next-line no-await-in-loop
+      await repos.campaignDiscounts.setPublishResult(cd.id, {
+        shopifyGid: null, publishState: 'failed', publishError: outcome.error,
+      });
+    }
+  }
+
+  // Bundles are not written to Shopify here. Stamping the window and the owner
+  // is the whole job: the existing cron activates them on the boundary exactly
+  // as it does a merchant-scheduled bundle.
+  for (const cb of bundles) {
+    // eslint-disable-next-line no-await-in-loop
+    await repos.bundles.update(cb.bundleId, {
+      scheduleStart: startsAt, scheduleEnd: endsAt, campaignId: id, status: 'Scheduled',
+    });
+  }
+
+  const published = deriveCampaignStatus('Scheduled', startsAt, endsAt, now);
+  await repos.campaigns.update(id, { status: published, publishedAt: now, startsAt, endsAt });
+
+  return c.json({ status: published, created, failed });
 });

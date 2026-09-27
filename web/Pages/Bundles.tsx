@@ -6,7 +6,7 @@ import {
 } from '@shopify/polaris';
 import { useActivationQuery, useBundlesQuery, useShopPlanQuery } from '../bundles/hooks';
 import { fetchBundleAdminUrl } from '../bundles/api';
-import { getOp } from '../bundles/ops';
+import { getOp, OP_TONE } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
 import { SymbolTile } from '../components/SymbolTile';
 import { OperationPicker } from '../components/OperationPicker';
@@ -15,12 +15,6 @@ import { STATUS_TONE } from '../bundles/statusTone';
 import { createAuthenticatedFetch } from '../api';
 import { formatMoney, moneyAmount } from '../lib/money';
 import { formatWindowLabel } from '../lib/schedule';
-
-const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
-  merge: 'info',
-  expand: 'magic',
-  update: 'warning',
-};
 
 /** A small row of generic package tiles standing in for a bundle's items (no product names available). */
 function ItemThumbs({ count }: { count: number }) {

@@ -19,7 +19,6 @@ import {
   Divider,
   InlineGrid,
   InlineStack,
-  Link,
   List,
   Modal,
   Page,
@@ -27,7 +26,6 @@ import {
   Tag,
   Text,
   TextField,
-  Thumbnail,
 } from '@shopify/polaris';
 import {
   useBundleQuery, useCreateBundle, useDeleteBundle, useShopPlanQuery, useUpdateBundle,
@@ -37,6 +35,7 @@ import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/a
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
+import { VariantLabel } from '../components/VariantLabel';
 import { PriceCard } from '../components/PriceCard';
 import { VariantSelectCard } from '../components/VariantSelectCard';
 import {
@@ -44,6 +43,7 @@ import {
   gateOperation,
   getOp,
   MAX_EXPAND_QTY,
+  OP_TONE,
 } from '../bundles/ops';
 import { STATUS_TONE } from '../bundles/statusTone';
 import type { BundleOperation, BundleStatus } from '../types/bundles';
@@ -65,12 +65,6 @@ interface DraftItem {
   titleOverride?: string;
 }
 
-const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
-  merge: 'info',
-  expand: 'magic',
-  update: 'warning',
-};
-
 /** `gid://shopify/ProductVariant/123` → `Variant #123`, used when a picked
  * variant's title hasn't been captured yet (e.g. items loaded from an
  * existing bundle, before the merchant re-opens the picker). */
@@ -81,7 +75,6 @@ const shortVariantLabel = (variantId: string) => {
 
 /** Shopify's placeholder title for a product with no variant options — never
  * worth showing next to the product name. */
-const DEFAULT_VARIANT_TITLE = 'Default Title';
 
 /**
  * Renders a picked variant as its real product name (linked into the Shopify
@@ -98,76 +91,6 @@ const DEFAULT_VARIANT_TITLE = 'Default Title';
  * which can't hold a stacked block — it carries an extra-small thumbnail,
  * where the stacked form gets a small one.
  */
-function VariantLabel({
-  resolved,
-  fallback,
-  layout = 'stacked',
-}: {
-  resolved: ResolvedVariant | undefined;
-  fallback: string;
-  layout?: 'stacked' | 'inline';
-}) {
-  if (!resolved) {
-    return <Text as="span" variant="bodyMd">{fallback}</Text>;
-  }
-
-  if (!resolved.exists) {
-    return (
-      <Text as="span" variant="bodyMd" tone="critical">
-        {`${fallback} · no longer exists in Shopify`}
-      </Text>
-    );
-  }
-
-  const productTitle = resolved.productTitle ?? fallback;
-  const variantTitle = resolved.variantTitle && resolved.variantTitle !== DEFAULT_VARIANT_TITLE
-    ? resolved.variantTitle
-    : undefined;
-
-  // No placeholder when a product has no imagery — an empty Thumbnail box is
-  // noisier than just the name. Alt text falls back to the product name so the
-  // image is never announced as an unlabelled graphic.
-  const thumbnail = resolved.imageUrl ? (
-    <Thumbnail
-      source={resolved.imageUrl}
-      alt={resolved.imageAlt ?? productTitle}
-      size={layout === 'inline' ? 'extraSmall' : 'small'}
-    />
-  ) : null;
-
-  // `target="_blank"` matters inside the embedded admin: navigating the app
-  // iframe to an admin URL breaks out of the app rather than opening the page.
-  const link = (
-    <Link url={resolved.adminUrl} target="_blank" removeUnderline>
-      {productTitle}
-    </Link>
-  );
-
-  if (layout === 'inline') {
-    return (
-      <InlineStack gap="100" blockAlign="center">
-        {thumbnail}
-        {link}
-        {variantTitle && (
-          <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
-        )}
-      </InlineStack>
-    );
-  }
-
-  return (
-    <InlineStack gap="200" blockAlign="center" wrap={false}>
-      {thumbnail}
-      <BlockStack gap="050">
-        {link}
-        {variantTitle && (
-          <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
-        )}
-      </BlockStack>
-    </InlineStack>
-  );
-}
-
 /** Feature-detects the App Bridge ResourcePicker without crashing in local
  * dev, where the app isn't embedded and `window.shopify` may be a throwing
  * proxy or may not expose `resourcePicker` at all. */

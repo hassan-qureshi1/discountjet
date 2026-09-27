@@ -4,6 +4,7 @@ import { backfillDiscounts } from './discountSync';
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions } from '../lib/metafieldDefinitions';
 import { createRepositories, createShopRepository } from '../db/repositories';
+import { seedTemplates } from '../lib/templates/catalogue';
 
 // Called from src/routes/auth.ts after Shopify OAuth completes.
 // The starter ships with the minimum: hydrate the shop row, register webhooks.
@@ -111,5 +112,15 @@ export async function onShopInstall(
     await removeCartTransformMetafieldDefinitions(env, shopDomain);
   } catch (err) {
     console.error(`[install] cart-transform metafield definition removal failed for ${shopDomain}:`, err);
+  }
+
+  // 7. Seed the promotion templates (E5). Global content, idempotent by slug,
+  // so every install refreshes copy without duplicating rows. Best-effort: a
+  // failure here must never fail an install — the gallery is empty until the
+  // next one, which is recoverable, unlike a blocked install.
+  try {
+    await seedTemplates(env.DB);
+  } catch (err) {
+    console.error(`[install] template seeding failed for ${shopDomain}:`, err);
   }
 }

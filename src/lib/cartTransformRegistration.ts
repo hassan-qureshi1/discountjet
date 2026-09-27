@@ -94,7 +94,9 @@ async function resolveCartTransformFunctionId(env: Env, shopDomain: string): Pro
  * cart-transform Function, never clobbering a pre-existing transform — a
  * store can have at most one — and never creating a second one alongside a
  * foreign transform. Persists the resolved gid to `shopifyShop.cartTransformGid`
- * so subsequent calls short-circuit without hitting the Admin API at all.
+ * as a cache for readers that just need the id; this function itself always
+ * reconciles against Shopify rather than trusting that cache, so a transform
+ * deleted on Shopify's side is recreated instead of silently never running.
  */
 export async function ensureCartTransform(
   env: Env,
@@ -102,12 +104,17 @@ export async function ensureCartTransform(
   shops: IShopRepository,
   shopId: string,
 ): Promise<{ gid: string; created: boolean } | { conflict: true }> {
-  const shop = await shops.findById(shopId);
-
-  if (shop?.cartTransformGid) {
-    return { gid: shop.cartTransformGid, created: false };
-  }
-
+  // Deliberately NOT short-circuiting on `shopifyShop.cartTransformGid`.
+  //
+  // That column is a cache; Shopify is the source of truth. A transform can
+  // disappear on Shopify's side — the app is uninstalled and reinstalled, or
+  // the function id changes between deploys — and a stored gid then points at
+  // nothing. Trusting it made the app permanently believe it was registered:
+  // the Function was never invoked, the composition metafield sat there unread,
+  // and no error surfaced anywhere, because from the app's side everything had
+  // "succeeded". Reconciling against Shopify every time is what makes this
+  // self-healing. It costs one extra Admin query on a path that runs at install
+  // and on explicit registration, never per request.
   const functionId = await resolveCartTransformFunctionId(env, shopDomain);
 
   const existingRes = await adminGraphql<CartTransformsQueryResult>(shopDomain, env, CART_TRANSFORMS_QUERY);

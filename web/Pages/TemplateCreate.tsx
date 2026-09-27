@@ -32,10 +32,18 @@ export default function TemplateCreate() {
   const [hasEnd, setHasEnd] = useState(false);
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('23:59');
-  // Only the `tier` engine has a form body in Stage 1 (see brief). `form` is
-  // left untyped here on purpose — its shape depends on `template.type`, and
-  // only the tier branch below ever reads or writes it as `TierFormData`.
-  const [form, setForm] = useState<TierFormData | null>(null);
+  // Only the `tier` engine has a form body in Stage 1 (see brief). The state
+  // is a discriminated union on `engine` — not a bare `TierFormData | null` —
+  // so the engine tag and its form data travel together and a mismatched pair
+  // is a compile error rather than a runtime one. Stage 2 widens this by
+  // adding `{ engine: 'bundle'; data: BundleFormData }` and the `special`
+  // equivalent (replacing their `data: null` arms below) once those forms
+  // exist — never by loosening `data`'s type back to `unknown`.
+  type FormState =
+    | { engine: 'tier'; data: TierFormData }
+    | { engine: 'bundle'; data: null }
+    | { engine: 'special'; data: null };
+  const [form, setForm] = useState<FormState | null>(null);
   const [bannerError, setBannerError] = useState<string | null>(null);
 
   // Seed form state from `template.defaults` exactly once — react-query may
@@ -47,7 +55,9 @@ export default function TemplateCreate() {
     if (!template || initializedRef.current) return;
     setTitle(template.name);
     if (template.type === 'tier') {
-      setForm(template.defaults as unknown as TierFormData);
+      setForm({ engine: 'tier', data: template.defaults as unknown as TierFormData });
+    } else {
+      setForm({ engine: template.type, data: null });
     }
     initializedRef.current = true;
   }, [template]);
@@ -103,17 +113,16 @@ export default function TemplateCreate() {
     scheduleFieldError = 'Enter a valid date and time.';
   }
 
-  const configSizeBytes = form ? getMetafieldSizeBytes(form) : 0;
+  const configSizeBytes = form?.engine === 'tier' ? getMetafieldSizeBytes(form.data) : 0;
   const configTooLarge = configSizeBytes > MAX_CONFIG_BYTES;
 
-  const canSave = template.type === 'tier'
-    && Boolean(form)
+  const canSave = form?.engine === 'tier'
     && title.trim().length > 0
     && !scheduleFieldError
     && !configTooLarge;
 
   const handleCreate = async () => {
-    if (!form || !startsAt) return;
+    if (!form || form.engine !== 'tier' || !startsAt) return;
     setBannerError(null);
     try {
       await createMutation.mutateAsync({
@@ -121,7 +130,7 @@ export default function TemplateCreate() {
         title: title.trim(),
         startsAt,
         ...(endsAt ? { endsAt } : {}),
-        form,
+        form: form.data,
       });
       navigate('/discounts');
     } catch (err) {
@@ -166,9 +175,12 @@ export default function TemplateCreate() {
               />
             </Card>
 
-            {template.type === 'tier' && form && (
+            {form?.engine === 'tier' && (
               <>
-                <TierFields value={form} onChange={setForm} />
+                <TierFields
+                  value={form.data}
+                  onChange={(data) => setForm({ engine: 'tier', data })}
+                />
                 <Text as="span" variant="bodySm" tone={configTooLarge ? 'critical' : 'subdued'}>
                   {`${(configSizeBytes / 1024).toFixed(1)}KB of 10KB used`}
                 </Text>

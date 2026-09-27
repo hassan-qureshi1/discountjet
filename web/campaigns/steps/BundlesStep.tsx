@@ -28,6 +28,7 @@ import { useCampaigns, useUpdateCampaign } from '../hooks';
 import { useBundlesQuery, useShopPlanQuery } from '../../bundles/hooks';
 import { gateOperation, OP_TONE } from '../../bundles/ops';
 import { CAMPAIGN_STATUS_TONE } from '../statusTone';
+import { isCampaignLocking } from '../../../src/lib/campaignStatus';
 import { StatusBadge } from '../../components/StatusBadge';
 
 export function BundlesStep({ campaign }: { campaign: Campaign }) {
@@ -94,7 +95,10 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
               const owner = bundle.campaignId && bundle.campaignId !== campaign.id
                 ? allCampaigns.find((c) => c.id === bundle.campaignId)
                 : undefined;
-              const ownerLocks = Boolean(owner) && (owner!.status === 'Scheduled' || owner!.status === 'Published');
+              // `isCampaignLocking` rather than a hand-written status list, so
+              // this can never disagree with the server or with BundleEditor
+              // about which statuses own a bundle.
+              const ownerLocks = Boolean(owner) && isCampaignLocking(owner!.status);
 
               const planGate = gateOperation(bundle.operation, updateOpEligible, planData?.planName);
               const disabled = !canVerifyLocks || ownerLocks || !planGate.enabled || updateMutation.isPending;

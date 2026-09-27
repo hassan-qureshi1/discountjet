@@ -44,6 +44,12 @@ function CampaignDetailRoute() {
   return <CampaignDetail key={id} />;
 }
 
+/** Same keying as the campaign routes above, for the same reason. */
+function BundleEditorRoute() {
+  const { id } = useParams();
+  return <BundleEditor key={id} />;
+}
+
 export default function App() {
   return (
     <BugSnagBoundary>
@@ -53,7 +59,11 @@ export default function App() {
         <Route path="/discounts/:id" element={<DiscountDetail />} />
         <Route path="/bundles" element={<Bundles />} />
         <Route path="/bundles/new" element={<BundleEditor />} />
-        <Route path="/bundles/:id/edit" element={<BundleEditor />} />
+        {/* Keyed by id for the same reason the campaign routes are: without it
+            React reuses the component instance across a back/forward between
+            two bundles, and the editor's campaign schedule lock is computed
+            from whichever bundle's data got there first. */}
+        <Route path="/bundles/:id/edit" element={<BundleEditorRoute />} />
         <Route path="/templates" element={<Templates />} />
         <Route path="/templates/:slug" element={<TemplateCreate />} />
         <Route path="/campaigns" element={<Campaigns />} />

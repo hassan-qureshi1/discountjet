@@ -53,6 +53,9 @@ export class CampaignDiscountRepository
    * Admin API write. The three columns move together — `shopifyGid` and
    * `publishError` are meaningless apart from the `publishState` they belong
    * to — so they are set through one method rather than an open-ended patch.
+   *
+   * Stamps `updatedAt` like every other write path: a row that went
+   * `pending -> failed` is not a row that has never been touched.
    */
   async setPublishResult(
     id: string,
@@ -64,7 +67,7 @@ export class CampaignDiscountRepository
   ): Promise<void> {
     await this.db
       .update(campaignDiscount)
-      .set(result)
+      .set({ ...result, updatedAt: new Date().toISOString() })
       .where(this.scope(eq(campaignDiscount.id, id)));
   }
 

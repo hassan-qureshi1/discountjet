@@ -331,7 +331,8 @@ export const campaignDiscount = sqliteTable(
     // `getAdapter(type).sizeBytes(form)` returns for `configJson` above — not
     // the byte length of `configJson` itself. 10 KB is Shopify's cap on the
     // metafield value, so the meter has to measure that value, not the form.
-    // Nothing writes this column yet; it is only defined here.
+    // Written by `validateDiscountInput` on `PUT /api/campaigns/:id`, and read
+    // by the builder's Summary step to flag a discount over the cap.
     configBytes: integer('config_bytes').notNull(),
 
     shopifyGid: text('shopify_gid'),

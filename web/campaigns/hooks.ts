@@ -87,6 +87,11 @@ export function usePublishCampaign() {
       // Publishing creates discounts (and schedules bundles) — the discounts
       // list must refetch to show them.
       queryClient.invalidateQueries({ queryKey: ['discounts'] });
+      // Publish also rewrites every member bundle's scheduleStart/scheduleEnd,
+      // status and campaignId. That last one is the input to the editor's and
+      // the builder's schedule locks, so a stale bundles cache shows a
+      // just-claimed bundle as free to edit.
+      queryClient.invalidateQueries({ queryKey: ['bundles'] });
     },
   });
 }

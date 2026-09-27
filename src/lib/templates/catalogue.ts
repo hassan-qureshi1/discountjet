@@ -1,4 +1,3 @@
-import { createTemplateRepository } from '../../db/repositories';
 import type { TemplateSeed } from '../../db/repositories';
 import type { TierFormData } from '../discountEngines/tier';
 
@@ -69,8 +68,3 @@ export const TEMPLATE_CATALOGUE: TemplateSeed[] = [
     }),
   },
 ];
-
-/** Idempotent: safe to run on every install. */
-export async function seedTemplates(d1: D1Database): Promise<void> {
-  await createTemplateRepository(d1).upsertMany(TEMPLATE_CATALOGUE);
-}

@@ -57,6 +57,13 @@
       "when": 1790478405708,
       "tag": "0007_lethal_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790483064263,
+      "tag": "0008_seed-promotion-templates",
+      "breakpoints": true
     }
   ]
 }

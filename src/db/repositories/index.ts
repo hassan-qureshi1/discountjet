@@ -4,6 +4,7 @@ import { BundleRepository, type IBundleRepository } from './BundleRepository';
 import { BundleItemRepository, type IBundleItemRepository } from './BundleItemRepository';
 import { DiscountRepository, type IDiscountRepository } from './DiscountRepository';
 import { WebhookEventRepository, type IWebhookEventRepository } from './WebhookEventRepository';
+import { TemplateRepository, type ITemplateRepository } from './TemplateRepository';
 import { DueBundleScanner, type IDueBundleScanner } from './DueBundleScanner';
 
 export { BaseRepository } from './BaseRepository';
@@ -13,6 +14,7 @@ export { BundleRepository } from './BundleRepository';
 export { BundleItemRepository } from './BundleItemRepository';
 export { DiscountRepository } from './DiscountRepository';
 export { WebhookEventRepository } from './WebhookEventRepository';
+export { TemplateRepository } from './TemplateRepository';
 export { DueBundleScanner } from './DueBundleScanner';
 export { NotFoundError } from './types';
 
@@ -39,6 +41,7 @@ export type {
   WebhookEventRow,
   WebhookEventInsert,
 } from './WebhookEventRepository';
+export type { ITemplateRepository, TemplateRow, TemplateSeed } from './TemplateRepository';
 export type { IDueBundleScanner, DueBundle } from './DueBundleScanner';
 
 /**
@@ -57,6 +60,7 @@ export interface Repositories {
   bundleItems: IBundleItemRepository;
   discounts: IDiscountRepository;
   events: IWebhookEventRepository;
+  templates: ITemplateRepository;
 }
 
 /**
@@ -65,6 +69,11 @@ export interface Repositories {
  */
 export function createShopRepository(d1: D1Database): IShopRepository {
   return new ShopRepository(createDb(d1));
+}
+
+/** For the install lifecycle, which seeds templates with no request context. */
+export function createTemplateRepository(d1: D1Database): ITemplateRepository {
+  return new TemplateRepository(createDb(d1));
 }
 
 /**
@@ -96,5 +105,6 @@ export function createRepositoriesFromDb(db: Db, shopId: string): Repositories {
     bundleItems: new BundleItemRepository(db, shopId),
     discounts: new DiscountRepository(db, shopId),
     events: new WebhookEventRepository(db),
+    templates: new TemplateRepository(db),
   };
 }

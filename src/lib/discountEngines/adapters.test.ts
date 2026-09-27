@@ -97,6 +97,18 @@ describe('ENGINE_ADAPTERS', () => {
     expect(adapter.isActionable({ rule_type: 'special_discount', special_discounts: [{}] })).toBe(true);
   });
 
+  // Shopify rejects `discountAutomaticAppCreate` for a `discounts`-API-type
+  // function unless discountClasses is set: "Functions configured to use the
+  // `discounts` API type require the discountClasses field to be set."
+  // PRODUCT for all three: every one of them emits only ProductDiscountsAdd,
+  // and their cart.delivery-options target returns an empty operations list,
+  // so claiming SHIPPING would advertise a discount they never produce.
+  it('declares the discount classes its function actually emits', () => {
+    expect(getAdapter('tier').discountClasses).toEqual(['PRODUCT']);
+    expect(getAdapter('bundle').discountClasses).toEqual(['PRODUCT']);
+    expect(getAdapter('special').discountClasses).toEqual(['PRODUCT']);
+  });
+
   it('rejects an unknown engine type loudly', () => {
     expect(() => getAdapter('nope' as never)).toThrow();
   });

@@ -3396,6 +3396,20 @@ describe('POST /api/discounts', () => {
     expect(JSON.parse(metafields[0].value).rule_type).toBe('tier-discount');
   });
 
+  // Shopify refuses the mutation without this: "Functions configured to use the
+  // `discounts` API type require the discountClasses field to be set." It was
+  // missing, so every create 502'd after passing every local check.
+  it('sends the discount classes the function emits', async () => {
+    seed({ templates: [templateRow()] });
+    mockFunctionsThenCreate();
+
+    await post({ slug: 'pct-off', title: 'Spring sale', startsAt: '2026-10-01T00:00:00.000Z', form: TIER_FORM });
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(input.discountClasses).toEqual(['PRODUCT']);
+  });
+
   it('404s an unknown slug without calling Shopify', async () => {
     seed({ templates: [] });
 

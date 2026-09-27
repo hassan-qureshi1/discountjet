@@ -4,6 +4,9 @@ import * as special from './special';
 
 export type DiscountEngineType = 'tier' | 'bundle' | 'special';
 
+/** Shopify's `DiscountClass` enum, narrowed to what these engines use. */
+export type DiscountClass = 'PRODUCT' | 'ORDER' | 'SHIPPING';
+
 /**
  * The interface the three engine modules already share, named.
  *
@@ -20,6 +23,21 @@ export interface DiscountEngineAdapter<TForm> {
   namespace: string;
   key: 'config';
   maxBytes: number;
+
+  /**
+   * Which discount classes this function's output belongs to.
+   *
+   * Required, not optional: Shopify refuses `discountAutomaticAppCreate` for a
+   * function whose apiType is `discounts` without it — "Functions configured to
+   * use the `discounts` API type require the discountClasses field to be set."
+   *
+   * Derived from what the Rust function actually EMITS, not from the targets it
+   * declares. All three emit only `ProductDiscountsAdd`; their
+   * `cart.delivery-options.discounts.generate.run` target returns an empty
+   * operations list, so declaring SHIPPING would advertise a discount they
+   * never produce.
+   */
+  discountClasses: DiscountClass[];
 
   validate(form: TForm): string[];
   /** Throws on an unserialisable form — see the note in `serialize` below. */
@@ -77,6 +95,7 @@ function hasNumericTiers(built: unknown): boolean {
 const tierAdapter: DiscountEngineAdapter<tier.TierFormData> = {
   type: 'tier',
   functionHandle: 'discount-tier',
+  discountClasses: ['PRODUCT'],
   namespace: tier.METAFIELD_NAMESPACE,
   key: 'config',
   maxBytes: tier.METAFIELD_MAX_SIZE_BYTES,
@@ -91,6 +110,7 @@ const tierAdapter: DiscountEngineAdapter<tier.TierFormData> = {
 const bundleAdapter: DiscountEngineAdapter<bundle.BundleFormData> = {
   type: 'bundle',
   functionHandle: 'discount-bundle',
+  discountClasses: ['PRODUCT'],
   namespace: bundle.METAFIELD_NAMESPACE,
   key: 'config',
   maxBytes: bundle.METAFIELD_MAX_SIZE_BYTES,
@@ -105,6 +125,7 @@ const bundleAdapter: DiscountEngineAdapter<bundle.BundleFormData> = {
 const specialAdapter: DiscountEngineAdapter<special.SpecialFormData> = {
   type: 'special',
   functionHandle: 'discount-special',
+  discountClasses: ['PRODUCT'],
   namespace: special.METAFIELD_NAMESPACE,
   key: 'config',
   maxBytes: special.METAFIELD_MAX_SIZE_BYTES,

@@ -219,6 +219,11 @@ discountRoutes.post('/api/discounts', async (c) => {
     discount: {
       title: body.title,
       functionId,
+      // Required by Shopify for a `discounts`-API-type function — without it
+      // the mutation fails with "Functions configured to use the `discounts`
+      // API type require the discountClasses field to be set." Comes from the
+      // adapter because it is a property of what that function emits.
+      discountClasses: adapter.discountClasses,
       startsAt: body.startsAt,
       ...(body.endsAt ? { endsAt: body.endsAt } : {}),
       ...(body.combinesWith ? { combinesWith: body.combinesWith } : {}),

@@ -16,7 +16,6 @@ import {
   Box,
   Button,
   Card,
-  Checkbox,
   Divider,
   InlineGrid,
   InlineStack,
@@ -37,7 +36,7 @@ import {
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import { OperationPicker } from '../components/OperationPicker';
-import { StatusBadge } from '../components/StatusBadge';
+import { ScheduleCard } from '../components/ScheduleCard';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
@@ -1059,78 +1058,6 @@ export default function BundleEditor() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
-                <Card>
-                  <BlockStack gap="300">
-                    <InlineStack align="space-between" blockAlign="center">
-                      <Text as="h2" variant="headingSm">Schedule</Text>
-                      <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
-                    </InlineStack>
-
-                    <Checkbox
-                      label="Set a start date"
-                      checked={hasStart}
-                      onChange={setHasStart}
-                      helpText="Leave off to start as soon as the bundle is saved."
-                    />
-                    {hasStart && (
-                    <InlineGrid columns={2} gap="300">
-                      <TextField
-                        label="Start date"
-                        type="date"
-                        value={startDate}
-                        onChange={setStartDate}
-                        autoComplete="off"
-                      />
-                      <TextField
-                        label="Start time"
-                        type="time"
-                        value={startTime}
-                        onChange={setStartTime}
-                        autoComplete="off"
-                      />
-                    </InlineGrid>
-                    )}
-                    <Checkbox
-                      label="Set an end date"
-                      checked={hasEnd}
-                      onChange={setHasEnd}
-                      helpText="Leave off to run until you switch the bundle off."
-                    />
-                    {hasEnd && (
-                    <InlineGrid columns={2} gap="300">
-                      <TextField
-                        label="End date"
-                        type="date"
-                        value={endDate}
-                        onChange={setEndDate}
-                        autoComplete="off"
-                      />
-                      <TextField
-                        label="End time"
-                        type="time"
-                        value={endTime}
-                        onChange={setEndTime}
-                        autoComplete="off"
-                      />
-                    </InlineGrid>
-                    )}
-                    {scheduleFieldError && (
-                    <Banner tone="critical">{scheduleFieldError}</Banner>
-                    )}
-
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Times are in your own timezone. The bundle goes live and comes down
-                      automatically within 5 minutes of each time.
-                    </Text>
-
-                    {bundle?.scheduleError && (
-                    <Banner tone="warning" title="The last scheduled change did not go through">
-                      <p>{bundle.scheduleError}</p>
-                      <p>It will be retried automatically. Saving the bundle also retries it.</p>
-                    </Banner>
-                    )}
-                  </BlockStack>
-                </Card>
               </>
             )}
 
@@ -1227,7 +1154,29 @@ export default function BundleEditor() {
         </InlineGrid>
 
         {/* Full width, at the end of the page: the schedule is read after the
-            merchant has decided what the bundle actually IS. */}
+            merchant has decided what the bundle actually IS. Rendered ONCE here,
+            outside the per-operation branches, so it cannot go missing for an
+            operation the way it did when this was hand-placed markup. */}
+        <ScheduleCard
+          value={{
+            hasStart, startDate, startTime, hasEnd, endDate, endTime,
+          }}
+          onChange={(w) => {
+            setHasStart(w.hasStart);
+            setStartDate(w.startDate);
+            setStartTime(w.startTime);
+            setHasEnd(w.hasEnd);
+            setEndDate(w.endDate);
+            setEndTime(w.endTime);
+          }}
+          status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
+          error={scheduleFieldError}
+          lastFailure={bundle?.scheduleError ?? null}
+          startHelpText="Leave off to start as soon as the bundle is saved."
+          endHelpText="Leave off to run until you switch the bundle off."
+          footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
+          lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
+        />
 
       </BlockStack>
     </Page>

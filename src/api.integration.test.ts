@@ -3861,6 +3861,30 @@ describe('Campaign API', () => {
     expect(repos.campaigns.rows[0].status).not.toBe('Draft');
   });
 
+  // Fix round 2/5: a D1 write failing AFTER Shopify already confirmed the
+  // create must not reclassify the row as failed — the discount exists in
+  // Shopify either way, and miscounting it could send `created` back to 0
+  // and trip the revert-to-Draft branch with a live discount outstanding.
+  it('does not reclassify a discount as failed when the bookkeeping write throws after a real create', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    mockFunctionsThenCreate();
+    vi.spyOn(repos.campaignDiscounts, 'setPublishResult')
+      .mockRejectedValueOnce(new Error('D1 write failed'));
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.created).toBe(1);
+    expect(body.failed).toBe(0);
+    // Not reverted to Draft — a live discount already exists in Shopify, and
+    // a retry here must stay refused by the 409 gate rather than duplicate it.
+    expect(repos.campaigns.rows[0].status).not.toBe('Draft');
+  });
+
   // A ruling on top of the brief: when NOTHING was created, there is no live
   // discount in Shopify a retry could duplicate, so the campaign goes back to
   // Draft rather than being stranded "published" with nothing published.
@@ -3908,9 +3932,18 @@ describe('Campaign API', () => {
     const res = await publish('c1');
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; created: number; failed: number };
+    const body = (await res.json()) as {
+      status: string; created: number; failed: number;
+      bundleFailures: Array<{ bundleId: string; error: string }>;
+    };
     expect(body.created).toBe(1);
-    expect(body.failed).toBe(1); // the stolen bundle, not a discount
+    // Not folded into the opaque discount `failed` count — a stolen bundle
+    // is a different kind of problem and is named separately so the UI can
+    // say WHICH bundle and WHY.
+    expect(body.failed).toBe(0);
+    expect(body.bundleFailures).toHaveLength(1);
+    expect(body.bundleFailures[0].bundleId).toBe('b1');
+    expect(body.bundleFailures[0].error).toMatch(/already owned/i);
     // The bundle keeps its original owner — nothing stole it.
     expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'live' });
   });

@@ -461,6 +461,11 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
   const shopDomain = requireShopDomain(c);
   let created = 0;
   let failed = 0;
+  // Bundle problems are reported separately from discount `failed` — a
+  // stolen/missing bundle leaves nothing on any row a UI could read back
+  // (unlike a discount, which always gets a `publishError` on its own row),
+  // so each one is named here instead of folding it into one opaque count.
+  const bundleFailures: Array<{ bundleId: string; error: string }> = [];
 
   for (const cd of discounts) {
     // Sequential on purpose: each create is its own Admin call and a failure
@@ -483,25 +488,47 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
       });
 
       if (outcome.ok) {
+        // Counted the moment Shopify confirms the create — nothing that
+        // happens afterwards may undo this. The discount now exists whether
+        // or not the bookkeeping write below succeeds.
         created += 1;
-        // eslint-disable-next-line no-await-in-loop
-        await repos.campaignDiscounts.setPublishResult(cd.id, {
-          shopifyGid: outcome.discountId, publishState: 'created', publishError: null,
-        });
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await repos.campaignDiscounts.setPublishResult(cd.id, {
+            shopifyGid: outcome.discountId, publishState: 'created', publishError: null,
+          });
+        } catch {
+          // The discount is live in Shopify regardless of whether this
+          // bookkeeping write landed. There is nothing more this request can
+          // do about a D1 failure here, and — critically — this must NOT
+          // reclassify the row as failed: doing so could send `created` back
+          // to 0 and trip the revert-to-Draft branch below with a live
+          // discount outstanding, which is the exact duplication hazard this
+          // whole route exists to prevent, just wearing a different hat.
+        }
       } else {
         failed += 1;
-        // eslint-disable-next-line no-await-in-loop
-        await repos.campaignDiscounts.setPublishResult(cd.id, {
-          shopifyGid: null, publishState: 'failed', publishError: outcome.error,
-        });
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await repos.campaignDiscounts.setPublishResult(cd.id, {
+            shopifyGid: null, publishState: 'failed', publishError: outcome.error,
+          });
+        } catch {
+          // Best-effort bookkeeping; nothing was created in Shopify for this
+          // row, so there is no duplication risk in leaving it un-recorded.
+        }
       }
     } catch (err) {
       failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-await-in-loop
-      await repos.campaignDiscounts.setPublishResult(cd.id, {
-        shopifyGid: null, publishState: 'failed', publishError: message,
-      });
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await repos.campaignDiscounts.setPublishResult(cd.id, {
+          shopifyGid: null, publishState: 'failed', publishError: message,
+        });
+      } catch {
+        // Same as above — best-effort only.
+      }
     }
   }
 
@@ -523,8 +550,9 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
       await repos.bundles.update(cb.bundleId, {
         scheduleStart: startsAt, scheduleEnd: endsAt, campaignId: id, status: 'Scheduled',
       });
-    } catch {
-      failed += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      bundleFailures.push({ bundleId: cb.bundleId, error: message });
     }
   }
 
@@ -533,7 +561,9 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
   // Draft rather than being stranded as "published" with nothing published,
   // whose only escape would be cloning. The moment anything HAS been created,
   // the invariant above takes over: the status write must land regardless of
-  // any other failure, so this branch only fires when nothing succeeded.
+  // any other failure, so this branch only fires when nothing succeeded. Only
+  // `failed` (discounts) drives this — a skipped bundle carries no Shopify
+  // duplication risk and is reported through `bundleFailures` instead.
   const fullyFailed = created === 0 && failed > 0;
   const published = fullyFailed ? 'Draft' : deriveCampaignStatus('Scheduled', startsAt, endsAt, now);
   await repos.campaigns.update(
@@ -543,5 +573,5 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
       : { status: published, publishedAt: now, startsAt, endsAt },
   );
 
-  return c.json({ status: published, created, failed });
+  return c.json({ status: published, created, failed, bundleFailures });
 });

@@ -6,18 +6,15 @@ import {
 } from '@shopify/polaris';
 import { useActivationQuery, useBundlesQuery, useShopPlanQuery } from '../bundles/hooks';
 import { fetchBundleAdminUrl } from '../bundles/api';
-import { getOp } from '../bundles/ops';
+import { getOp, OP_TONE } from '../bundles/ops';
 import type { Bundle, BundleOperation } from '../types/bundles';
 import { SymbolTile } from '../components/SymbolTile';
 import { OperationPicker } from '../components/OperationPicker';
+import { StatusBadge } from '../components/StatusBadge';
+import { STATUS_TONE } from '../bundles/statusTone';
 import { createAuthenticatedFetch } from '../api';
 import { formatMoney, moneyAmount } from '../lib/money';
-
-const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
-  merge: 'info',
-  expand: 'magic',
-  update: 'warning',
-};
+import { formatWindowLabel } from '../lib/schedule';
 
 /** A small row of generic package tiles standing in for a bundle's items (no product names available). */
 function ItemThumbs({ count }: { count: number }) {
@@ -157,6 +154,8 @@ export default function Bundles() {
                 { title: 'Bundle' },
                 { title: 'Items' },
                 { title: 'Operation' },
+                { title: 'Status' },
+                { title: 'Schedule' },
                 { title: 'Price', alignment: 'end' },
                 { title: 'Save', alignment: 'end' },
                 { title: 'In campaigns', alignment: 'end' },
@@ -193,6 +192,27 @@ export default function Bundles() {
                     </IndexTable.Cell>
                     <IndexTable.Cell>
                       <Badge tone={OP_TONE[b.operation]}>{getOp(b.operation).label}</Badge>
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      <StatusBadge label={b.status} tone={STATUS_TONE[b.status]} />
+                    </IndexTable.Cell>
+                    <IndexTable.Cell>
+                      {b.scheduleStart || b.scheduleEnd ? (
+                        <BlockStack gap="050">
+                          {b.scheduleStart && (
+                            <Text as="span" variant="bodySm">
+                              {`From ${formatWindowLabel(b.scheduleStart)}`}
+                            </Text>
+                          )}
+                          {b.scheduleEnd && (
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              {`Until ${formatWindowLabel(b.scheduleEnd)}`}
+                            </Text>
+                          )}
+                        </BlockStack>
+                      ) : (
+                        <Text as="span" tone="subdued">Always on</Text>
+                      )}
                     </IndexTable.Cell>
                     <IndexTable.Cell>
                       <Text as="span" numeric alignment="end" fontWeight="semibold">

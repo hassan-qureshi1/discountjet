@@ -2,7 +2,7 @@
 
 client_id = "905bb0eed902d4df978cc4e0705dffbf"
 name = "DiscountJet"
-application_url = "https://bone-daisy-surrounded-voting.trycloudflare.com/shopify/install"
+application_url = "https://completing-allocated-material-arrangements.trycloudflare.com/shopify/install"
 embedded = true
 
 [build]
@@ -17,14 +17,13 @@ api_version = "2026-10"
   "discounts/create",
   "discounts/update",
   "discounts/delete"
-]
-  uri = "https://bone-daisy-surrounded-voting.trycloudflare.com/shopify/webhooks"
+  ]
+  uri = "https://completing-allocated-material-arrangements.trycloudflare.com/shopify/webhooks"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "read_cart_transforms,read_discounts,read_orders,read_price_rules,read_products,write_cart_transforms,write_discounts,write_price_rules,write_products"
 
 [auth]
-redirect_urls = [
-  "https://bone-daisy-surrounded-voting.trycloudflare.com/shopify/callback"
-]
+redirect_urls = [ "https://completing-allocated-material-arrangements.trycloudflare.com/shopify/callback" ]
+

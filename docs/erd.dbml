@@ -87,6 +87,7 @@ Table bundle {
 
   schedule_start text
   schedule_end text
+  schedule_error text [note: 'Last failed schedule transition; cleared on success']
   status text [not null, note: 'Active | Scheduled | Ended | Draft']
   block_on_failure integer [not null, default: 0, note: '0/1']
 
@@ -95,6 +96,8 @@ Table bundle {
 
   indexes {
     shop_id [name: 'bundle_shop_id_idx']
+    (status, schedule_start) [name: 'bundle_due_start_idx']
+    (status, schedule_end) [name: 'bundle_due_end_idx']
   }
 
   Note: 'E6 bundles. This table is the source of truth; items are materialized into a Cart Transform Function config and a variant metafield.'

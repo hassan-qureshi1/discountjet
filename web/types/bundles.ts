@@ -28,6 +28,9 @@ export interface Bundle {
   price: MoneyV2 | null;
   sumOfItems: MoneyV2 | null;
   status: BundleStatus;
+  scheduleStart: string | null;
+  scheduleEnd: string | null;
+  scheduleError: string | null;
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
   updated: string;

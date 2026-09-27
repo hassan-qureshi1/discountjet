@@ -88,3 +88,14 @@ export const CART_TRANSFORM_LIMITS = [
 ];
 
 export const MAX_EXPAND_QTY = 2000;
+
+/**
+ * Badge tone per operation. Lives here rather than in a page because the
+ * bundles list and the bundle editor had byte-identical copies, which is one
+ * rename away from the two screens disagreeing about what `expand` looks like.
+ */
+export const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
+  merge: 'info',
+  expand: 'magic',
+  update: 'warning',
+};

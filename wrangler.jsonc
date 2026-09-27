@@ -56,7 +56,11 @@
       "head_sampling_rate": 1,
       "invocation_logs": true
     }
-  }
+  },
+
+  // Bundle scheduling — one pass every 5 minutes brings due bundles live and
+  // takes expired ones down. See src/lifecycle/bundleSchedule.ts.
+  "triggers": { "crons": ["*/5 * * * *"] }
 
   // ─── OPTIONAL add-ons ────────────────────────────────────────────────────
   // Queues (background processing) — wrangler queues create example-queue
@@ -70,7 +74,4 @@
   //   "bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
   // },
   // "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RateLimiter"] }],
-  //
-  // Cron triggers
-  // "triggers": { "crons": ["0 * * * *"] }
 }

@@ -7,6 +7,7 @@ import { variantRoutes } from './routes/variants';
 import { shopRoutes } from './routes/shop';
 import { previewRoutes } from './routes/preview';
 import { webhookRoutes } from './lifecycle/webhooks';
+import { createBundleScheduleDeps, runBundleSchedule } from './lifecycle/bundleSchedule';
 import type { Env } from './types/env';
 import type { AppEnv } from './types/env.d';
 import { requireShop } from './middleware/requireShop';
@@ -60,4 +61,20 @@ export { app };
 
 export default {
   fetch: app.fetch,
-};
+
+  /**
+   * Bundle scheduling, every 5 minutes (wrangler.jsonc `triggers.crons`).
+   *
+   * `waitUntil` so a slow Admin call cannot have the pass torn down mid-write,
+   * and `controller.scheduledTime` rather than `Date.now()` so every bundle in
+   * one pass is judged against the same instant.
+   */
+  scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    const now = new Date(controller.scheduledTime).toISOString();
+    ctx.waitUntil(
+      runBundleSchedule(env, now, createBundleScheduleDeps(env)).catch((err) => {
+        console.error('[scheduled] bundle schedule pass failed:', err);
+      }),
+    );
+  },
+} satisfies ExportedHandler<Env>;

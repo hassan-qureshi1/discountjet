@@ -33,6 +33,8 @@ export interface BundleInput {
   parentVariantId?: string;
   price?: number;
   status?: BundleStatus;
+  scheduleStart?: string | null;
+  scheduleEnd?: string | null;
 }
 
 export interface BundlesResponse {

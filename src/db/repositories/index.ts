@@ -4,6 +4,7 @@ import { BundleRepository, type IBundleRepository } from './BundleRepository';
 import { BundleItemRepository, type IBundleItemRepository } from './BundleItemRepository';
 import { DiscountRepository, type IDiscountRepository } from './DiscountRepository';
 import { WebhookEventRepository, type IWebhookEventRepository } from './WebhookEventRepository';
+import { DueBundleScanner, type IDueBundleScanner } from './DueBundleScanner';
 
 export { BaseRepository } from './BaseRepository';
 export { ShopScopedRepository } from './ShopScopedRepository';
@@ -12,6 +13,7 @@ export { BundleRepository } from './BundleRepository';
 export { BundleItemRepository } from './BundleItemRepository';
 export { DiscountRepository } from './DiscountRepository';
 export { WebhookEventRepository } from './WebhookEventRepository';
+export { DueBundleScanner } from './DueBundleScanner';
 export { NotFoundError } from './types';
 
 export type { IRepository, IShopScopedRepository, NewRow } from './types';
@@ -37,6 +39,7 @@ export type {
   WebhookEventRow,
   WebhookEventInsert,
 } from './WebhookEventRepository';
+export type { IDueBundleScanner, DueBundle } from './DueBundleScanner';
 
 /**
  * Every repository available to a request, already bound to the caller's shop.
@@ -62,6 +65,14 @@ export interface Repositories {
  */
 export function createShopRepository(d1: D1Database): IShopRepository {
   return new ShopRepository(createDb(d1));
+}
+
+/**
+ * For the scheduling cron only. Deliberately NOT part of `Repositories`: it is
+ * unscoped, and nothing built per-request has any business holding it.
+ */
+export function createDueBundleScanner(d1: D1Database): IDueBundleScanner {
+  return new DueBundleScanner(createDb(d1));
 }
 
 /**

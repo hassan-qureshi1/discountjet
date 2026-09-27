@@ -19,7 +19,6 @@ import {
   Divider,
   InlineGrid,
   InlineStack,
-  Link,
   List,
   Modal,
   Page,
@@ -27,7 +26,6 @@ import {
   Tag,
   Text,
   TextField,
-  Thumbnail,
 } from '@shopify/polaris';
 import {
   useBundleQuery, useCreateBundle, useDeleteBundle, useShopPlanQuery, useUpdateBundle,
@@ -36,15 +34,24 @@ import {
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import { OperationPicker } from '../components/OperationPicker';
+import { ScheduleCard } from '../components/ScheduleCard';
+import { VariantLabel } from '../components/VariantLabel';
+import { PriceCard } from '../components/PriceCard';
+import { VariantSelectCard } from '../components/VariantSelectCard';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
   getOp,
   MAX_EXPAND_QTY,
+  OP_TONE,
 } from '../bundles/ops';
+import { STATUS_TONE } from '../bundles/statusTone';
 import type { BundleOperation, BundleStatus } from '../types/bundles';
 import { formatMoney, moneyAmount, currencySymbol } from '../lib/money';
 import { sumItemPrices } from '../bundles/preview';
+import {
+  fromUtcIso, toUtcIso,
+} from '../lib/schedule';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
  *  `price` is a plain number for the live preview only — the server re-resolves
@@ -58,12 +65,6 @@ interface DraftItem {
   titleOverride?: string;
 }
 
-const OP_TONE: Record<BundleOperation, 'info' | 'magic' | 'warning'> = {
-  merge: 'info',
-  expand: 'magic',
-  update: 'warning',
-};
-
 /** `gid://shopify/ProductVariant/123` → `Variant #123`, used when a picked
  * variant's title hasn't been captured yet (e.g. items loaded from an
  * existing bundle, before the merchant re-opens the picker). */
@@ -74,7 +75,6 @@ const shortVariantLabel = (variantId: string) => {
 
 /** Shopify's placeholder title for a product with no variant options — never
  * worth showing next to the product name. */
-const DEFAULT_VARIANT_TITLE = 'Default Title';
 
 /**
  * Renders a picked variant as its real product name (linked into the Shopify
@@ -91,76 +91,6 @@ const DEFAULT_VARIANT_TITLE = 'Default Title';
  * which can't hold a stacked block — it carries an extra-small thumbnail,
  * where the stacked form gets a small one.
  */
-function VariantLabel({
-  resolved,
-  fallback,
-  layout = 'stacked',
-}: {
-  resolved: ResolvedVariant | undefined;
-  fallback: string;
-  layout?: 'stacked' | 'inline';
-}) {
-  if (!resolved) {
-    return <Text as="span" variant="bodyMd">{fallback}</Text>;
-  }
-
-  if (!resolved.exists) {
-    return (
-      <Text as="span" variant="bodyMd" tone="critical">
-        {`${fallback} · no longer exists in Shopify`}
-      </Text>
-    );
-  }
-
-  const productTitle = resolved.productTitle ?? fallback;
-  const variantTitle = resolved.variantTitle && resolved.variantTitle !== DEFAULT_VARIANT_TITLE
-    ? resolved.variantTitle
-    : undefined;
-
-  // No placeholder when a product has no imagery — an empty Thumbnail box is
-  // noisier than just the name. Alt text falls back to the product name so the
-  // image is never announced as an unlabelled graphic.
-  const thumbnail = resolved.imageUrl ? (
-    <Thumbnail
-      source={resolved.imageUrl}
-      alt={resolved.imageAlt ?? productTitle}
-      size={layout === 'inline' ? 'extraSmall' : 'small'}
-    />
-  ) : null;
-
-  // `target="_blank"` matters inside the embedded admin: navigating the app
-  // iframe to an admin URL breaks out of the app rather than opening the page.
-  const link = (
-    <Link url={resolved.adminUrl} target="_blank" removeUnderline>
-      {productTitle}
-    </Link>
-  );
-
-  if (layout === 'inline') {
-    return (
-      <InlineStack gap="100" blockAlign="center">
-        {thumbnail}
-        {link}
-        {variantTitle && (
-          <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
-        )}
-      </InlineStack>
-    );
-  }
-
-  return (
-    <InlineStack gap="200" blockAlign="center" wrap={false}>
-      {thumbnail}
-      <BlockStack gap="050">
-        {link}
-        {variantTitle && (
-          <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
-        )}
-      </BlockStack>
-    </InlineStack>
-  );
-}
-
 /** Feature-detects the App Bridge ResourcePicker without crashing in local
  * dev, where the app isn't embedded and `window.shopify` may be a throwing
  * proxy or may not expose `resourcePicker` at all. */
@@ -202,6 +132,15 @@ export default function BundleEditor() {
   const initialOperation: BundleOperation = isOperation(requestedOperation) ? requestedOperation : 'merge';
   const [operation, setOperation] = useState<BundleOperation>(initialOperation);
   const [status, setStatus] = useState<BundleStatus>('Active');
+  // The window is held as the merchant typed it — local date + local time —
+  // and converted to UTC only on save. Holding UTC here would mean converting
+  // on every keystroke.
+  const [hasStart, setHasStart] = useState(false);
+  const [hasEnd, setHasEnd] = useState(false);
+  const [startDate, setStartDate] = useState('');
+  const [startTime, setStartTime] = useState('09:00');
+  const [endDate, setEndDate] = useState('');
+  const [endTime, setEndTime] = useState('23:59');
   // Blank, not '0'. For expand a price is optional and blank means "leave the
   // bundle product's price alone" — defaulting to 0 would send a real zero and
   // price the bundle free. Merge rejects a blank price with its own message.
@@ -224,6 +163,18 @@ export default function BundleEditor() {
     setName(bundle.name);
     setOperation(bundle.operation);
     setStatus(bundle.status);
+    if (bundle.scheduleStart) {
+      const { date, time } = fromUtcIso(bundle.scheduleStart);
+      setHasStart(true);
+      setStartDate(date);
+      setStartTime(time);
+    }
+    if (bundle.scheduleEnd) {
+      const { date, time } = fromUtcIso(bundle.scheduleEnd);
+      setHasEnd(true);
+      setEndDate(date);
+      setEndTime(time);
+    }
     const bundlePrice = moneyAmount(bundle.price);
     setPriceStr(bundlePrice != null ? String(bundlePrice) : '');
     setParentVariantId(bundle.parentVariantId);
@@ -405,6 +356,10 @@ export default function BundleEditor() {
     return undefined;
   }
   const save = sumOfItems != null ? Math.max(0, sumOfItems - priceNum) : null;
+  // `expand` treats a blank price as "leave the product's own price alone",
+  // so there is no bundle price to compare the components against and no
+  // saving to claim. `merge` always has a price, so only the expand card reads this.
+  const hasExpandPrice = priceStr.trim() !== '';
   const selectedOp = getOp(operation);
   // Genuinely optional, not guessed: before the plan query resolves (or if it
   // errors) we do not know the shop's currency, and guessing one (e.g. 'USD')
@@ -450,6 +405,41 @@ export default function BundleEditor() {
   // has no way to tell *why* Save stopped working.
   const needsItemsToSave = operation !== 'update' && items.length === 0;
 
+  // Converted once, and reused by both the preview and the save — so what the
+  // merchant is shown is exactly what gets sent.
+  let scheduleStart: string | null = null;
+  let scheduleEnd: string | null = null;
+  let scheduleFieldError: string | null = null;
+  try {
+    // A ticked checkbox with a blank date is NOT "unset" — sending `null` for
+    // that bound means no bound at all, i.e. permanently live. Block the save
+    // and tell the merchant, rather than silently making the bundle live now
+    // when they believe they scheduled it for later.
+    if (hasStart && !startDate) {
+      scheduleFieldError = 'Enter a start date, or clear "Set a start date" to leave it unscheduled.';
+    } else if (hasEnd && !endDate) {
+      scheduleFieldError = 'Enter an end date, or clear "Set an end date" to leave it unscheduled.';
+    } else {
+      if (hasStart && startDate) scheduleStart = toUtcIso(startDate, startTime);
+      if (hasEnd && endDate) scheduleEnd = toUtcIso(endDate, endTime);
+      if (scheduleStart && scheduleEnd && scheduleStart >= scheduleEnd) {
+        scheduleFieldError = 'The start must be before the end.';
+      }
+    }
+  } catch {
+    scheduleFieldError = 'Enter a valid date and time.';
+  }
+
+  // Mirrors the server's deriveStatus so the merchant sees `Scheduled` BEFORE
+  // saving rather than after. The server still decides; this is a preview.
+  const previewStatus: BundleStatus = (() => {
+    if (status === 'Draft') return 'Draft';
+    const now = new Date().toISOString();
+    if (scheduleEnd !== null && now >= scheduleEnd) return 'Ended';
+    if (scheduleStart !== null && now < scheduleStart) return 'Scheduled';
+    return 'Active';
+  })();
+
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
     if (operation === 'update') {
@@ -471,6 +461,8 @@ export default function BundleEditor() {
         // the variant appeared to vanish on save.
         parentVariantId,
         status: nextStatus,
+        scheduleStart,
+        scheduleEnd,
       };
     }
     return {
@@ -488,12 +480,27 @@ export default function BundleEditor() {
       // field sends nothing rather than a zero, which would read as free.
       price: priceSentForOperation(operation, priceStr, priceNum),
       status: nextStatus,
+      scheduleStart,
+      scheduleEnd,
     };
   };
 
-  const handleSave = async () => {
+  /**
+   * `statusOverride` is how "Save as draft" works on a CREATE. An existing
+   * bundle has Activate/Deactivate in the More actions menu, but a new one has
+   * no row to act on yet — without this, every bundle a merchant creates goes
+   * live the moment they save it, with no way to stage one first.
+   */
+  const handleSave = async (statusOverride?: BundleStatus) => {
+    if (scheduleFieldError) {
+      setBannerError(scheduleFieldError);
+      return;
+    }
     setBannerError(null);
-    const nextStatus: BundleStatus = isUpdateLocked ? 'Draft' : status;
+    // The plan lock still wins: an update-operation bundle the shop can't run
+    // is a draft whatever the merchant clicked.
+    const chosen: BundleStatus = statusOverride ?? status;
+    const nextStatus: BundleStatus = isUpdateLocked ? 'Draft' : chosen;
     const input = buildInput(nextStatus);
     try {
       if (isEdit && id) {
@@ -504,6 +511,29 @@ export default function BundleEditor() {
       navigate('/bundles');
     } catch (err) {
       setBannerError(err instanceof Error ? err.message : 'Failed to save bundle.');
+    }
+  };
+
+  /**
+   * Activate / Deactivate from the More actions menu.
+   *
+   * Saves IMMEDIATELY, the way Shopify's own discount page behaves — a merchant
+   * who deactivates a live bundle expects it gone from checkout, not staged
+   * behind a Save they might never press. `Draft` IS the deactivated state: the
+   * route honours it as the manual off-switch and clears the transport, and the
+   * scheduling cron skips the row entirely.
+   *
+   * Only `status` goes on the wire, so unsaved edits elsewhere on the form are
+   * deliberately NOT swept along with it.
+   */
+  const handleSetStatus = async (next: 'Active' | 'Draft') => {
+    if (!id) return;
+    setBannerError(null);
+    try {
+      await updateMutation.mutateAsync({ id, input: { status: next } });
+      setStatus(next);
+    } catch (err) {
+      setBannerError(err instanceof Error ? err.message : 'Failed to update the bundle status.');
     }
   };
 
@@ -522,6 +552,7 @@ export default function BundleEditor() {
     }
   };
 
+  const busy = isSaving || deleteMutation.isPending;
   const mutationError = createMutation.error ?? updateMutation.error ?? deleteMutation.error;
 
   let primaryActionLabel: string;
@@ -536,22 +567,55 @@ export default function BundleEditor() {
       subtitle="Define what the bundle is. Scheduling happens later in a bundle campaign."
       primaryAction={{
         content: primaryActionLabel,
-        onAction: handleSave,
+        onAction: () => handleSave(),
         loading: isSaving,
         disabled: !canSave || isSaving,
       }}
       secondaryActions={
-        isEdit
-          ? [
-            { content: 'Discard', onAction: () => navigate('/bundles') },
+        isEdit || isUpdateLocked
+          // Editing? Deactivate lives in More actions. Plan-locked? The primary
+          // action is already "Save draft", so a second draft button would be
+          // two buttons doing one thing.
+          ? [{ content: 'Discard', onAction: () => navigate('/bundles') }]
+          : [
             {
-              content: 'Delete bundle',
-              destructive: true,
-              onAction: () => setConfirmingDelete(true),
-              disabled: isSaving || deleteMutation.isPending,
+              content: 'Save as draft',
+              onAction: () => handleSave('Draft'),
+              disabled: !canSave || isSaving,
             },
+            { content: 'Discard', onAction: () => navigate('/bundles') },
           ]
-          : [{ content: 'Discard', onAction: () => navigate('/bundles') }]
+      }
+      actionGroups={
+        isEdit
+          ? [{
+            title: 'More actions',
+            actions: [
+              // One entry, not two: the label states what the click will DO,
+              // which is how Shopify's own pages read. `Draft` is deactivated.
+              status === 'Draft'
+                ? {
+                  content: 'Activate',
+                  onAction: () => handleSetStatus('Active'),
+                  // An update-operation bundle the shop's plan can't run is
+                  // forced to Draft on save anyway — offering Activate would
+                  // promise something the server will refuse.
+                  disabled: busy || isUpdateLocked,
+                }
+                : {
+                  content: 'Deactivate',
+                  onAction: () => handleSetStatus('Draft'),
+                  disabled: busy,
+                },
+              {
+                content: 'Delete bundle',
+                destructive: true,
+                onAction: () => setConfirmingDelete(true),
+                disabled: busy,
+              },
+            ],
+          }]
+          : undefined
       }
     >
       <Modal
@@ -690,37 +754,20 @@ export default function BundleEditor() {
             {/* ── MERGE ── */}
             {operation === 'merge' && (
               <>
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Bundle line variant
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      The variant that represents the merged line at checkout.
-                    </Text>
-                    <InlineStack gap="200" blockAlign="center">
-                      {parentVariantId ? (
-                        <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
-                          <VariantLabel
-                            resolved={resolvedVariants.get(parentVariantId)}
-                            fallback={parentTitle ?? titleFor(parentVariantId)}
-                            layout="inline"
-                          />
-                        </Tag>
-                      ) : (
-                        <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
-                      )}
-                      <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
-                        {parentVariantId ? 'Change variant' : 'Choose variant'}
-                      </Button>
-                    </InlineStack>
-                    {!pickerAvailable && (
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        Product picker is available inside the Shopify admin.
-                      </Text>
-                    )}
-                  </BlockStack>
-                </Card>
+                <VariantSelectCard
+                  title="Bundle line variant"
+                  description="The variant that represents the merged line at checkout."
+                  selectedLabel={parentVariantId ? (
+                    <VariantLabel
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                      layout="inline"
+                    />
+                  ) : null}
+                  onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
+                  onPick={pickParentVariant}
+                  pickerAvailable={pickerAvailable}
+                />
 
                 <Card>
                   <BlockStack gap="300">
@@ -760,97 +807,52 @@ export default function BundleEditor() {
                   </BlockStack>
                 </Card>
 
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Price
-                    </Text>
-                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
-                      <TextField
-                        label="Bundle price"
-                        type="number"
-                        prefix={moneyPrefix}
-                        value={priceStr}
-                        onChange={setPriceStr}
-                        autoComplete="off"
-                        min={0}
-                      />
-                      <BlockStack gap="100">
-                        <Text as="span" variant="bodyMd">
-                          Sum of items
-                        </Text>
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
-                            {showMoney(sumOfItems)}
-                          </Text>
-                          {save != null && save > 0 && <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>}
-                        </InlineStack>
-                      </BlockStack>
-                    </InlineGrid>
-                  </BlockStack>
-                </Card>
+                <PriceCard
+                  title="Price"
+                  label="Bundle price"
+                  value={priceStr}
+                  onChange={setPriceStr}
+                  prefix={moneyPrefix}
+                  comparison={showMoney(sumOfItems)}
+                  saving={save != null && save > 0 ? showMoney(save) : null}
+                />
               </>
             )}
 
             {/* ── EXPAND ── */}
             {operation === 'expand' && (
               <>
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Bundle price
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      Optional. Leave blank to charge whatever the bundle product costs in Shopify.
-                      Set a price and the line is discounted down to it at checkout.
-                    </Text>
-                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
-                      <TextField
-                        label="Bundle price"
-                        labelHidden
-                        type="number"
-                        prefix={moneyPrefix}
-                        value={priceStr}
-                        onChange={setPriceStr}
-                        autoComplete="off"
-                        min={0}
-                        placeholder="Bundle product price"
-                        helpText="Must be below the bundle product's own price."
-                      />
-                    </InlineGrid>
-                  </BlockStack>
-                </Card>
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Parent product
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      The line a shopper adds; it expands into the components below at checkout.
-                    </Text>
-                    <InlineStack gap="200" blockAlign="center">
-                      {parentVariantId ? (
-                        <Tag onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}>
-                          <VariantLabel
-                            resolved={resolvedVariants.get(parentVariantId)}
-                            fallback={parentTitle ?? titleFor(parentVariantId)}
-                            layout="inline"
-                          />
-                        </Tag>
-                      ) : (
-                        <Text as="span" variant="bodySm" tone="subdued">No variant chosen.</Text>
-                      )}
-                      <Button onClick={pickParentVariant} disabled={!pickerAvailable}>
-                        {parentVariantId ? 'Change variant' : 'Choose variant'}
-                      </Button>
-                    </InlineStack>
-                    {!pickerAvailable && (
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        Product picker is available inside the Shopify admin.
-                      </Text>
-                    )}
-                  </BlockStack>
-                </Card>
+                {/* `saving` is gated on a non-blank field, unlike `merge`. An
+                    expand bundle's price is optional and `priceNum` falls back to
+                    0 when blank, so an ungated badge would announce a saving equal
+                    to the whole sum against a price the merchant never set. */}
+                <PriceCard
+                  title="Bundle price"
+                  description="Optional. Leave blank to charge whatever the bundle product costs in Shopify. Set a price and the line is discounted down to it at checkout."
+                  label="Bundle price"
+                  labelHidden
+                  value={priceStr}
+                  onChange={setPriceStr}
+                  prefix={moneyPrefix}
+                  placeholder="Bundle product price"
+                  helpText="Must be below the bundle product's own price."
+                  comparison={showMoney(sumOfItems)}
+                  saving={hasExpandPrice && save != null && save > 0 ? showMoney(save) : null}
+                />
+                <VariantSelectCard
+                  title="Parent product"
+                  description="The line a shopper adds; it expands into the components below at checkout."
+                  selectedLabel={parentVariantId ? (
+                    <VariantLabel
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                      layout="inline"
+                    />
+                  ) : null}
+                  onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
+                  onPick={pickParentVariant}
+                  pickerAvailable={pickerAvailable}
+                />
 
                 <Card>
                   <BlockStack gap="300">
@@ -901,6 +903,32 @@ export default function BundleEditor() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
+
+                {/* Full width, at the end of the page: the schedule is read after the
+            merchant has decided what the bundle actually IS. Rendered ONCE here,
+            outside the per-operation branches, so it cannot go missing for an
+            operation the way it did when this was hand-placed markup. */}
+                <ScheduleCard
+                  value={{
+                    hasStart, startDate, startTime, hasEnd, endDate, endTime,
+                  }}
+                  onChange={(w) => {
+                    setHasStart(w.hasStart);
+                    setStartDate(w.startDate);
+                    setStartTime(w.startTime);
+                    setHasEnd(w.hasEnd);
+                    setEndDate(w.endDate);
+                    setEndTime(w.endTime);
+                  }}
+                  status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
+                  error={scheduleFieldError}
+                  lastFailure={bundle?.scheduleError ?? null}
+                  startHelpText="Leave off to start as soon as the bundle is saved."
+                  endHelpText="Leave off to run until you switch the bundle off."
+                  footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
+                  lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
+                />
+
               </>
             )}
 
@@ -950,47 +978,50 @@ export default function BundleEditor() {
           </BlockStack>
 
           {/* Right rail — operation reference + real Shopify limits */}
-          <Card>
-            <BlockStack gap="300">
-              <Text as="h3" variant="headingSm">
-                Operation
-              </Text>
-              <InlineStack gap="150" blockAlign="center">
-                <Badge tone={OP_TONE[operation]}>
-                  {selectedOp.label}
-                </Badge>
-                {operation === 'update' && !updateGate.enabled && <Badge tone="warning">{updateGate.reason}</Badge>}
-              </InlineStack>
-              <Text as="span" variant="bodySm" tone="subdued">
-                {selectedOp.description}
-              </Text>
-              <Box>
-                <OperationPicker
-                  label="Change operation"
-                  variant="plain"
-                  selected={operation}
-                  updateOpEligible={updateOpEligible}
-                  planName={planData?.planName}
-                  onSelect={setOperation}
-                />
-              </Box>
-              {isEdit && (
+          <BlockStack gap="400">
+
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h3" variant="headingSm">
+                  Operation
+                </Text>
+                <InlineStack gap="150" blockAlign="center">
+                  <Badge tone={OP_TONE[operation]}>
+                    {selectedOp.label}
+                  </Badge>
+                  {operation === 'update' && !updateGate.enabled && <Badge tone="warning">{updateGate.reason}</Badge>}
+                </InlineStack>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  {selectedOp.description}
+                </Text>
+                <Box>
+                  <OperationPicker
+                    label="Change operation"
+                    variant="plain"
+                    selected={operation}
+                    updateOpEligible={updateOpEligible}
+                    planName={planData?.planName}
+                    onSelect={setOperation}
+                  />
+                </Box>
+                {isEdit && (
                 <Text as="span" variant="bodySm" tone="subdued">
                   Changing this rewrites what the bundle does at checkout, and clears the
                   metafield the old operation wrote.
                 </Text>
-              )}
-              <Divider />
-              <Text as="span" variant="headingXs" tone="subdued">
-                CART TRANSFORM LIMITS
-              </Text>
-              <List>
-                {CART_TRANSFORM_LIMITS.map((l) => (
-                  <List.Item key={l}>{l}</List.Item>
-                ))}
-              </List>
-            </BlockStack>
-          </Card>
+                )}
+                <Divider />
+                <Text as="span" variant="headingXs" tone="subdued">
+                  CART TRANSFORM LIMITS
+                </Text>
+                <List>
+                  {CART_TRANSFORM_LIMITS.map((l) => (
+                    <List.Item key={l}>{l}</List.Item>
+                  ))}
+                </List>
+              </BlockStack>
+            </Card>
+          </BlockStack>
         </InlineGrid>
       </BlockStack>
     </Page>

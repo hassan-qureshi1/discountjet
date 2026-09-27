@@ -21,6 +21,9 @@ const sampleBundle: Bundle = {
   price: { amount: '10.00', currencyCode: 'USD' },
   sumOfItems: { amount: '20.00', currencyCode: 'USD' },
   status: 'Draft',
+  scheduleStart: null,
+  scheduleEnd: null,
+  scheduleError: null,
   metafieldState: 'NotYet',
   updated: 'Just now',
 };

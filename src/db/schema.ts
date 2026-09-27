@@ -114,9 +114,24 @@ export const bundle = sqliteTable(
       .default('NotYet'),
     metafieldGid: text('metafield_gid'),
 
+    // Normalized UTC ISO-8601 (`2026-10-03T09:00:00.000Z`) or null for "no
+    // bound". Fixed width and Z-suffixed on purpose: that is what makes the
+    // plain string comparisons in the due-scan below chronological.
     scheduleStart: text('schedule_start'),
     scheduleEnd: text('schedule_end'),
+
+    // `status` is DERIVED from the window (see src/lib/scheduleWindow.ts) and
+    // then persisted. The stored value is the record of what has actually been
+    // written to Shopify; the derived value is what should be true now. The
+    // gap between the two is exactly the scheduling cron's work queue.
+    // `Draft` is outside the derivation — it is the merchant's manual
+    // off-switch and is never scheduled over.
     status: text('status', { enum: ['Active', 'Scheduled', 'Ended', 'Draft'] }).notNull(),
+
+    // Last failed schedule transition, cleared on success. Without it a failed
+    // boundary is invisible: the bundle simply never goes live and the merchant
+    // has no way to know why.
+    scheduleError: text('schedule_error'),
     blockOnFailure: integer('block_on_failure').notNull().default(0),
 
     createdAt: text('created_at').notNull(),
@@ -124,6 +139,11 @@ export const bundle = sqliteTable(
   },
   (t) => ({
     shopIdIdx: index('bundle_shop_id_idx').on(t.shopId),
+    // The scheduling cron's two due-scans. Deliberately NOT shop_id-leading:
+    // the scan is cross-shop by design (see DueBundleScanner), and a
+    // shop-leading index would not serve it.
+    dueStartIdx: index('bundle_due_start_idx').on(t.status, t.scheduleStart),
+    dueEndIdx: index('bundle_due_end_idx').on(t.status, t.scheduleEnd),
   }),
 );
 

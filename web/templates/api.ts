@@ -16,8 +16,10 @@ export interface Template {
   category: string;
   symbol: string | null;
   type: DiscountEngineType;
-  /** Partial form data for the engine named by `type`. Arrives already
-   * parsed — the server never sends this as a JSON string. */
+  /** Seed form data for the engine named by `type`. Arrives already parsed —
+   * the server never sends this as a JSON string. It is an unvalidated DB blob,
+   * not a checked form shape: consumers must verify the fields they read before
+   * casting (see `isTierFormData` in web/Pages/TemplateCreate.tsx). */
   defaults: Record<string, unknown>;
 }
 

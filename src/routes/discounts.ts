@@ -184,6 +184,20 @@ discountRoutes.post('/api/discounts', async (c) => {
     return c.json({ error: `Could not build the discount configuration: ${String(err)}` }, 400);
   }
 
+  // `validate` passed on the FORM, but the builder drops rules it cannot
+  // resolve (e.g. a `product_id` tier whose items only carry `variantId`).
+  // Without this the mutation succeeds and the merchant gets a live promotion
+  // that does nothing at checkout, with no error anywhere.
+  if (!adapter.isActionable(JSON.parse(value))) {
+    return c.json(
+      {
+        error:
+          'This promotion has no usable rules. Check that each tier has products selected and a numeric discount value.',
+      },
+      400,
+    );
+  }
+
   const sizeBytes = new TextEncoder().encode(value).length;
   if (sizeBytes > adapter.maxBytes) {
     return c.json(

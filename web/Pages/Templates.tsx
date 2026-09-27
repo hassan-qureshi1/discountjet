@@ -6,6 +6,10 @@ import {
 import { useTemplates } from '../templates/hooks';
 import { TemplateCard } from '../components/TemplateCard';
 
+// Polaris' own empty-state illustration. `image` is required by the component,
+// and an empty string renders a broken <img src="">.
+const EMPTY_STATE_ILLUSTRATION = 'https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png';
+
 export default function Templates() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useTemplates();
@@ -29,7 +33,7 @@ export default function Templates() {
     );
   } else if (templates.length === 0) {
     body = (
-      <EmptyState heading="No templates yet" image="">
+      <EmptyState heading="No templates yet" image={EMPTY_STATE_ILLUSTRATION}>
         <p>
           Templates are added when the app installs — reinstalling the app will add them.
         </p>

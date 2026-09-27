@@ -61,6 +61,42 @@ describe('ENGINE_ADAPTERS', () => {
     expect(adapter.maxBytes).toBe(10 * 1024);
   });
 
+  // Review fix — validate() reads the FORM, buildXConfig drops rules it cannot
+  // resolve. isActionable closes the gap on the built side.
+  it('tier: a built config with an empty discount_tiers is not actionable', () => {
+    const adapter = getAdapter('tier');
+    expect(adapter.isActionable({ rule_type: 'tier-discount', discount_tiers: {} })).toBe(false);
+    expect(adapter.isActionable(JSON.parse(adapter.serialize(TIER_FORM as never)))).toBe(true);
+  });
+
+  it('tier: a product_id tier whose items carry only variantId builds nothing actionable', () => {
+    const adapter = getAdapter('tier');
+    const form = {
+      ...TIER_FORM,
+      tiers: [{ ...TIER_FORM.tiers[0], selectorType: 'product_id' as const }],
+    };
+    expect(adapter.validate(form as never)).toEqual([]);
+    expect(adapter.isActionable(JSON.parse(adapter.serialize(form as never)))).toBe(false);
+  });
+
+  it('tier: a non-numeric tier key is not actionable — engine.rs skips it', () => {
+    const adapter = getAdapter('tier');
+    expect(adapter.isActionable({ discount_tiers: { abc: { targets: [1] } } })).toBe(false);
+    expect(adapter.isActionable({ discount_tiers: { '20': { targets: [1] } } })).toBe(true);
+  });
+
+  it('bundle: a built config with an empty bundle_discounts is not actionable', () => {
+    const adapter = getAdapter('bundle');
+    expect(adapter.isActionable({ rule_type: 'bundle-discount', bundle_discounts: [] })).toBe(false);
+    expect(adapter.isActionable({ rule_type: 'bundle-discount', bundle_discounts: [{}] })).toBe(true);
+  });
+
+  it('special: a built config with an empty special_discounts is not actionable', () => {
+    const adapter = getAdapter('special');
+    expect(adapter.isActionable({ rule_type: 'special_discount', special_discounts: [] })).toBe(false);
+    expect(adapter.isActionable({ rule_type: 'special_discount', special_discounts: [{}] })).toBe(true);
+  });
+
   it('rejects an unknown engine type loudly', () => {
     expect(() => getAdapter('nope' as never)).toThrow();
   });

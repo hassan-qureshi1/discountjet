@@ -3440,6 +3440,30 @@ describe('POST /api/discounts', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
+  // Review fix — the form validates, but buildTierConfig resolves no ids for a
+  // `product_id` tier whose items only carry `variantId`. Without the
+  // actionability guard this creates a live discount that does nothing.
+  it('400s a form that validates but builds no usable rules, without calling Shopify', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await post({
+      slug: 'pct-off',
+      title: 'Spring sale',
+      startsAt: '2026-10-01T00:00:00.000Z',
+      form: {
+        ...TIER_FORM,
+        tiers: [{
+          id: 't1', value: '20', selectorType: 'product_id',
+          targets: JSON.stringify([{ variantId: '123' }]), min_qty: '',
+        }],
+      },
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('no usable rules');
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
   // Review Focus #2 — the template decides the engine; the client does not.
   it('ignores a client-supplied type and uses the template’s engine', async () => {
     seed({ templates: [templateRow()] });

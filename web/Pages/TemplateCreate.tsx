@@ -18,6 +18,16 @@ import { toUtcIso } from '../lib/schedule';
 
 const MAX_CONFIG_BYTES = 10 * 1024;
 
+/**
+ * `template.defaults` is a JSON blob off a DB row, so its shape is only as good
+ * as the row. `TierFields` does `value.tiers.map(...)` on it immediately — a row
+ * missing `tiers` would white-screen this page rather than say what is wrong.
+ * Checked, not cast: a bad row gets a Banner.
+ */
+function isTierFormData(defaults: Record<string, unknown>): boolean {
+  return Array.isArray((defaults as { tiers?: unknown }).tiers);
+}
+
 export default function TemplateCreate() {
   const { slug } = useParams();
   const navigate = useNavigate();
@@ -45,6 +55,7 @@ export default function TemplateCreate() {
     | { engine: 'special'; data: null };
   const [form, setForm] = useState<FormState | null>(null);
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
 
   // Seed form state from `template.defaults` exactly once — react-query may
   // hand us a new object reference on a background refetch, and clobbering a
@@ -55,7 +66,13 @@ export default function TemplateCreate() {
     if (!template || initializedRef.current) return;
     setTitle(template.name);
     if (template.type === 'tier') {
-      setForm({ engine: 'tier', data: template.defaults as unknown as TierFormData });
+      if (!isTierFormData(template.defaults)) {
+        setDefaultsError(
+          `The stored setup for "${template.name}" is incomplete, so this template can't be used. Contact support.`,
+        );
+      } else {
+        setForm({ engine: 'tier', data: template.defaults as unknown as TierFormData });
+      }
     } else {
       setForm({ engine: template.type, data: null });
     }
@@ -156,6 +173,7 @@ export default function TemplateCreate() {
             {bannerError ?? createMutation.error?.message}
           </Banner>
         )}
+        {defaultsError && <Banner tone="critical">{defaultsError}</Banner>}
         {configTooLarge && (
           <Banner tone="warning">
             {`This discount's configuration is ${(configSizeBytes / 1024).toFixed(1)}KB, over the 10KB limit. Remove some tiers or products.`}

@@ -5,14 +5,37 @@
 // editor uses, so campaigns and bundles never disagree about what a window
 // means. Times are entered in the merchant's local timezone and converted to
 // UTC only on save (`toUtcIso`/`fromUtcIso`), never hand-rolled here.
+//
+// SAVES THROUGH, like every other step: a valid window is persisted via
+// `useUpdateCampaign` shortly after the merchant stops typing (debounced, so
+// each keystroke doesn't fire a request), and — critically — any still-
+// pending edit is flushed immediately when the step unmounts (the merchant
+// clicked Back/Next/a Tab). This is a `Draft` campaign whose whole point is
+// stamping one window onto every discount and bundle in it; a window that
+// silently vanished when the merchant clicked Next would mean the campaign
+// publishes IMMEDIATELY instead of on the intended date — discounting live
+// inventory right now, with nothing on screen to say so. There is
+// deliberately no "unsaved changes" warning as a substitute: a warning still
+// relies on the merchant noticing it, where saving through does not.
 import { useEffect, useRef, useState } from 'react';
 import {
-  Banner, BlockStack, Button, Card, ChoiceList,
+  Banner, BlockStack, Card, ChoiceList, InlineStack, Spinner, Text,
 } from '@shopify/polaris';
 import type { Campaign, CampaignScheduleMode } from '../api';
 import { useUpdateCampaign } from '../hooks';
 import { ScheduleCard } from '../../components/ScheduleCard';
 import { fromUtcIso, toUtcIso } from '../../lib/schedule';
+
+/** What gets persisted. `null` means "the fields on screen right now don't
+ * describe a valid, save-able window" (e.g. a ticked box with a blank date) —
+ * distinct from a valid window with no bound, which is `{ ..., startsAt: null }`. */
+interface SchedulePayload {
+  scheduleMode: CampaignScheduleMode;
+  startsAt: string | null;
+  endsAt: string | null;
+}
+
+const AUTOSAVE_DEBOUNCE_MS = 600;
 
 export function ScheduleStep({ campaign }: { campaign: Campaign }) {
   const updateMutation = useUpdateCampaign();
@@ -24,7 +47,6 @@ export function ScheduleStep({ campaign }: { campaign: Campaign }) {
   const [endDate, setEndDate] = useState('');
   const [endTime, setEndTime] = useState('23:59');
   const [bannerError, setBannerError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   // Seed local state from the campaign exactly once — react-query may hand us
   // a new object reference on background refetch and we don't want to clobber
@@ -69,27 +91,59 @@ export function ScheduleStep({ campaign }: { campaign: Campaign }) {
     }
   }
 
-  const handleSave = async () => {
-    if (scheduleFieldError) {
-      setBannerError(scheduleFieldError);
-      return;
-    }
+  const currentPayload: SchedulePayload | null = scheduleFieldError
+    ? null
+    : { scheduleMode: mode, startsAt: mode === 'window' ? startsAt : null, endsAt: mode === 'window' ? endsAt : null };
+
+  // The last payload this component has either loaded from or successfully
+  // written to the server — comparing against it is what stops a debounce
+  // tick (or the unmount flush) from re-sending a no-op save.
+  const lastPersistedRef = useRef<string>(JSON.stringify({
+    scheduleMode: campaign.scheduleMode, startsAt: campaign.startsAt, endsAt: campaign.endsAt,
+  }));
+  // Always the latest computed payload, valid or not — read by the unmount
+  // flush below, which runs with whatever closure it had at MOUNT time unless
+  // it reads through a ref.
+  const latestPayloadRef = useRef<SchedulePayload | null>(currentPayload);
+  latestPayloadRef.current = currentPayload;
+
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const persist = (payload: SchedulePayload) => {
+    const key = JSON.stringify(payload);
+    if (key === lastPersistedRef.current) return;
+    lastPersistedRef.current = key;
     setBannerError(null);
-    setSaved(false);
-    try {
-      await updateMutation.mutateAsync({
-        id: campaign.id,
-        input: {
-          scheduleMode: mode,
-          startsAt: mode === 'window' ? startsAt : null,
-          endsAt: mode === 'window' ? endsAt : null,
-        },
-      });
-      setSaved(true);
-    } catch (err) {
-      setBannerError(err instanceof Error ? err.message : 'Failed to save the schedule.');
-    }
+    updateMutation.mutate({ id: campaign.id, input: payload }, {
+      onError: (err) => {
+        // The save failed — un-mark it as persisted so the next tick (or the
+        // unmount flush) retries rather than treating a lost write as done.
+        lastPersistedRef.current = '';
+        setBannerError(err instanceof Error ? err.message : 'Failed to save the schedule.');
+      },
+    });
   };
+
+  // Debounced autosave while the merchant is actively editing.
+  useEffect(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    if (!currentPayload) return undefined;
+    debounceTimerRef.current = setTimeout(() => persist(currentPayload), AUTOSAVE_DEBOUNCE_MS);
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, hasStart, startDate, startTime, hasEnd, endDate, endTime]);
+
+  // Flush on unmount — the moment the merchant navigates away (Back/Next/a
+  // Tab). Reads `latestPayloadRef` rather than a closed-over value, since an
+  // effect with `[]` deps only ever sees its FIRST render's closure otherwise.
+  useEffect(() => () => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    const pending = latestPayloadRef.current;
+    if (pending) persist(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <BlockStack gap="400">
@@ -97,9 +151,6 @@ export function ScheduleStep({ campaign }: { campaign: Campaign }) {
         <Banner tone="critical" onDismiss={() => setBannerError(null)}>
           {bannerError ?? updateMutation.error?.message}
         </Banner>
-      )}
-      {saved && !bannerError && (
-        <Banner tone="success" onDismiss={() => setSaved(false)}>Schedule saved.</Banner>
       )}
 
       <Card>
@@ -130,13 +181,16 @@ export function ScheduleStep({ campaign }: { campaign: Campaign }) {
           error={scheduleFieldError}
           startHelpText="Leave off to start as soon as the campaign is published."
           endHelpText="Leave off to run until you end the campaign."
-          footnote="Times are in your own timezone."
+          footnote="Times are in your own timezone. Saved automatically as you go."
         />
       )}
 
-      <Button onClick={handleSave} loading={updateMutation.isPending} variant="primary">
-        Save schedule
-      </Button>
+      <InlineStack gap="150" blockAlign="center">
+        {updateMutation.isPending && <Spinner accessibilityLabel="Saving schedule" size="small" />}
+        <Text as="span" variant="bodySm" tone="subdued">
+          {updateMutation.isPending ? 'Saving…' : 'Changes save automatically.'}
+        </Text>
+      </InlineStack>
     </BlockStack>
   );
 }

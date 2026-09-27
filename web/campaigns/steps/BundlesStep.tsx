@@ -10,6 +10,16 @@
 //      campaign's `bundle.campaignId` claim, set at ITS publish.
 //   2. An `update`-operation bundle on a shop that isn't Shopify Plus
 //      eligible — the same non-blocking gate `OperationPicker` uses.
+//
+// Three requests feed this screen (`useBundlesQuery`, `useCampaigns`,
+// `useShopPlanQuery`), and all three need a spinner on load and a Banner on
+// error per `web/CLAUDE.md` — not just the first one. `useCampaigns` in
+// particular is what NAMES a locked bundle's owner: if it fails, defaulting
+// its list to empty (as if failure meant "no other campaigns exist") would
+// render a genuinely locked bundle as selectable. The server still refuses
+// it at publish, but the merchant would be shown something false in the
+// meantime and only find out much later. So a `useCampaigns` error disables
+// every row instead of silently treating everything as unlocked.
 import {
   Badge, Banner, BlockStack, Card, Checkbox, InlineStack, Spinner, Text,
 } from '@shopify/polaris';
@@ -22,14 +32,20 @@ import { StatusBadge } from '../../components/StatusBadge';
 
 export function BundlesStep({ campaign }: { campaign: Campaign }) {
   const { data: bundlesData, isLoading: bundlesLoading, error: bundlesError } = useBundlesQuery();
-  const { data: campaignsData } = useCampaigns();
-  const { data: planData } = useShopPlanQuery();
+  const { data: campaignsData, isLoading: campaignsLoading, error: campaignsError } = useCampaigns();
+  const { data: planData, isLoading: planLoading, error: planError } = useShopPlanQuery();
   const updateMutation = useUpdateCampaign();
 
   const bundles = bundlesData?.bundles ?? [];
   const allCampaigns = campaignsData?.campaigns ?? [];
   const updateOpEligible = planData?.updateOpEligible ?? false;
   const selected = new Set(campaign.bundleIds);
+
+  // A failed `useCampaigns` means "we cannot name, or even confirm, a
+  // bundle's lock owner right now" — never "there are no other campaigns".
+  // Every row is disabled until it recovers, rather than rendering a locked
+  // bundle as free.
+  const canVerifyLocks = !campaignsError;
 
   const toggle = async (bundleId: string) => {
     const next = new Set(selected);
@@ -38,7 +54,7 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
     await updateMutation.mutateAsync({ id: campaign.id, input: { bundleIds: Array.from(next) } });
   };
 
-  if (bundlesLoading) {
+  if (bundlesLoading || campaignsLoading || planLoading) {
     return (
       <div style={{ display: 'grid', placeItems: 'center', padding: 40 }}>
         <Spinner accessibilityLabel="Loading bundles" size="small" />
@@ -53,6 +69,16 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
   return (
     <BlockStack gap="400">
       {updateMutation.error && <Banner tone="critical">{updateMutation.error.message}</Banner>}
+      {campaignsError && (
+        <Banner tone="critical">
+          {`Couldn't check which campaigns already own a bundle, so selection is disabled until this loads: ${campaignsError.message}`}
+        </Banner>
+      )}
+      {planError && (
+        <Banner tone="warning">
+          {`Couldn't load this shop's plan, so Shopify Plus gating below may be inaccurate: ${planError.message}`}
+        </Banner>
+      )}
 
       {bundles.length === 0 ? (
         <Card>
@@ -71,7 +97,7 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
               const ownerLocks = Boolean(owner) && (owner!.status === 'Scheduled' || owner!.status === 'Published');
 
               const planGate = gateOperation(bundle.operation, updateOpEligible, planData?.planName);
-              const disabled = ownerLocks || !planGate.enabled || updateMutation.isPending;
+              const disabled = !canVerifyLocks || ownerLocks || !planGate.enabled || updateMutation.isPending;
 
               return (
                 <InlineStack key={bundle.id} align="space-between" blockAlign="center">

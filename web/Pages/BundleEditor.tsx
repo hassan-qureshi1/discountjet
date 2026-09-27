@@ -19,6 +19,7 @@ import {
   Divider,
   InlineGrid,
   InlineStack,
+  Link,
   List,
   Modal,
   Page,
@@ -32,6 +33,8 @@ import {
   useVariantsQuery,
 } from '../bundles/hooks';
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
+import { useCampaign } from '../campaigns/hooks';
+import { isCampaignLocking } from '../../src/lib/campaignStatus';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../lib/picker';
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
@@ -117,6 +120,18 @@ export default function BundleEditor() {
   // Defaults to false while the plan is loading (fail closed).
   const { data: planData } = useShopPlanQuery();
   const updateOpEligible = planData?.updateOpEligible ?? false;
+
+  // A campaign that PUBLISHED this bundle onto its window owns the schedule
+  // for as long as it's still locking (Scheduled/Published) — editing the
+  // window here would silently desynchronise the bundle from the campaign's
+  // discounts, which fire on the campaign's dates regardless of what this
+  // form saves. `isCampaignLocking` is imported rather than re-implemented so
+  // this can never disagree with the campaign screens about which statuses
+  // lock. A campaign whose window has ENDED no longer locks, so the bundle
+  // becomes editable again with no further action needed.
+  const { data: owningCampaignData } = useCampaign(bundle?.campaignId);
+  const owningCampaign = owningCampaignData?.campaign;
+  const scheduleLocked = Boolean(owningCampaign) && isCampaignLocking(owningCampaign!.status);
 
   const pickerAvailable = isResourcePickerAvailable();
 
@@ -904,31 +919,6 @@ export default function BundleEditor() {
                   </BlockStack>
                 </Card>
 
-                {/* Full width, at the end of the page: the schedule is read after the
-            merchant has decided what the bundle actually IS. Rendered ONCE here,
-            outside the per-operation branches, so it cannot go missing for an
-            operation the way it did when this was hand-placed markup. */}
-                <ScheduleCard
-                  value={{
-                    hasStart, startDate, startTime, hasEnd, endDate, endTime,
-                  }}
-                  onChange={(w) => {
-                    setHasStart(w.hasStart);
-                    setStartDate(w.startDate);
-                    setStartTime(w.startTime);
-                    setHasEnd(w.hasEnd);
-                    setEndDate(w.endDate);
-                    setEndTime(w.endTime);
-                  }}
-                  status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
-                  error={scheduleFieldError}
-                  lastFailure={bundle?.scheduleError ?? null}
-                  startHelpText="Leave off to start as soon as the bundle is saved."
-                  endHelpText="Leave off to run until you switch the bundle off."
-                  footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
-                  lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
-                />
-
               </>
             )}
 
@@ -975,6 +965,43 @@ export default function BundleEditor() {
                 </BlockStack>
               </Card>
             )}
+
+            {/* Full width, at the end of the page: the schedule is read after the
+                merchant has decided what the bundle actually IS. Rendered ONCE
+                here, outside the per-operation branches, so every operation
+                (including merge and update) gets a schedule — the scheduling
+                cron itself is generic over all three (see
+                src/lifecycle/bundleSchedule.ts), so the UI must be too. */}
+            <ScheduleCard
+              value={{
+                hasStart, startDate, startTime, hasEnd, endDate, endTime,
+              }}
+              onChange={(w) => {
+                setHasStart(w.hasStart);
+                setStartDate(w.startDate);
+                setStartTime(w.startTime);
+                setHasEnd(w.hasEnd);
+                setEndDate(w.endDate);
+                setEndTime(w.endTime);
+              }}
+              status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
+              error={scheduleFieldError}
+              lastFailure={bundle?.scheduleError ?? null}
+              disabled={scheduleLocked}
+              bannerSlot={scheduleLocked && owningCampaign ? (
+                <Banner tone="info" title="This bundle's schedule is owned by a campaign">
+                  <p>
+                    {'The campaign '}
+                    <Link url={`/campaigns/${owningCampaign.id}`}>{owningCampaign.name}</Link>
+                    {` published this bundle onto its own window, so the schedule below is read-only while that campaign is ${owningCampaign.status}. Clone the campaign to change its window.`}
+                  </p>
+                </Banner>
+              ) : undefined}
+              startHelpText="Leave off to start as soon as the bundle is saved."
+              endHelpText="Leave off to run until you switch the bundle off."
+              footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
+              lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
+            />
           </BlockStack>
 
           {/* Right rail — operation reference + real Shopify limits */}

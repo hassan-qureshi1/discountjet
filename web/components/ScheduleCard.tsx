@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   Banner, BlockStack, Card, Checkbox, InlineGrid, InlineStack, Text, TextField,
 } from '@shopify/polaris';
@@ -28,6 +29,15 @@ export interface ScheduleCardProps {
   error?: string | null;
   /** A previous scheduled transition that failed, surfaced as a warning. */
   lastFailure?: string | null;
+  /**
+   * Renders every field read-only and suppresses `onChange` — for a bundle
+   * whose window is owned by a still-live campaign. The campaign, not this
+   * form, is the source of truth for the window in that case; `bannerSlot`
+   * is how the caller names the owner and links to it.
+   */
+  disabled?: boolean;
+  /** Extra content rendered above the fields — e.g. the campaign-lock Banner. */
+  bannerSlot?: ReactNode;
   /** Copy. Defaults are deliberately noun-free so this card is not about bundles. */
   title?: string;
   startHelpText?: string;
@@ -51,6 +61,8 @@ export function ScheduleCard({
   status,
   error,
   lastFailure,
+  disabled = false,
+  bannerSlot,
   title = 'Schedule',
   startHelpText = 'Leave off to start as soon as it is saved.',
   endHelpText = 'Leave off to run until you switch it off.',
@@ -58,7 +70,10 @@ export function ScheduleCard({
   lastFailureTitle = 'The last scheduled change did not go through',
   lastFailureDetail = 'It will be retried automatically. Saving also retries it.',
 }: ScheduleCardProps) {
-  const set = (patch: Partial<ScheduleWindow>) => onChange({ ...value, ...patch });
+  const set = (patch: Partial<ScheduleWindow>) => {
+    if (disabled) return;
+    onChange({ ...value, ...patch });
+  };
 
   return (
     <Card>
@@ -68,11 +83,14 @@ export function ScheduleCard({
           {status && <StatusBadge label={status.label} tone={status.tone} />}
         </InlineStack>
 
+        {bannerSlot}
+
         <Checkbox
           label="Set a start date"
           checked={value.hasStart}
           onChange={(hasStart) => set({ hasStart })}
           helpText={startHelpText}
+          disabled={disabled}
         />
         {value.hasStart && (
           <InlineGrid columns={2} gap="300">
@@ -82,6 +100,7 @@ export function ScheduleCard({
               value={value.startDate}
               onChange={(startDate) => set({ startDate })}
               autoComplete="off"
+              disabled={disabled}
             />
             <TextField
               label="Start time"
@@ -89,6 +108,7 @@ export function ScheduleCard({
               value={value.startTime}
               onChange={(startTime) => set({ startTime })}
               autoComplete="off"
+              disabled={disabled}
             />
           </InlineGrid>
         )}
@@ -98,6 +118,7 @@ export function ScheduleCard({
           checked={value.hasEnd}
           onChange={(hasEnd) => set({ hasEnd })}
           helpText={endHelpText}
+          disabled={disabled}
         />
         {value.hasEnd && (
           <InlineGrid columns={2} gap="300">
@@ -107,6 +128,7 @@ export function ScheduleCard({
               value={value.endDate}
               onChange={(endDate) => set({ endDate })}
               autoComplete="off"
+              disabled={disabled}
             />
             <TextField
               label="End time"
@@ -114,6 +136,7 @@ export function ScheduleCard({
               value={value.endTime}
               onChange={(endTime) => set({ endTime })}
               autoComplete="off"
+              disabled={disabled}
             />
           </InlineGrid>
         )}

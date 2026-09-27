@@ -81,6 +81,17 @@ export function TierFields({
     onChange({ ...value, tiers: value.tiers.filter((t) => t.id !== id) });
   };
 
+  /**
+   * What this tier targets, in the merchant's words. Drives the button, the
+   * empty state and the picker notice together, so a tier set to whole products
+   * never invites the merchant to "add variants".
+   */
+  const nounFor = (tier: Tier) => (
+    (tier.selectorType || 'variant_id') === 'product_id'
+      ? { one: 'product', many: 'products' }
+      : { one: 'variant', many: 'variants' }
+  );
+
   /** The field `buildTierConfig` reads for this tier — the one that must exist. */
   const keyFor = (tier: Tier, item: TierItem) => (
     (tier.selectorType || 'variant_id') === 'product_id' ? item.productId : item.variantId
@@ -238,12 +249,12 @@ export function TierFields({
                     </InlineStack>
                   ) : (
                     <Text as="span" variant="bodySm" tone="subdued">
-                      No products chosen yet.
+                      {`No ${nounFor(tier).many} chosen yet.`}
                     </Text>
                   )}
                   <InlineStack gap="200" blockAlign="center">
                     <Button onClick={() => pickProducts(tier)} disabled={!pickerAvailable}>
-                      Add products
+                      {`${items.length > 0 ? 'Edit' : 'Add'} ${nounFor(tier).many}`}
                     </Button>
                     {value.tiers.length > 1 && (
                       <Button variant="tertiary" tone="critical" onClick={() => removeTier(tier.id)}>
@@ -252,7 +263,7 @@ export function TierFields({
                     )}
                     {!pickerAvailable && (
                       <Text as="span" variant="bodySm" tone="subdued">
-                        Product picker is available inside the Shopify admin.
+                        {`The ${nounFor(tier).one} picker is available inside the Shopify admin.`}
                       </Text>
                     )}
                   </InlineStack>

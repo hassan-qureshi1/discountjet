@@ -91,6 +91,8 @@ Table bundle {
   status text [not null, note: 'Active | Scheduled | Ended | Draft']
   block_on_failure integer [not null, default: 0, note: '0/1']
 
+  campaign_id text [ref: > campaign.id, note: 'ON DELETE SET NULL — set at publish when a campaign takes over this bundle''s schedule; the lock is derived from the owning campaign''s status, not from this column']
+
   created_at text [not null]
   updated_at text [not null]
 
@@ -161,4 +163,71 @@ Table template {
     slug [name: 'template_slug_unq', unique]
     (active, sort_order) [name: 'template_active_sort_idx']
   }
+}
+
+Table campaign {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE']
+
+  name text [not null]
+  description text
+  status text [not null, note: 'Draft | Scheduled | Published | Ended — cached derivation of the window, refreshed on read, never an independent source of truth']
+
+  schedule_mode text [not null, note: 'immediate | window']
+  starts_at text [note: 'normalized UTC ISO-8601']
+  ends_at text [note: 'normalized UTC ISO-8601']
+
+  published_at text
+
+  created_at text [not null]
+  updated_at text [not null]
+
+  indexes {
+    (shop_id, status) [name: 'campaign_shop_status_idx']
+  }
+
+  Note: 'E8 campaigns. Groups discounts and bundles onto one window; publishing stamps that window onto its members, each then scheduled by the mechanism it already had.'
+}
+
+Table campaign_discount {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE']
+  campaign_id text [not null, ref: > campaign.id, note: 'ON DELETE CASCADE']
+
+  name text [not null]
+  type text [not null, note: 'tier | bundle | special — matches DiscountEngineType / discount.type']
+  method text [not null, note: 'automatic | code']
+  code text [note: 'required when method = code; becomes the discount title']
+
+  config_json text [not null, note: 'the merchant''s FORM state, NOT the serialized $app: metafield value — publish runs form through validate -> serialize -> size check, same as POST /api/discounts']
+  config_bytes integer [not null, note: 'size in bytes of the SERIALIZED config (getAdapter(type).sizeBytes(form)), not the byte length of config_json — 10 KB is Shopify''s cap on the metafield value']
+
+  shopify_gid text
+  publish_state text [not null, note: 'pending | created | failed']
+  publish_error text
+
+  created_at text [not null]
+  updated_at text [not null]
+
+  indexes {
+    campaign_id [name: 'campaign_discount_campaign_idx']
+  }
+
+  Note: 'A discount the campaign authors: its config before publish, its Shopify identity after.'
+}
+
+Table campaign_bundle {
+  id text [pk]
+  shop_id text [not null, ref: > shopify_shop.id, note: 'ON DELETE CASCADE']
+  campaign_id text [not null, ref: > campaign.id, note: 'ON DELETE CASCADE']
+  bundle_id text [not null, ref: > bundle.id, note: 'ON DELETE CASCADE']
+
+  created_at text [not null]
+  updated_at text [not null]
+
+  indexes {
+    (campaign_id, bundle_id) [unique, name: 'campaign_bundle_unq']
+  }
+
+  Note: 'A reference to an existing E6 bundle. No config authored here — the bundle owns its definition; the campaign only owns its SCHEDULE while live.'
 }

@@ -254,6 +254,7 @@ export class InMemoryBundleRepository
       scheduleEnd: null,
       scheduleError: null,
       blockOnFailure: 0,
+      campaignId: null,
       ...data,
       id,
       shopId: this.shopId,

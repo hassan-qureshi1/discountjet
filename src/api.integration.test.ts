@@ -91,6 +91,7 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   scheduleError: null,
   status: 'Draft',
   blockOnFailure: 0,
+  campaignId: null,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-20T00:00:00.000Z',
   ...overrides,

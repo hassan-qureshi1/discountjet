@@ -3445,6 +3445,60 @@ describe('POST /api/discounts', () => {
     expect(JSON.parse(metafields[0].value).rule_type).toBe('tier-discount');
   });
 
+  // Shopify's own admin titles a code discount with its code; two different
+  // strings would show the merchant one name in our list and another in theirs.
+  it('titles a code discount with its code, whatever title was sent', async () => {
+    seed({ templates: [templateRow()] });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountCodeAppCreate: { codeAppDiscount: { discountId: 'gid://shopify/DiscountCodeNode/9' }, userErrors: [] } },
+      } as never);
+
+    await post({
+      slug: 'pct-off', title: 'Something else entirely', startsAt: '2026-10-01T00:00:00.000Z',
+      method: 'code', code: 'SPRING20', form: TIER_FORM,
+    });
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(input.title).toBe('SPRING20');
+    expect(input.code).toBe('SPRING20');
+  });
+
+  it('accepts a code discount with no title at all', async () => {
+    seed({ templates: [templateRow()] });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountCodeAppCreate: { codeAppDiscount: { discountId: 'gid://shopify/DiscountCodeNode/9' }, userErrors: [] } },
+      } as never);
+
+    const res = await post({
+      slug: 'pct-off', startsAt: '2026-10-01T00:00:00.000Z',
+      method: 'code', code: 'SPRING20', form: TIER_FORM,
+    });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('still requires a title for an automatic discount', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await post({ slug: 'pct-off', startsAt: '2026-10-01T00:00:00.000Z', form: TIER_FORM });
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
   it('400s a code discount with no code, without calling Shopify', async () => {
     seed({ templates: [templateRow()] });
 

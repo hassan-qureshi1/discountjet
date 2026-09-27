@@ -177,7 +177,8 @@ discountRoutes.post('/api/discounts', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as CreateBody;
 
   if (!body.slug) return c.json({ error: 'slug is required' }, 400);
-  if (!body.title || !body.title.trim()) return c.json({ error: 'title is required' }, 400);
+  // Title is checked per method below: a code discount takes its title from its
+  // code, so demanding one here would ask for a name that is then discarded.
   if (!body.startsAt) return c.json({ error: 'startsAt is required' }, 400);
   const method = body.method ?? 'automatic';
   if (method !== 'automatic' && method !== 'code') {
@@ -189,6 +190,18 @@ discountRoutes.post('/api/discounts', async (c) => {
   if (method === 'code' && !body.code?.trim()) {
     return c.json({ error: 'code is required for a discount-code promotion' }, 400);
   }
+  if (method === 'automatic' && !body.title?.trim()) {
+    return c.json({ error: 'title is required' }, 400);
+  }
+
+  /**
+   * Shopify's own admin titles a code discount with its code, and the discounts
+   * list — ours and theirs — shows that title. Letting the two differ would name
+   * the same promotion two ways depending on which screen the merchant is on, so
+   * the code wins and any title sent alongside it is ignored rather than
+   * silently half-used.
+   */
+  const title = method === 'code' ? (body.code as string).trim() : (body.title as string).trim();
   // Guards the shape only. A throw from `validate` on a well-formed but invalid
   // form is still a 500 by design, so this must not become a try/catch there.
   if (body.form === undefined || body.form === null || typeof body.form !== 'object') {
@@ -246,7 +259,7 @@ discountRoutes.post('/api/discounts', async (c) => {
   // serialised config. The Rust function neither knows nor cares whether a code
   // or the cart brought it into play.
   const shared = {
-    title: body.title,
+    title,
     functionId,
     // BOTH mutations require this — Shopify rejects either with "Functions
     // configured to use the `discounts` API type require the discountClasses

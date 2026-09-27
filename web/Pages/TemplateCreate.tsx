@@ -139,10 +139,9 @@ export default function TemplateCreate() {
   const configTooLarge = configSizeBytes > MAX_CONFIG_BYTES;
 
   const canSave = form?.engine === 'tier'
-    && title.trim().length > 0
-    // A code discount with no code is rejected by the route; block it here too
-    // rather than letting the merchant press Create and read a 400.
-    && (method === 'automatic' || code.trim().length > 0)
+    // Automatic discounts are named by their title; code discounts by their
+    // code. Each method requires exactly the field it is named by.
+    && (method === 'code' ? code.trim().length > 0 : title.trim().length > 0)
     && !scheduleFieldError
     && !configTooLarge;
 
@@ -150,15 +149,19 @@ export default function TemplateCreate() {
     if (!form || form.engine !== 'tier' || !startsAt) return;
     setBannerError(null);
     try {
-      await createMutation.mutateAsync({
+      // Built per method rather than spread, so TypeScript narrows the union
+      // and a code discount cannot be assembled without its code.
+      const common = {
         slug: template.slug,
-        title: title.trim(),
-        method,
-        ...(method === 'code' ? { code: code.trim() } : {}),
         startsAt,
         ...(endsAt ? { endsAt } : {}),
         form: form.data,
-      });
+      };
+      await createMutation.mutateAsync(
+        method === 'code'
+          ? { ...common, method: 'code', code: code.trim() }
+          : { ...common, method: 'automatic', title: title.trim() },
+      );
       navigate('/discounts');
     } catch (err) {
       setBannerError(err instanceof Error ? err.message : 'Failed to create the discount.');
@@ -193,14 +196,19 @@ export default function TemplateCreate() {
         <InlineGrid columns={{ xs: 1, md: ['twoThirds', 'oneThird'] }} gap="400">
           <BlockStack gap="400">
             <Card>
-              <TextField
-                label="Title"
-                value={title}
-                onChange={setTitle}
-                autoComplete="off"
-                requiredIndicator
-                helpText="Shown internally and in Shopify admin's discount list."
-              />
+              {/* A code discount is titled by its code, the way Shopify's own
+                  admin does it — so asking for a separate title here would be
+                  asking for a name the server then discards. */}
+              {method === 'automatic' && (
+                <TextField
+                  label="Title"
+                  value={title}
+                  onChange={setTitle}
+                  autoComplete="off"
+                  requiredIndicator
+                  helpText="Shown internally and in Shopify admin's discount list."
+                />
+              )}
               <Select
                 label="Method"
                 options={[
@@ -220,7 +228,7 @@ export default function TemplateCreate() {
                   onChange={setCode}
                   autoComplete="off"
                   requiredIndicator
-                  helpText="What the shopper types at checkout, e.g. SPRING20."
+                  helpText="What the shopper types at checkout, e.g. SPRING20. This also names the discount, as it does in Shopify admin."
                 />
               )}
             </Card>

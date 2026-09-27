@@ -25,19 +25,26 @@ export interface Template {
 
 export type DiscountMethod = 'automatic' | 'code';
 
-export interface CreateDiscountInput {
+interface CreateDiscountBase {
   slug: string;
-  title: string;
-  /** How the discount is TRIGGERED. The engine comes from the template; both
-   *  methods write the same `$app:` config. Defaults to 'automatic'. */
-  method?: DiscountMethod;
-  /** Required when `method` is 'code'. */
-  code?: string;
   startsAt: string;
   endsAt?: string;
   combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };
   form: unknown;
 }
+
+/**
+ * How the discount is TRIGGERED. The engine always comes from the template, and
+ * both methods write the same `$app:` config.
+ *
+ * A union rather than two optional fields, because each method is NAMED by a
+ * different one: an automatic discount by its title, a code discount by its
+ * code (as Shopify's own admin does). Sending a code discount without a code,
+ * or an automatic one without a title, is a compile error rather than a 400.
+ */
+export type CreateDiscountInput =
+  | (CreateDiscountBase & { method?: 'automatic'; title: string })
+  | (CreateDiscountBase & { method: 'code'; code: string });
 
 export function fetchTemplates(f: AuthenticatedFetch): Promise<{ templates: Template[] }> {
   return apiFetch<{ templates: Template[] }>(f, '/api/templates');

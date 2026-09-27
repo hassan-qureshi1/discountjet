@@ -48,6 +48,17 @@ import type {
 } from './WebhookEventRepository';
 import type { ITemplateRepository, TemplateRow, TemplateSeed } from './TemplateRepository';
 import type { DueBundle, IDueBundleScanner } from './DueBundleScanner';
+import type { ICampaignRepository, CampaignRow, CampaignNew } from './CampaignRepository';
+import type {
+  ICampaignDiscountRepository,
+  CampaignDiscountRow,
+  CampaignDiscountNew,
+} from './CampaignDiscountRepository';
+import type {
+  ICampaignBundleRepository,
+  CampaignBundleRow,
+  CampaignBundleNew,
+} from './CampaignBundleRepository';
 
 /**
  * The generic half of every fake, mirroring `BaseRepository`: id and timestamp
@@ -433,6 +444,145 @@ export class InMemoryDiscountRepository
   }
 }
 
+export class InMemoryCampaignRepository
+  extends InMemoryBase<CampaignRow, CampaignNew>
+  implements ICampaignRepository
+{
+  protected readonly table = 'campaign';
+
+  constructor(
+    public readonly shopId: string,
+    rows: CampaignRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: CampaignRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(data: NewRow<CampaignNew>, id: string, now: string): CampaignRow {
+    return {
+      description: null,
+      startsAt: null,
+      endsAt: null,
+      publishedAt: null,
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as CampaignRow;
+  }
+
+  /** Newest first, and filtered by shop plus status — mirrors the real repository. */
+  async listByStatus(status?: CampaignRow['status']): Promise<CampaignRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && (status === undefined || r.status === status))
+      .map((r) => ({ ...r }))
+      .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+  }
+}
+
+export class InMemoryCampaignDiscountRepository
+  extends InMemoryBase<CampaignDiscountRow, CampaignDiscountNew>
+  implements ICampaignDiscountRepository
+{
+  protected readonly table = 'campaign_discount';
+
+  constructor(
+    public readonly shopId: string,
+    rows: CampaignDiscountRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: CampaignDiscountRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(
+    data: NewRow<CampaignDiscountNew>,
+    id: string,
+    now: string,
+  ): CampaignDiscountRow {
+    return {
+      code: null,
+      shopifyGid: null,
+      publishError: null,
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as CampaignDiscountRow;
+  }
+
+  async listForCampaign(campaignId: string): Promise<CampaignDiscountRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.campaignId === campaignId)
+      .map((r) => ({ ...r }));
+  }
+
+  async setPublishResult(
+    id: string,
+    result: {
+      shopifyGid: string | null;
+      publishState: CampaignDiscountRow['publishState'];
+      publishError: string | null;
+    },
+  ): Promise<void> {
+    const i = this.rows.findIndex((r) => r.id === id && this.inScope(r));
+    if (i !== -1) this.rows[i] = { ...this.rows[i], ...result };
+  }
+
+  async deleteForCampaign(campaignId: string): Promise<void> {
+    this.rows = this.rows.filter((r) => !(this.inScope(r) && r.campaignId === campaignId));
+  }
+}
+
+export class InMemoryCampaignBundleRepository
+  extends InMemoryBase<CampaignBundleRow, CampaignBundleNew>
+  implements ICampaignBundleRepository
+{
+  protected readonly table = 'campaign_bundle';
+
+  constructor(
+    public readonly shopId: string,
+    rows: CampaignBundleRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: CampaignBundleRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(
+    data: NewRow<CampaignBundleNew>,
+    id: string,
+    now: string,
+  ): CampaignBundleRow {
+    return {
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as CampaignBundleRow;
+  }
+
+  async listForCampaign(campaignId: string): Promise<CampaignBundleRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.campaignId === campaignId)
+      .map((r) => ({ ...r }));
+  }
+
+  async deleteForCampaign(campaignId: string): Promise<void> {
+    this.rows = this.rows.filter((r) => !(this.inScope(r) && r.campaignId === campaignId));
+  }
+}
+
 /** Outside the generic base, exactly as the real one is — see its class comment. */
 export class InMemoryWebhookEventRepository implements IWebhookEventRepository {
   constructor(public rows: WebhookEventRow[] = []) {}
@@ -538,6 +688,9 @@ export interface InMemoryRepositories extends Repositories {
   discounts: InMemoryDiscountRepository;
   events: InMemoryWebhookEventRepository;
   templates: InMemoryTemplateRepository;
+  campaigns: InMemoryCampaignRepository;
+  campaignDiscounts: InMemoryCampaignDiscountRepository;
+  campaignBundles: InMemoryCampaignBundleRepository;
 }
 
 /**
@@ -553,6 +706,9 @@ export function createInMemoryRepositories(
     discounts?: DiscountRow[];
     events?: WebhookEventRow[];
     templates?: TemplateRow[];
+    campaigns?: CampaignRow[];
+    campaignDiscounts?: CampaignDiscountRow[];
+    campaignBundles?: CampaignBundleRow[];
   } = {},
 ): InMemoryRepositories {
   return {
@@ -562,5 +718,8 @@ export function createInMemoryRepositories(
     discounts: new InMemoryDiscountRepository(shopId, seed.discounts ?? []),
     events: new InMemoryWebhookEventRepository(seed.events ?? []),
     templates: new InMemoryTemplateRepository(seed.templates ?? []),
+    campaigns: new InMemoryCampaignRepository(shopId, seed.campaigns ?? []),
+    campaignDiscounts: new InMemoryCampaignDiscountRepository(shopId, seed.campaignDiscounts ?? []),
+    campaignBundles: new InMemoryCampaignBundleRepository(shopId, seed.campaignBundles ?? []),
   };
 }

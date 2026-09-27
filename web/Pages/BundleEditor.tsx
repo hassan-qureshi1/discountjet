@@ -17,7 +17,6 @@ import {
   Button,
   Card,
   Checkbox,
-  ChoiceList,
   Divider,
   InlineGrid,
   InlineStack,
@@ -582,6 +581,29 @@ export default function BundleEditor() {
     }
   };
 
+  /**
+   * Activate / Deactivate from the More actions menu.
+   *
+   * Saves IMMEDIATELY, the way Shopify's own discount page behaves — a merchant
+   * who deactivates a live bundle expects it gone from checkout, not staged
+   * behind a Save they might never press. `Draft` IS the deactivated state: the
+   * route honours it as the manual off-switch and clears the transport, and the
+   * scheduling cron skips the row entirely.
+   *
+   * Only `status` goes on the wire, so unsaved edits elsewhere on the form are
+   * deliberately NOT swept along with it.
+   */
+  const handleSetStatus = async (next: 'Active' | 'Draft') => {
+    if (!id) return;
+    setBannerError(null);
+    try {
+      await updateMutation.mutateAsync({ id, input: { status: next } });
+      setStatus(next);
+    } catch (err) {
+      setBannerError(err instanceof Error ? err.message : 'Failed to update the bundle status.');
+    }
+  };
+
   const handleDelete = async () => {
     if (!id) return;
     setBannerError(null);
@@ -597,6 +619,7 @@ export default function BundleEditor() {
     }
   };
 
+  const busy = isSaving || deleteMutation.isPending;
   const mutationError = createMutation.error ?? updateMutation.error ?? deleteMutation.error;
 
   let primaryActionLabel: string;
@@ -615,18 +638,37 @@ export default function BundleEditor() {
         loading: isSaving,
         disabled: !canSave || isSaving,
       }}
-      secondaryActions={
+      secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
+      actionGroups={
         isEdit
-          ? [
-            { content: 'Discard', onAction: () => navigate('/bundles') },
-            {
-              content: 'Delete bundle',
-              destructive: true,
-              onAction: () => setConfirmingDelete(true),
-              disabled: isSaving || deleteMutation.isPending,
-            },
-          ]
-          : [{ content: 'Discard', onAction: () => navigate('/bundles') }]
+          ? [{
+            title: 'More actions',
+            actions: [
+              // One entry, not two: the label states what the click will DO,
+              // which is how Shopify's own pages read. `Draft` is deactivated.
+              status === 'Draft'
+                ? {
+                  content: 'Activate',
+                  onAction: () => handleSetStatus('Active'),
+                  // An update-operation bundle the shop's plan can't run is
+                  // forced to Draft on save anyway — offering Activate would
+                  // promise something the server will refuse.
+                  disabled: busy || isUpdateLocked,
+                }
+                : {
+                  content: 'Deactivate',
+                  onAction: () => handleSetStatus('Draft'),
+                  disabled: busy,
+                },
+              {
+                content: 'Delete bundle',
+                destructive: true,
+                onAction: () => setConfirmingDelete(true),
+                disabled: busy,
+              },
+            ],
+          }]
+          : undefined
       }
     >
       <Modal
@@ -1042,105 +1084,8 @@ export default function BundleEditor() {
             )}
           </BlockStack>
 
-          {/* Right rail — schedule + operation reference + real Shopify limits */}
+          {/* Right rail — operation reference + real Shopify limits */}
           <BlockStack gap="400">
-            <Card>
-              <BlockStack gap="300">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingSm">Schedule</Text>
-                  <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
-                </InlineStack>
-
-                {/* The manual off-switch. `Draft` has always been honoured by the
-                    server and skipped by the scheduling cron; until now there was
-                    no way to set it, so the off-switch was unreachable from the UI.
-                    Choosing "Active" only means "not Draft" — the server still
-                    derives Scheduled/Ended from the window below. */}
-                <ChoiceList
-                  title="Bundle status"
-                  titleHidden
-                  choices={[
-                    {
-                      label: 'Active',
-                      value: 'active',
-                      helpText: 'Follows the schedule below. With no dates set, the bundle goes live as soon as it is saved.',
-                    },
-                    {
-                      label: 'Draft',
-                      value: 'draft',
-                      helpText: 'Never goes live, whatever the schedule says. Saving as draft removes the bundle from checkout until you set it active again.',
-                    },
-                  ]}
-                  selected={[status === 'Draft' ? 'draft' : 'active']}
-                  onChange={(selected) => setStatus(selected[0] === 'draft' ? 'Draft' : 'Active')}
-                  disabled={isUpdateLocked}
-                />
-
-                <Checkbox
-                  label="Set a start date"
-                  checked={hasStart}
-                  onChange={setHasStart}
-                  helpText="Leave off to start as soon as the bundle is saved."
-                />
-                {hasStart && (
-                  <InlineGrid columns={2} gap="300">
-                    <TextField
-                      label="Start date"
-                      type="date"
-                      value={startDate}
-                      onChange={setStartDate}
-                      autoComplete="off"
-                    />
-                    <TextField
-                      label="Start time"
-                      type="time"
-                      value={startTime}
-                      onChange={setStartTime}
-                      autoComplete="off"
-                    />
-                  </InlineGrid>
-                )}
-                <Checkbox
-                  label="Set an end date"
-                  checked={hasEnd}
-                  onChange={setHasEnd}
-                  helpText="Leave off to run until you switch the bundle off."
-                />
-                {hasEnd && (
-                  <InlineGrid columns={2} gap="300">
-                    <TextField
-                      label="End date"
-                      type="date"
-                      value={endDate}
-                      onChange={setEndDate}
-                      autoComplete="off"
-                    />
-                    <TextField
-                      label="End time"
-                      type="time"
-                      value={endTime}
-                      onChange={setEndTime}
-                      autoComplete="off"
-                    />
-                  </InlineGrid>
-                )}
-                {scheduleFieldError && (
-                  <Banner tone="critical">{scheduleFieldError}</Banner>
-                )}
-
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Times are in your own timezone. The bundle goes live and comes down
-                  automatically within 5 minutes of each time.
-                </Text>
-
-                {bundle?.scheduleError && (
-                  <Banner tone="warning" title="The last scheduled change did not go through">
-                    <p>{bundle.scheduleError}</p>
-                    <p>It will be retried automatically. Saving the bundle also retries it.</p>
-                  </Banner>
-                )}
-              </BlockStack>
-            </Card>
 
             <Card>
               <BlockStack gap="300">
@@ -1185,6 +1130,81 @@ export default function BundleEditor() {
             </Card>
           </BlockStack>
         </InlineGrid>
+
+        {/* Full width, at the end of the page: the schedule is read after the
+            merchant has decided what the bundle actually IS. */}
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h2" variant="headingSm">Schedule</Text>
+              <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
+            </InlineStack>
+
+            <Checkbox
+              label="Set a start date"
+              checked={hasStart}
+              onChange={setHasStart}
+              helpText="Leave off to start as soon as the bundle is saved."
+            />
+            {hasStart && (
+              <InlineGrid columns={2} gap="300">
+                <TextField
+                  label="Start date"
+                  type="date"
+                  value={startDate}
+                  onChange={setStartDate}
+                  autoComplete="off"
+                />
+                <TextField
+                  label="Start time"
+                  type="time"
+                  value={startTime}
+                  onChange={setStartTime}
+                  autoComplete="off"
+                />
+              </InlineGrid>
+            )}
+            <Checkbox
+              label="Set an end date"
+              checked={hasEnd}
+              onChange={setHasEnd}
+              helpText="Leave off to run until you switch the bundle off."
+            />
+            {hasEnd && (
+              <InlineGrid columns={2} gap="300">
+                <TextField
+                  label="End date"
+                  type="date"
+                  value={endDate}
+                  onChange={setEndDate}
+                  autoComplete="off"
+                />
+                <TextField
+                  label="End time"
+                  type="time"
+                  value={endTime}
+                  onChange={setEndTime}
+                  autoComplete="off"
+                />
+              </InlineGrid>
+            )}
+            {scheduleFieldError && (
+              <Banner tone="critical">{scheduleFieldError}</Banner>
+            )}
+
+            <Text as="p" variant="bodySm" tone="subdued">
+              Times are in your own timezone. The bundle goes live and comes down
+              automatically within 5 minutes of each time.
+            </Text>
+
+            {bundle?.scheduleError && (
+              <Banner tone="warning" title="The last scheduled change did not go through">
+                <p>{bundle.scheduleError}</p>
+                <p>It will be retried automatically. Saving the bundle also retries it.</p>
+              </Banner>
+            )}
+          </BlockStack>
+        </Card>
       </BlockStack>
     </Page>
   );

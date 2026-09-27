@@ -47,4 +47,4 @@ CREATE TABLE `campaign_discount` (
 );
 --> statement-breakpoint
 CREATE INDEX `campaign_discount_campaign_idx` ON `campaign_discount` (`campaign_id`);--> statement-breakpoint
-ALTER TABLE `bundle` ADD `campaign_id` text REFERENCES campaign(id);
+ALTER TABLE `bundle` ADD `campaign_id` text REFERENCES campaign(id) ON DELETE SET NULL;

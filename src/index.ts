@@ -6,6 +6,7 @@ import { bundleRoutes } from './routes/bundles';
 import { variantRoutes } from './routes/variants';
 import { shopRoutes } from './routes/shop';
 import { previewRoutes } from './routes/preview';
+import { templateRoutes } from './routes/templates';
 import { webhookRoutes } from './lifecycle/webhooks';
 import { createBundleScheduleDeps, runBundleSchedule } from './lifecycle/bundleSchedule';
 import type { Env } from './types/env';
@@ -48,6 +49,7 @@ app.route('/', shopRoutes);
 
 // Public template preview page (no auth) — see routes/preview.ts.
 app.route('/', previewRoutes);
+app.route('/', templateRoutes);
 
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', app: 'cloudflare-shopify-starter' }));

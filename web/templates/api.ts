@@ -1,0 +1,65 @@
+// web/templates/api.ts
+//
+// Data layer for the promotion template gallery + create flow. Thin wrappers
+// over apiFetch that hit the Worker's template + discount routes
+// (src/routes/templates.ts, src/routes/discounts.ts). App Bridge auth is
+// supplied by the caller (react-query hooks). Mirrors web/bundles/api.ts.
+import { apiFetch, type AuthenticatedFetch } from '../api';
+
+export type DiscountEngineType = 'tier' | 'bundle' | 'special';
+
+export interface Template {
+  slug: string;
+  name: string;
+  description: string;
+  example: string | null;
+  category: string;
+  symbol: string | null;
+  type: DiscountEngineType;
+  /** Seed form data for the engine named by `type`. Arrives already parsed —
+   * the server never sends this as a JSON string. It is an unvalidated DB blob,
+   * not a checked form shape: consumers must verify the fields they read before
+   * casting (see `isTierFormData` in web/Pages/TemplateCreate.tsx). */
+  defaults: Record<string, unknown>;
+}
+
+export type DiscountMethod = 'automatic' | 'code';
+
+interface CreateDiscountBase {
+  slug: string;
+  startsAt: string;
+  endsAt?: string;
+  combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };
+  form: unknown;
+}
+
+/**
+ * How the discount is TRIGGERED. The engine always comes from the template, and
+ * both methods write the same `$app:` config.
+ *
+ * A union rather than two optional fields, because each method is NAMED by a
+ * different one: an automatic discount by its title, a code discount by its
+ * code (as Shopify's own admin does). Sending a code discount without a code,
+ * or an automatic one without a title, is a compile error rather than a 400.
+ */
+export type CreateDiscountInput =
+  | (CreateDiscountBase & { method?: 'automatic'; title: string })
+  | (CreateDiscountBase & { method: 'code'; code: string });
+
+export function fetchTemplates(f: AuthenticatedFetch): Promise<{ templates: Template[] }> {
+  return apiFetch<{ templates: Template[] }>(f, '/api/templates');
+}
+
+export function fetchTemplate(f: AuthenticatedFetch, slug: string): Promise<{ template: Template }> {
+  return apiFetch<{ template: Template }>(f, `/api/templates/${encodeURIComponent(slug)}`);
+}
+
+export function createDiscountFromTemplate(
+  f: AuthenticatedFetch,
+  input: CreateDiscountInput,
+): Promise<{ discountId: string }> {
+  return apiFetch<{ discountId: string }>(f, '/api/discounts', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}

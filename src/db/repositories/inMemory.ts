@@ -46,6 +46,7 @@ import type {
   WebhookEventRow,
   WebhookEventInsert,
 } from './WebhookEventRepository';
+import type { ITemplateRepository, TemplateRow, TemplateSeed } from './TemplateRepository';
 import type { DueBundle, IDueBundleScanner } from './DueBundleScanner';
 
 /**
@@ -451,6 +452,64 @@ export class InMemoryWebhookEventRepository implements IWebhookEventRepository {
 }
 
 /**
+ * The in-memory twin of `TemplateRepository` — unscoped, like the real thing,
+ * and filtering `active === 1` in both reads to match the real queries.
+ */
+export class InMemoryTemplateRepository implements ITemplateRepository {
+  constructor(public rows: TemplateRow[] = []) {}
+
+  async listActive(): Promise<TemplateRow[]> {
+    return this.rows
+      .filter((r) => r.active === 1)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+      .map((r) => ({ ...r }));
+  }
+
+  async findBySlug(slug: string): Promise<TemplateRow | null> {
+    const row = this.rows.find((r) => r.slug === slug && r.active === 1);
+    return row ? { ...row } : null;
+  }
+
+  async upsertMany(seeds: TemplateSeed[]): Promise<void> {
+    const now = new Date().toISOString();
+    for (const seed of seeds) {
+      const i = this.rows.findIndex((r) => r.slug === seed.slug);
+      if (i === -1) {
+        this.rows.push({
+          id: crypto.randomUUID(),
+          slug: seed.slug,
+          name: seed.name,
+          description: seed.description,
+          example: seed.example ?? null,
+          category: seed.category,
+          symbol: seed.symbol ?? null,
+          type: seed.type,
+          defaults: seed.defaults,
+          sortOrder: seed.sortOrder,
+          active: seed.active ?? 1,
+          createdAt: now,
+          updatedAt: now,
+        });
+      } else {
+        this.rows[i] = {
+          ...this.rows[i],
+          name: seed.name,
+          description: seed.description,
+          example: seed.example ?? null,
+          category: seed.category,
+          symbol: seed.symbol ?? null,
+          type: seed.type,
+          defaults: seed.defaults,
+          sortOrder: seed.sortOrder,
+          active: seed.active ?? 1,
+          updatedAt: now,
+        };
+      }
+    }
+  }
+}
+
+/**
  * The in-memory twin of `DueBundleScanner`, for the cron's lifecycle tests.
  * Mirrors the real predicates — including that it returns ids only.
  */
@@ -477,6 +536,7 @@ export interface InMemoryRepositories extends Repositories {
   bundleItems: InMemoryBundleItemRepository;
   discounts: InMemoryDiscountRepository;
   events: InMemoryWebhookEventRepository;
+  templates: InMemoryTemplateRepository;
 }
 
 /**
@@ -491,6 +551,7 @@ export function createInMemoryRepositories(
     bundleItems?: BundleItemRow[];
     discounts?: DiscountRow[];
     events?: WebhookEventRow[];
+    templates?: TemplateRow[];
   } = {},
 ): InMemoryRepositories {
   return {
@@ -499,5 +560,6 @@ export function createInMemoryRepositories(
     bundleItems: new InMemoryBundleItemRepository(shopId, seed.bundleItems ?? []),
     discounts: new InMemoryDiscountRepository(shopId, seed.discounts ?? []),
     events: new InMemoryWebhookEventRepository(seed.events ?? []),
+    templates: new InMemoryTemplateRepository(seed.templates ?? []),
   };
 }

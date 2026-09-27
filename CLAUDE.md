@@ -30,7 +30,7 @@ See `README.md` for setup. See `wrangler.jsonc` for which Cloudflare bindings ar
 - **All IDs are `crypto.randomUUID()`** — not auto-increment.
 - **Timestamps are ISO 8601 strings** stored as `text()` (no SQLite `datetime` type).
 - **Tenant isolation is structural, not conventional** — every shop-owned table gets a repository extending `ShopScopedRepository`, whose constructor requires a `shopId` and which injects `where shop_id = ?` into every read and write. A scoped repository cannot be built without a tenant, so a query cannot forget one. `shopify_shop` itself extends `BaseRepository`, because it *is* the tenant.
-- **Every additional table references `shopify_shop`** via a non-null `shopId` text FK with `onDelete: 'cascade'` (GDPR `SHOP_REDACT` pattern).
+- **Every additional table references `shopify_shop`** via a non-null `shopId` text FK with `onDelete: 'cascade'` (GDPR `SHOP_REDACT` pattern). Two tables are deliberate, documented exceptions — `webhook_event` (nullable `shop_id`, no FK: the duplicate gate must fire before a shop is resolved) and `template` (no `shop_id`: catalogue rows are identical for every shop and carry no merchant data). Each justifies itself at its definition in `src/db/schema.ts`; `webhook_event`'s repository escape hatch is also covered in `src/CLAUDE.md`. An exception is a deliberate act argued from the data, written down next to the table — not a sign the rule is soft. Every other table takes the FK.
 
 ---
 

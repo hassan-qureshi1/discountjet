@@ -210,3 +210,49 @@ export const webhookEvent = sqliteTable('webhook_event', {
   shopifyGid: text('shopify_gid'),
   receivedAt: text('received_at').notNull(),
 });
+
+// ─── template ───────────────────────────────────────────────────────────────
+//
+// Promotion templates (E5): curated editorial content — copy, examples, and the
+// defaults a create form is prefilled with.
+//
+// DELIBERATELY GLOBAL: no `shopId`, no FK to `shopify_shop`, and so the second
+// documented exception to this project's tenant rule after `webhook_event`.
+// The justification is a property of the data, not convenience: these rows are
+// identical for every shop, carry no merchant data, and have nothing to cascade
+// on SHOP_REDACT. Giving them a `shopId` would mean N identical copies and a
+// scoped repository asserting an isolation guarantee that protects nothing.
+//
+// `slug` is the route key (`/templates/:slug`); `id` stays a minted UUID so the
+// project's id rule holds.
+export const template = sqliteTable(
+  'template',
+  {
+    id: text('id').primaryKey(),
+    slug: text('slug').notNull(),
+
+    name: text('name').notNull(),
+    description: text('description').notNull(),
+    example: text('example'),
+    category: text('category').notNull(),
+    symbol: text('symbol'),
+
+    // The engine this template targets. Merchant-facing surfaces show
+    // `category`; this is never displayed.
+    type: text('type', { enum: ['tier', 'bundle', 'special'] }).notNull(),
+
+    // JSON: the partial form data the create page is seeded with.
+    defaults: text('defaults').notNull(),
+
+    sortOrder: integer('sort_order').notNull().default(0),
+    // 0/1 — SQLite has no boolean. Retire a template without deleting it.
+    active: integer('active').notNull().default(1),
+
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    slugUnq: uniqueIndex('template_slug_unq').on(t.slug),
+    activeSortIdx: index('template_active_sort_idx').on(t.active, t.sortOrder),
+  }),
+);

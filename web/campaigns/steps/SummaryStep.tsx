@@ -1,8 +1,8 @@
 // web/campaigns/steps/SummaryStep.tsx
 //
-// Step 4 of the campaign builder: what will be created, the combined config
-// size against the 10KB cap, the window in local time, and a one-way Banner
-// before Publish.
+// Step 4 of the campaign builder: what will be created, each discount's
+// config against the 10KB per-metafield cap, the window in local time, and a
+// one-way Banner before Publish.
 //
 // Publishing can PARTIALLY succeed — some discounts created, others failed,
 // and bundles skipped because another live campaign already owns them. A
@@ -15,19 +15,24 @@ import { useNavigate } from 'react-router-dom';
 import {
   Badge, Banner, BlockStack, Button, Card, InlineStack, List, Text,
 } from '@shopify/polaris';
-import type { Campaign } from '../api';
+import type { Campaign, PublishCampaignResponse } from '../api';
 import { usePublishCampaign } from '../hooks';
 import { formatWindowLabel } from '../../lib/schedule';
 import { METAFIELD_MAX_SIZE_BYTES } from '../../../src/lib/discountEngines/tier';
+import { describePublishOutcome, oversizedDiscounts, totalConfigBytes } from '../publishOutcome';
 
 export function SummaryStep({ campaign }: { campaign: Campaign }) {
   const navigate = useNavigate();
   const publishMutation = usePublishCampaign();
   const [bannerError, setBannerError] = useState<string | null>(null);
-  const [partial, setPartial] = useState<{ created: number; failed: number; bundleFailures: { bundleId: string; error: string }[] } | null>(null);
+  const [partial, setPartial] = useState<PublishCampaignResponse | null>(null);
 
-  const totalConfigBytes = campaign.discounts.reduce((sum, d) => sum + d.configBytes, 0);
-  const overCap = totalConfigBytes > METAFIELD_MAX_SIZE_BYTES;
+  // The cap is per metafield value — one per discount — so the individual
+  // discounts over it are what block Publish. The combined figure below is
+  // information, nothing more.
+  const oversized = oversizedDiscounts(campaign.discounts);
+  const overCap = oversized.length > 0;
+  const combinedBytes = totalConfigBytes(campaign.discounts);
 
   const windowLabel = campaign.scheduleMode === 'immediate'
     ? 'Immediately on publish'
@@ -51,28 +56,24 @@ export function SummaryStep({ campaign }: { campaign: Campaign }) {
       // per-discount reason lives on `campaign.discounts[].publishError` once
       // the invalidated campaign query refetches; `bundleFailures` already
       // carries its own merchant-readable message.
-      setPartial({ created: result.created, failed: result.failed, bundleFailures: result.bundleFailures });
+      setPartial(result);
     } catch (err) {
       setBannerError(err instanceof Error ? err.message : 'Failed to publish this campaign.');
     }
   };
 
   const failedDiscounts = campaign.discounts.filter((d) => d.publishState === 'failed');
+  // What the SERVER says the campaign now is, not what the counts imply.
+  const outcome = partial ? describePublishOutcome(partial) : null;
 
   return (
     <BlockStack gap="400">
       {bannerError && <Banner tone="critical" onDismiss={() => setBannerError(null)}>{bannerError}</Banner>}
 
-      {partial && (
-        <Banner
-          tone={partial.created === 0 ? 'critical' : 'warning'}
-          title={partial.created === 0 ? 'Nothing was published' : 'This campaign published partially'}
-        >
+      {partial && outcome && (
+        <Banner tone={outcome.tone} title={outcome.title}>
           <BlockStack gap="200">
-            <Text as="p">
-              {`${partial.created} discount${partial.created === 1 ? '' : 's'} created, ${partial.failed} failed.`}
-              {partial.created === 0 && ' The campaign stays a Draft — nothing went live, so it is safe to fix and try again.'}
-            </Text>
+            <Text as="p">{outcome.summary}</Text>
             {failedDiscounts.length > 0 && (
               <List type="bullet">
                 {failedDiscounts.map((d) => (
@@ -107,12 +108,9 @@ export function SummaryStep({ campaign }: { campaign: Campaign }) {
           </InlineStack>
           <InlineStack align="space-between">
             <Text as="span">Combined discount config size</Text>
-            <InlineStack gap="150" blockAlign="center">
-              <Text as="span" numeric tone={overCap ? 'critical' : undefined}>
-                {`${(totalConfigBytes / 1024).toFixed(1)}KB of ${(METAFIELD_MAX_SIZE_BYTES / 1024).toFixed(0)}KB`}
-              </Text>
-              {overCap && <Badge tone="critical">Over the limit</Badge>}
-            </InlineStack>
+            <Text as="span" numeric>
+              {`${(combinedBytes / 1024).toFixed(1)}KB across ${campaign.discounts.length} discount${campaign.discounts.length === 1 ? '' : 's'}`}
+            </Text>
           </InlineStack>
           <InlineStack align="space-between">
             <Text as="span">Window</Text>
@@ -123,6 +121,27 @@ export function SummaryStep({ campaign }: { campaign: Campaign }) {
 
       {!canPublish && !overCap && (
         <Banner tone="warning">Add at least one discount or bundle before publishing.</Banner>
+      )}
+
+      {overCap && (
+        <Banner tone="critical" title={`Over the ${(METAFIELD_MAX_SIZE_BYTES / 1024).toFixed(0)}KB limit`}>
+          <BlockStack gap="200">
+            <Text as="p">
+              {`Shopify caps each discount's configuration at ${(METAFIELD_MAX_SIZE_BYTES / 1024).toFixed(0)}KB. `
+                + 'Simplify these before publishing — the rest of the campaign is fine.'}
+            </Text>
+            <List type="bullet">
+              {oversized.map((d) => (
+                <List.Item key={d.id}>
+                  <InlineStack gap="150" blockAlign="center">
+                    <Text as="span">{d.name}</Text>
+                    <Badge tone="critical">{`${(d.configBytes / 1024).toFixed(1)}KB`}</Badge>
+                  </InlineStack>
+                </List.Item>
+              ))}
+            </List>
+          </BlockStack>
+        </Banner>
       )}
 
       <Banner tone="warning" title="Publishing cannot be undone">

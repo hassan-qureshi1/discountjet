@@ -958,6 +958,46 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     });
   });
 
+  it('POST /api/bundles persists scheduleError on the row when the metafield write fails', async () => {
+    // An always-on (no window) expand bundle: the due-scan never revisits a
+    // row with no `scheduleStart`/`scheduleEnd`, so `scheduleError` is the
+    // only thing that will ever surface a failed metafield write to the
+    // merchant. It must land on the STORED row, not just the response body.
+    const repos = seed();
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        metafieldsSet: {
+          metafields: null,
+          userErrors: [{ field: ['metafields', '0', 'value'], message: 'bad value' }],
+        },
+      },
+    });
+
+    const body = {
+      name: 'Ski Set',
+      operation: 'expand',
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2, price: 10 }],
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+    };
+    const res = await app.request(
+      '/api/bundles',
+      {
+        method: 'POST',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { bundle: { scheduleError: string | null } };
+    expect(json.bundle.scheduleError).toEqual(expect.any(String));
+    // The persisted row and the 502 body must agree — never a lying pair.
+    expect(repos.bundles.rows[0].scheduleError).toBe(json.bundle.scheduleError);
+    expect(repos.bundles.rows[0].scheduleError).toContain('bad value');
+  });
+
   it('POST /api/bundles overwrites the client price with Shopify\'s', async () => {
     const repos = seed({ shops: [shopRow({ ...SHOP, status: 'installed', currency: 'AUD' , planName: 'Shopify Plus' })] });
     mockVariantResolution([variantNode({ price: '15.00' }), parentNode('gid://shopify/ProductVariant/7')]);
@@ -1702,6 +1742,54 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     // `bundle_item.price` and the composition metafield from diverging, since
     // the composition is deliberately not rewritten on a rename either.
     expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/bundles/:id persists scheduleError on the row when the metafield write fails', async () => {
+    // Already-Active expand bundle whose composition was never (successfully)
+    // written. A PUT that replaces `items` sets `compositionInputsChanged`,
+    // which forces Phase 2 to attempt the write regardless of `becameLive` or
+    // whether the operation itself changed.
+    const existing = bundleRow({
+      operation: 'expand',
+      parentVariantId: 'gid://shopify/ProductVariant/999',
+      metafieldState: 'NotYet',
+      status: 'Active',
+      // Below the parent's (mocked) $15.00 price — an expand bundle priced
+      // above its target fails validation before the metafield write is
+      // even attempted.
+      price: 999,
+    });
+    const repos = seed({ bundles: [existing], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+    mockVariantResolution([variantNode(), parentNode('gid://shopify/ProductVariant/999')]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: {
+        metafieldsSet: {
+          metafields: null,
+          userErrors: [{ field: ['metafields', '0', 'value'], message: 'bad value' }],
+        },
+      },
+    });
+
+    const body = {
+      items: [{ variantId: 'gid://shopify/ProductVariant/1', qty: 2, price: 10 }],
+    };
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(502);
+    const json = (await res.json()) as { bundle: { scheduleError: string | null } };
+    expect(json.bundle.scheduleError).toEqual(expect.any(String));
+    // The persisted row and the 502 body must agree — never a lying pair.
+    expect(repos.bundles.rows[0].scheduleError).toBe(json.bundle.scheduleError);
+    expect(repos.bundles.rows[0].scheduleError).toContain('bad value');
   });
 
   it('PUT /api/bundles/:id transitions expand -> merge: clears composition and writes $app:cart-transform.merge_bundles', async () => {

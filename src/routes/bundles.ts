@@ -366,9 +366,9 @@ function assertParentShape(parentVariantId: string): void {
  * Without this a merchant whose target product was deleted could neither fix
  * the bundle NOR switch it off — the block would trap them with a live, broken
  * bundle. Draft and Ended are both inactive, so letting those through costs
- * nothing at checkout. A CREATE never takes this path: `status` defaults to
- * `Draft`, so honouring it there would disable the check for almost every new
- * bundle.
+ * nothing at checkout. A CREATE always runs the check regardless: there is no
+ * `existing` row yet for it to read a status from, so this early-out never
+ * applies to it.
  */
 function isInactiveStatus(status: Row['status'] | undefined): boolean {
   return status === 'Draft' || status === 'Ended';
@@ -823,9 +823,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
     } catch (err) {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
+      // Persist the failure onto the row too: without a bound end date the
+      // scanner never revisits this bundle, so `scheduleError` is the only
+      // thing that will ever surface the lie to the merchant.
       const message = err instanceof Error ? err.message : String(err);
+      const failed = await bundleRepo.update(row.id, { scheduleError: message });
       return c.json(
-        { error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(row, itemRows, sum, currency) },
+        { error: `Bundle created but composition_v2 write failed: ${message}`, bundle: toDto(failed, itemRows, sum, currency) },
         502,
       );
     }
@@ -844,9 +848,13 @@ bundleRoutes.post('/api/bundles', async (c) => {
     } catch (err) {
       // The row is already created (metafieldState='NotYet') — surface the
       // failure loudly instead of letting the client believe it succeeded.
+      // Persist the failure onto the row too: without a bound end date the
+      // scanner never revisits this bundle, so `scheduleError` is the only
+      // thing that will ever surface the lie to the merchant.
       const message = err instanceof Error ? err.message : String(err);
+      const failed = await bundleRepo.update(row.id, { scheduleError: message });
       return c.json(
-        { error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(row, itemRows, sum, currency) },
+        { error: `Bundle created but merge_bundles write failed: ${message}`, bundle: toDto(failed, itemRows, sum, currency) },
         502,
       );
     }
@@ -1194,11 +1202,17 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       merged.metafieldGid = metafieldGid;
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
+      // Persist the failure onto the row, not just the in-memory object: a
+      // bound-free (always-on) bundle is never revisited by the due-scan, so
+      // `scheduleError` is the only thing that will ever surface this to the
+      // merchant. The response DTO is built from the same persisted row so
+      // the two never disagree.
       const message = err instanceof Error ? err.message : String(err);
+      const failed = await bundleRepo.update(id, { scheduleError: message });
       return c.json(
         {
           error: `Bundle updated but composition_v2 write failed: ${message}`,
-          bundle: toDto(merged, itemRows, sum, currency),
+          bundle: toDto(failed, itemRows, sum, currency),
         },
         502,
       );
@@ -1220,11 +1234,17 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       merged.metafieldGid = metafieldGid;
       await bundleRepo.setMetafieldState(id, 'Written', metafieldGid);
     } catch (err) {
+      // Persist the failure onto the row, not just the in-memory object: a
+      // bound-free (always-on) bundle is never revisited by the due-scan, so
+      // `scheduleError` is the only thing that will ever surface this to the
+      // merchant. The response DTO is built from the same persisted row so
+      // the two never disagree.
       const message = err instanceof Error ? err.message : String(err);
+      const failed = await bundleRepo.update(id, { scheduleError: message });
       return c.json(
         {
           error: `Bundle updated but merge_bundles write failed: ${message}`,
-          bundle: toDto(merged, itemRows, sum, currency),
+          bundle: toDto(failed, itemRows, sum, currency),
         },
         502,
       );

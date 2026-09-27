@@ -483,10 +483,20 @@ export default function BundleEditor() {
   let scheduleEnd: string | null = null;
   let scheduleFieldError: string | null = null;
   try {
-    if (hasStart && startDate) scheduleStart = toUtcIso(startDate, startTime);
-    if (hasEnd && endDate) scheduleEnd = toUtcIso(endDate, endTime);
-    if (scheduleStart && scheduleEnd && scheduleStart >= scheduleEnd) {
-      scheduleFieldError = 'The start must be before the end.';
+    // A ticked checkbox with a blank date is NOT "unset" — sending `null` for
+    // that bound means no bound at all, i.e. permanently live. Block the save
+    // and tell the merchant, rather than silently making the bundle live now
+    // when they believe they scheduled it for later.
+    if (hasStart && !startDate) {
+      scheduleFieldError = 'Enter a start date, or clear "Set a start date" to leave it unscheduled.';
+    } else if (hasEnd && !endDate) {
+      scheduleFieldError = 'Enter an end date, or clear "Set an end date" to leave it unscheduled.';
+    } else {
+      if (hasStart && startDate) scheduleStart = toUtcIso(startDate, startTime);
+      if (hasEnd && endDate) scheduleEnd = toUtcIso(endDate, endTime);
+      if (scheduleStart && scheduleEnd && scheduleStart >= scheduleEnd) {
+        scheduleFieldError = 'The start must be before the end.';
+      }
     }
   } catch {
     scheduleFieldError = 'Enter a valid date and time.';

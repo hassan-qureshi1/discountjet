@@ -1,9 +1,9 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Banner, BlockStack, EmptyState, IndexTable, InlineStack, Page, Spinner, Tabs, Text,
+  Banner, BlockStack, EmptyState, IndexTable, InlineStack, Modal, Page, Spinner, Tabs, Text, TextField,
 } from '@shopify/polaris';
-import { useCampaigns } from '../campaigns/hooks';
+import { useCampaigns, useCreateCampaign } from '../campaigns/hooks';
 import type { Campaign, CampaignStatus } from '../campaigns/api';
 import { StatusBadge } from '../components/StatusBadge';
 import { CAMPAIGN_STATUS_TONE } from '../campaigns/statusTone';
@@ -29,7 +29,29 @@ function windowLabel(campaign: Campaign): string {
 export default function Campaigns() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useCampaigns();
+  const createMutation = useCreateCampaign();
   const [tab, setTab] = useState<StatusTab>('All');
+  const [creating, setCreating] = useState(false);
+  const [draftName, setDraftName] = useState('New campaign');
+
+  const openCreateModal = () => {
+    setDraftName('New campaign');
+    setCreating(true);
+  };
+
+  // Creates a Draft immediately with the given name and lands the merchant in
+  // the builder — the wizard is a view over that Draft, not a form that
+  // creates one at the end, so the entry point has to create it up front.
+  const handleCreate = async () => {
+    const name = draftName.trim() || 'New campaign';
+    try {
+      const { campaign } = await createMutation.mutateAsync({ name });
+      setCreating(false);
+      navigate(`/campaigns/${campaign.id}/edit`);
+    } catch {
+      // The mutation error surfaces via createMutation.error in the modal below.
+    }
+  };
 
   const campaigns = data?.campaigns ?? [];
   // Filtering is client-side over the already-derived `status` — the server
@@ -55,7 +77,11 @@ export default function Campaigns() {
     );
   } else if (visible.length === 0) {
     body = (
-      <EmptyState heading="No campaigns yet" image={EMPTY_STATE_ILLUSTRATION}>
+      <EmptyState
+        heading="No campaigns yet"
+        image={EMPTY_STATE_ILLUSTRATION}
+        action={{ content: 'Create campaign', onAction: openCreateModal }}
+      >
         <p>
           Create a campaign to group discounts and bundles onto one schedule window and publish them together.
         </p>
@@ -126,7 +152,35 @@ export default function Campaigns() {
     <Page
       title="Campaigns"
       subtitle="Group discounts and bundles onto one schedule window and publish them together."
+      primaryAction={{ content: 'Create campaign', onAction: openCreateModal }}
     >
+      <Modal
+        open={creating}
+        onClose={() => setCreating(false)}
+        title="Name your campaign"
+        primaryAction={{
+          content: 'Create campaign',
+          onAction: handleCreate,
+          loading: createMutation.isPending,
+          disabled: createMutation.isPending,
+        }}
+        secondaryActions={[{ content: 'Cancel', onAction: () => setCreating(false), disabled: createMutation.isPending }]}
+      >
+        <Modal.Section>
+          <BlockStack gap="200">
+            {createMutation.error && <Banner tone="critical">{createMutation.error.message}</Banner>}
+            <TextField
+              label="Campaign name"
+              value={draftName}
+              onChange={setDraftName}
+              autoComplete="off"
+              requiredIndicator
+              helpText="You can rename this at any time while it's a draft."
+            />
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
+
       <BlockStack gap="400">
         {error && <Banner tone="critical">{error.message}</Banner>}
 

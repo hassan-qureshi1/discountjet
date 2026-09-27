@@ -82,6 +82,12 @@ interface BundleDto {
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
   updated: string;
+  /** Set only at campaign PUBLISH time (see `src/routes/campaigns.ts`), never
+   * on attach. Its presence is what the campaign builder's BundlesStep uses to
+   * show a bundle as locked by another still-live campaign — omitting it here
+   * would leave that surface with no way to tell a locked bundle from a free
+   * one, and a row that silently vanished would read as a bug. */
+  campaignId?: string;
 }
 
 // Copied from src/routes/discounts.ts — see that file for the canonical version.
@@ -219,6 +225,7 @@ function toDto(
     metafieldState: row.metafieldState,
     ...(row.metafieldGid ? { metafieldGid: row.metafieldGid } : {}),
     updated: relativeTime(row.updatedAt),
+    ...(row.campaignId ? { campaignId: row.campaignId } : {}),
   };
 }
 

@@ -34,6 +34,9 @@ export interface Bundle {
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
   updated: string;
+  /** Set only when a campaign PUBLISHES this bundle onto its window. Used by
+   * the campaign builder to show a bundle as locked by another live campaign. */
+  campaignId?: string;
 }
 
 export interface BundleSummary {

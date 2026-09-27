@@ -13,16 +13,16 @@ api_version = "2026-10"
 
   [[webhooks.subscriptions]]
   topics = [
-  "discounts/update",
   "app/uninstalled",
   "discounts/create",
+  "discounts/update",
   "discounts/delete"
   ]
   uri = "https://completing-allocated-material-arrangements.trycloudflare.com/shopify/webhooks"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_discounts,read_orders,read_price_rules,read_products,write_discounts,write_price_rules,read_cart_transforms,write_cart_transforms,write_products"
+scopes = "read_cart_transforms,read_discounts,read_orders,read_price_rules,read_products,write_cart_transforms,write_discounts,write_price_rules,write_products"
 
 [auth]
 redirect_urls = [ "https://completing-allocated-material-arrangements.trycloudflare.com/shopify/callback" ]

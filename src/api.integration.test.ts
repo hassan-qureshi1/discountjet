@@ -3733,10 +3733,13 @@ describe('Campaign API', () => {
     expect(input.startsAt).toBe('2099-01-01T00:00:00.000Z');
     expect(input.endsAt).toBe('2099-02-01T00:00:00.000Z');
     // And the bundle carries the same two timestamps, so they fire together.
+    // `status: 'Scheduled'` matters too — it's exactly what `DueBundleScanner`
+    // filters on, so dropping it would leave campaign bundles permanently inert.
     expect(repos.bundles.rows[0]).toMatchObject({
       scheduleStart: '2099-01-01T00:00:00.000Z',
       scheduleEnd: '2099-02-01T00:00:00.000Z',
       campaignId: 'c1',
+      status: 'Scheduled',
     });
   });
 
@@ -3748,12 +3751,19 @@ describe('Campaign API', () => {
     });
     mockFunctionsThenCreate();
 
+    const before = Date.now();
     await publish('c1');
+    const after = Date.now();
 
     const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
     const input = (variables as { discount: Record<string, unknown> }).discount;
     expect(typeof input.startsAt).toBe('string');
     expect(input.startsAt).not.toBeNull();
+    // Pinned to approximately now, not just "any string" — this is the
+    // stand-in Shopify requires when the campaign itself stores no window.
+    const stampedMs = new Date(input.startsAt as string).getTime();
+    expect(stampedMs).toBeGreaterThanOrEqual(before);
+    expect(stampedMs).toBeLessThanOrEqual(after);
     expect(input.endsAt).toBeUndefined();
   });
 
@@ -3767,6 +3777,24 @@ describe('Campaign API', () => {
     const res = await publish('c1');
 
     expect(res.status).toBe(409);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #1, the distinctive case: a campaign whose window has simply
+  // PASSED — stored `Scheduled`, derived `Ended` — must be refused too.
+  // Republishing is what cloning is for; a status merely being non-Draft
+  // isn't the whole story if this case never got exercised.
+  it('409s republishing an ENDED campaign whose window has simply passed', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Scheduled', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', publishState: 'created' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/ended/i);
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
@@ -3819,13 +3847,72 @@ describe('Campaign API', () => {
     const res = await publish('c1');
 
     expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.created).toBe(1);
+    expect(body.failed).toBe(1);
     const states = repos.campaignDiscounts.rows.map((r) => r.publishState).sort();
     expect(states).toEqual(['created', 'failed']);
     const failed = repos.campaignDiscounts.rows.find((r) => r.publishState === 'failed');
     expect(failed?.publishError).toContain('Title is invalid');
+    const succeeded = repos.campaignDiscounts.rows.find((r) => r.publishState === 'created');
+    expect(succeeded?.shopifyGid).toBe('gid://shopify/DiscountAutomaticNode/2');
     // Published despite the failure — the created one exists in Shopify and
     // deleting it to "undo" would be destructive and unasked-for.
     expect(repos.campaigns.rows[0].status).not.toBe('Draft');
+  });
+
+  // A ruling on top of the brief: when NOTHING was created, there is no live
+  // discount in Shopify a retry could duplicate, so the campaign goes back to
+  // Draft rather than being stranded "published" with nothing published.
+  it('leaves the campaign in Draft when every discount fails, so retry is possible', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: null, userErrors: [{ field: ['title'], message: 'Title is invalid' }],
+      } } } as never);
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.status).toBe('Draft');
+    expect(body.created).toBe(0);
+    expect(body.failed).toBe(1);
+    expect(repos.campaigns.rows[0].status).toBe('Draft');
+    // A retry must still be POSSIBLE — nothing was left half-published.
+    expect(repos.campaigns.rows[0].publishedAt).toBeNull();
+  });
+
+  // Review Focus #4, re-checked at the one moment it actually matters: the
+  // lock is only ever written at publish, so the same bundle can sit in two
+  // Drafts until one of them publishes. The second publish must skip it
+  // rather than steal it out from under the first.
+  it('skips a bundle a different still-locking campaign already owns, without aborting publish', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
+        campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'live' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+    mockFunctionsThenCreate();
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.created).toBe(1);
+    expect(body.failed).toBe(1); // the stolen bundle, not a discount
+    // The bundle keeps its original owner — nothing stole it.
+    expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'live' });
   });
 
   it('GET /api/campaigns returns campaigns with a DERIVED status', async () => {

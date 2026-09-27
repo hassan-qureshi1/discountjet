@@ -464,29 +464,43 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
 
   for (const cd of discounts) {
     // Sequential on purpose: each create is its own Admin call and a failure
-    // must not abandon the rest.
-    // eslint-disable-next-line no-await-in-loop
-    const outcome = await createDiscountInShopify(c.env, shopDomain, {
-      engineType: cd.type,
-      form: JSON.parse(cd.configJson),
-      method: cd.method,
-      title: cd.name,
-      code: cd.code ?? undefined,
-      startsAt,
-      ...(endsAt ? { endsAt } : {}),
-    });
-
-    if (outcome.ok) {
-      created += 1;
+    // must not abandon the rest. The whole body is also wrapped: a THROW here
+    // (malformed configJson, a missing code/title, an adapter throw not
+    // caught by the service) must not escape either — discounts already
+    // created above exist in Shopify, and the campaign status write below
+    // must still be reached so a retry is refused by the 409 gate rather than
+    // duplicating them.
+    try {
       // eslint-disable-next-line no-await-in-loop
-      await repos.campaignDiscounts.setPublishResult(cd.id, {
-        shopifyGid: outcome.discountId, publishState: 'created', publishError: null,
+      const outcome = await createDiscountInShopify(c.env, shopDomain, {
+        engineType: cd.type,
+        form: JSON.parse(cd.configJson),
+        method: cd.method,
+        title: cd.name,
+        code: cd.code ?? undefined,
+        startsAt,
+        ...(endsAt ? { endsAt } : {}),
       });
-    } else {
+
+      if (outcome.ok) {
+        created += 1;
+        // eslint-disable-next-line no-await-in-loop
+        await repos.campaignDiscounts.setPublishResult(cd.id, {
+          shopifyGid: outcome.discountId, publishState: 'created', publishError: null,
+        });
+      } else {
+        failed += 1;
+        // eslint-disable-next-line no-await-in-loop
+        await repos.campaignDiscounts.setPublishResult(cd.id, {
+          shopifyGid: null, publishState: 'failed', publishError: outcome.error,
+        });
+      }
+    } catch (err) {
       failed += 1;
+      const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-await-in-loop
       await repos.campaignDiscounts.setPublishResult(cd.id, {
-        shopifyGid: null, publishState: 'failed', publishError: outcome.error,
+        shopifyGid: null, publishState: 'failed', publishError: message,
       });
     }
   }
@@ -495,14 +509,39 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
   // is the whole job: the existing cron activates them on the boundary exactly
   // as it does a merchant-scheduled bundle.
   for (const cb of bundles) {
-    // eslint-disable-next-line no-await-in-loop
-    await repos.bundles.update(cb.bundleId, {
-      scheduleStart: startsAt, scheduleEnd: endsAt, campaignId: id, status: 'Scheduled',
-    });
+    // `campaignId` is written only HERE, at publish — not when a bundle is
+    // attached to a Draft — so the same bundle can sit in two Drafts and the
+    // lock has to be re-checked at the one moment it's about to be spent.
+    // A bundle a different still-locking campaign already owns is skipped
+    // and recorded as a failure rather than stolen; a thrown NotFoundError
+    // (bundle deleted meanwhile) is handled the same way. Either way this
+    // must not abort the loop or the campaign's status write below.
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await assertBundleAttachable(repos, cb.bundleId, id, now);
+      // eslint-disable-next-line no-await-in-loop
+      await repos.bundles.update(cb.bundleId, {
+        scheduleStart: startsAt, scheduleEnd: endsAt, campaignId: id, status: 'Scheduled',
+      });
+    } catch {
+      failed += 1;
+    }
   }
 
-  const published = deriveCampaignStatus('Scheduled', startsAt, endsAt, now);
-  await repos.campaigns.update(id, { status: published, publishedAt: now, startsAt, endsAt });
+  // A campaign that created nothing carries no live-discount risk from a
+  // retry — there is nothing in Shopify yet to duplicate — so it goes back to
+  // Draft rather than being stranded as "published" with nothing published,
+  // whose only escape would be cloning. The moment anything HAS been created,
+  // the invariant above takes over: the status write must land regardless of
+  // any other failure, so this branch only fires when nothing succeeded.
+  const fullyFailed = created === 0 && failed > 0;
+  const published = fullyFailed ? 'Draft' : deriveCampaignStatus('Scheduled', startsAt, endsAt, now);
+  await repos.campaigns.update(
+    id,
+    fullyFailed
+      ? { status: 'Draft' }
+      : { status: published, publishedAt: now, startsAt, endsAt },
+  );
 
   return c.json({ status: published, created, failed });
 });

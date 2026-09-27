@@ -2211,6 +2211,59 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
+  // The editor's Draft toggle makes this reachable for the first time: a bundle
+  // that is genuinely LIVE, switched off by hand. Switching it off has to remove
+  // it from checkout, not merely relabel the row — otherwise the merchant sees
+  // "Draft" while shoppers keep getting the bundle price.
+  it('PUT /api/bundles/:id switching a live bundle to Draft clears it from checkout', async () => {
+    const repos = seed({
+      bundles: [bundleRow({
+        id: 'bundle-1',
+        operation: 'expand',
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        price: 2999,
+        status: 'Active',
+        metafieldState: 'Written',
+        metafieldGid: 'gid://shopify/Metafield/1',
+      })],
+      bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+    });
+
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsDelete: { deletedMetafields: [], userErrors: [] } },
+    } as never);
+
+    const res = await app.request(
+      '/api/bundles/bundle-1',
+      {
+        method: 'PUT',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'Draft' }),
+      },
+      env('development'),
+    );
+
+    expect(res.status).toBe(200);
+    const { bundle } = (await res.json()) as {
+      bundle: { status: string; metafieldState: string; metafieldGid?: string };
+    };
+    expect(bundle.status).toBe('Draft');
+    expect(bundle.metafieldState).toBe('Cleared');
+    expect(bundle.metafieldGid).toBeUndefined();
+    // The stored row agrees — no dangling gid for a metafield that is gone.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      status: 'Draft',
+      metafieldState: 'Cleared',
+      metafieldGid: null,
+    });
+    // The composition was deleted, and nothing was written. (`metafieldWrites`
+    // lives in the scheduling describe, so assert on the calls directly here.)
+    const queries = vi.mocked(adminGraphql).mock.calls.map((call) => String(call[2]));
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain('metafieldsDelete');
+    expect(queries.some((q) => q.includes('metafieldsSet'))).toBe(false);
+  });
+
   it('surfaces an unhandled server error as { error } JSON, not an opaque status', async () => {
     // A shop row with no currency makes `shopCurrency` throw a plain Error,
     // outside any route-level catch. Before the global handler that escaped as

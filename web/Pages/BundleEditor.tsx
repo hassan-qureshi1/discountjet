@@ -17,6 +17,7 @@ import {
   Button,
   Card,
   Checkbox,
+  ChoiceList,
   Divider,
   InlineGrid,
   InlineStack,
@@ -1049,6 +1050,31 @@ export default function BundleEditor() {
                   <Text as="h2" variant="headingSm">Schedule</Text>
                   <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
                 </InlineStack>
+
+                {/* The manual off-switch. `Draft` has always been honoured by the
+                    server and skipped by the scheduling cron; until now there was
+                    no way to set it, so the off-switch was unreachable from the UI.
+                    Choosing "Active" only means "not Draft" — the server still
+                    derives Scheduled/Ended from the window below. */}
+                <ChoiceList
+                  title="Bundle status"
+                  titleHidden
+                  choices={[
+                    {
+                      label: 'Active',
+                      value: 'active',
+                      helpText: 'Follows the schedule below. With no dates set, the bundle goes live as soon as it is saved.',
+                    },
+                    {
+                      label: 'Draft',
+                      value: 'draft',
+                      helpText: 'Never goes live, whatever the schedule says. Saving as draft removes the bundle from checkout until you set it active again.',
+                    },
+                  ]}
+                  selected={[status === 'Draft' ? 'draft' : 'active']}
+                  onChange={(selected) => setStatus(selected[0] === 'draft' ? 'Draft' : 'Active')}
+                  disabled={isUpdateLocked}
+                />
 
                 <Checkbox
                   label="Set a start date"

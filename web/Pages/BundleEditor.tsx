@@ -37,6 +37,7 @@ import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/a
 import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
+import { PriceCard } from '../components/PriceCard';
 import {
   CART_TRANSFORM_LIMITS,
   gateOperation,
@@ -899,84 +900,38 @@ export default function BundleEditor() {
                   </BlockStack>
                 </Card>
 
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Price
-                    </Text>
-                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
-                      <TextField
-                        label="Bundle price"
-                        type="number"
-                        prefix={moneyPrefix}
-                        value={priceStr}
-                        onChange={setPriceStr}
-                        autoComplete="off"
-                        min={0}
-                      />
-                      <BlockStack gap="100">
-                        <Text as="span" variant="bodyMd">
-                          Sum of items
-                        </Text>
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
-                            {showMoney(sumOfItems)}
-                          </Text>
-                          {save != null && save > 0 && <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>}
-                        </InlineStack>
-                      </BlockStack>
-                    </InlineGrid>
-                  </BlockStack>
-                </Card>
+                <PriceCard
+                  title="Price"
+                  label="Bundle price"
+                  value={priceStr}
+                  onChange={setPriceStr}
+                  prefix={moneyPrefix}
+                  comparison={showMoney(sumOfItems)}
+                  saving={save != null && save > 0 ? showMoney(save) : null}
+                />
               </>
             )}
 
             {/* ── EXPAND ── */}
             {operation === 'expand' && (
               <>
-                <Card>
-                  <BlockStack gap="300">
-                    <Text as="h3" variant="headingSm">
-                      Bundle price
-                    </Text>
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      Optional. Leave blank to charge whatever the bundle product costs in Shopify.
-                      Set a price and the line is discounted down to it at checkout.
-                    </Text>
-                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
-                      <TextField
-                        label="Bundle price"
-                        labelHidden
-                        type="number"
-                        prefix={moneyPrefix}
-                        value={priceStr}
-                        onChange={setPriceStr}
-                        autoComplete="off"
-                        min={0}
-                        placeholder="Bundle product price"
-                        helpText="Must be below the bundle product's own price."
-                      />
-                      <BlockStack gap="100">
-                        <Text as="span" variant="bodyMd">
-                          Sum of items
-                        </Text>
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="span" variant="bodyMd" tone="subdued" textDecorationLine="line-through">
-                            {showMoney(sumOfItems)}
-                          </Text>
-                          {/* Gated on a non-blank field, unlike `merge`. An expand
-                              bundle's price is optional, and `priceNum` falls back
-                              to 0 when blank — so an ungated badge would announce a
-                              saving equal to the whole sum on a price the merchant
-                              never set. */}
-                          {hasExpandPrice && save != null && save > 0 && (
-                            <Badge tone="success">{`Save ${showMoney(save)}`}</Badge>
-                          )}
-                        </InlineStack>
-                      </BlockStack>
-                    </InlineGrid>
-                  </BlockStack>
-                </Card>
+                {/* `saving` is gated on a non-blank field, unlike `merge`. An
+                    expand bundle's price is optional and `priceNum` falls back to
+                    0 when blank, so an ungated badge would announce a saving equal
+                    to the whole sum against a price the merchant never set. */}
+                <PriceCard
+                  title="Bundle price"
+                  description="Optional. Leave blank to charge whatever the bundle product costs in Shopify. Set a price and the line is discounted down to it at checkout."
+                  label="Bundle price"
+                  labelHidden
+                  value={priceStr}
+                  onChange={setPriceStr}
+                  prefix={moneyPrefix}
+                  placeholder="Bundle product price"
+                  helpText="Must be below the bundle product's own price."
+                  comparison={showMoney(sumOfItems)}
+                  saving={hasExpandPrice && save != null && save > 0 ? showMoney(save) : null}
+                />
                 <Card>
                   <BlockStack gap="300">
                     <Text as="h3" variant="headingSm">

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { flattenPickerSelection, selectionIdsFromVariants } from './picker';
+import { flattenPickerSelection, selectionIdsFromVariants, toNumericId } from './picker';
 import type { ResolvedVariant } from '../bundles/api';
 
 const P1 = 'gid://shopify/Product/1';
@@ -108,5 +108,29 @@ describe('selectionIdsFromVariants', () => {
 
   it('is complete and empty for no variants at all', () => {
     expect(selectionIdsFromVariants([], resolved)).toEqual({ selectionIds: [], complete: true });
+  });
+});
+
+describe('toNumericId', () => {
+  // The bug this exists for: the App Bridge picker hands back GIDs, but the
+  // discount engines' `targets` are documented as "numeric IDs only" and run
+  // them through `Number(...)`. `Number('gid://…')` is NaN, so every target was
+  // silently dropped and the whole tier vanished from the built config — a
+  // discount that would have gone live doing nothing.
+  it('reduces a variant GID to the bare numeric id the engines require', () => {
+    expect(toNumericId('gid://shopify/ProductVariant/39496726577322')).toBe('39496726577322');
+    expect(Number(toNumericId('gid://shopify/ProductVariant/39496726577322'))).toBe(39496726577322);
+  });
+
+  it('reduces a product GID the same way', () => {
+    expect(toNumericId('gid://shopify/Product/12345')).toBe('12345');
+  });
+
+  it('passes an already-numeric id through unchanged, so it is safe to re-apply', () => {
+    expect(toNumericId('39496726577322')).toBe('39496726577322');
+  });
+
+  it('returns an empty string for an empty input rather than throwing', () => {
+    expect(toNumericId('')).toBe('');
   });
 });

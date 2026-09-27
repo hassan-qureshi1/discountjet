@@ -68,6 +68,26 @@ export function flattenPickerSelection(products: PickedProduct[]): PickedItem[] 
   }));
 }
 
+/**
+ * `gid://shopify/ProductVariant/123` -> `123`.
+ *
+ * TWO CONVENTIONS MEET HERE, and they disagree. The App Bridge picker returns
+ * GIDs. The cart-transform bundle metafield also wants GIDs (see
+ * `toVariantGid` in `src/lib/bundleMetafields.ts`). But the DISCOUNT engines'
+ * `targets` are documented as "numeric IDs only" and run every id through
+ * `Number(...)`, which yields NaN for a GID and silently drops it — taking the
+ * whole tier with it, since a tier with no resolvable ids is skipped entirely.
+ *
+ * Mirrors `numericId` in `extensions/discount-tier-ui/src/TierCard.tsx`, which
+ * is the convention the deployed extension already stores. Going the other way
+ * (numeric id -> GID, to pre-check the picker) is that file's line 73.
+ *
+ * Idempotent: an already-numeric id passes through, so it is safe to re-apply.
+ */
+export function toNumericId(gid: string): string {
+  return gid.split('/').pop() ?? '';
+}
+
 export interface SelectionIds {
   /** `selectionIds` for `resourcePicker({ type: 'product' })` — variants are
    * pre-checked under their owning product. */

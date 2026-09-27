@@ -12,7 +12,7 @@ import {
   newTier,
   type ApplyTo, type DiscountType, type Platform, type Tier, type TierFormData, type TierItem,
 } from '../../../src/lib/discountEngines/tier';
-import { flattenPickerSelection } from '../../lib/picker';
+import { flattenPickerSelection, toNumericId } from '../../lib/picker';
 import { VariantLabel } from '../../components/VariantLabel';
 
 const DISCOUNT_TYPE_OPTIONS: { label: string; value: DiscountType }[] = [
@@ -91,7 +91,17 @@ export function TierFields({
       });
       if (!result) return;
 
-      const picked = flattenPickerSelection(result);
+      // The picker hands back GIDs; the tier engine's `targets` are numeric ids
+      // only and get `Number(...)`-ed, which turns a GID into NaN and drops the
+      // whole tier. Normalise at this boundary — the shared engine module is
+      // also read by the deployed Rust functions and must not be bent to suit
+      // one caller. `toNumericId` is idempotent, so the de-dupe below compares
+      // like with like whether the existing items came from here or the
+      // extension.
+      const picked = flattenPickerSelection(result).map((p) => ({
+        ...p,
+        variantId: toNumericId(p.variantId),
+      }));
       const existing = parseTargets(tier.targets);
       const pickedIds = new Set(picked.map((p) => p.variantId));
       const merged: TierItem[] = [

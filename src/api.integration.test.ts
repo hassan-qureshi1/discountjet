@@ -41,7 +41,16 @@ import {
   shopRow,
   type InMemoryRepositories,
 } from './db/repositories/inMemory';
-import type { ShopRow, BundleRow, BundleItemRow, DiscountRow, TemplateRow } from './db/repositories';
+import type {
+  ShopRow,
+  BundleRow,
+  BundleItemRow,
+  DiscountRow,
+  TemplateRow,
+  CampaignRow,
+  CampaignDiscountRow,
+  CampaignBundleRow,
+} from './db/repositories';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
@@ -60,6 +69,9 @@ function seed(rows: {
   bundleItems?: BundleItemRow[];
   discounts?: DiscountRow[];
   templates?: TemplateRow[];
+  campaigns?: CampaignRow[];
+  campaignDiscounts?: CampaignDiscountRow[];
+  campaignBundles?: CampaignBundleRow[];
 } = {}): InMemoryRepositories {
   const repos = createInMemoryRepositories(SHOP.id, {
     // Plus by default: most tests here are not about plan gating, and several
@@ -158,6 +170,22 @@ const discountRow = (overrides: Partial<DiscountRow> = {}): DiscountRow => ({
   products: 3,
   campaignId: null,
   deletedAt: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-20T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `campaign` row; override only what the test is about. */
+const campaignRow = (overrides: Partial<CampaignRow> = {}): CampaignRow => ({
+  id: 'campaign-1',
+  shopId: SHOP.id,
+  name: 'Fall Campaign',
+  description: null,
+  status: 'Draft',
+  scheduleMode: 'immediate',
+  startsAt: null,
+  endsAt: null,
+  publishedAt: null,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-20T00:00:00.000Z',
   ...overrides,
@@ -3618,5 +3646,90 @@ describe('POST /api/discounts', () => {
 
     expect(res.status).toBe(502);
     expect(await res.text()).toContain('Title is invalid');
+  });
+});
+
+describe('Campaign API', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('GET /api/campaigns returns campaigns with a DERIVED status', async () => {
+    // Stored as Scheduled, but its window opened in the past.
+    seed({ campaigns: [campaignRow({
+      status: 'Scheduled',
+      scheduleMode: 'window',
+      startsAt: '2020-01-01T00:00:00.000Z',
+      endsAt: '2099-01-01T00:00:00.000Z',
+    })] });
+
+    const res = await app.request('/api/campaigns', { headers: { 'x-shop-domain': 'mystore.myshopify.com' } }, env('development'));
+
+    const json = (await res.json()) as { campaigns: Array<{ status: string }> };
+    expect(json.campaigns[0].status).toBe('Published');
+  });
+
+  it('PUT /api/campaigns/:id 409s a published campaign', async () => {
+    seed({ campaigns: [campaignRow({ id: 'c1', status: 'Published', scheduleMode: 'immediate' })] });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed' }),
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+  });
+
+  it('DELETE /api/campaigns/:id 409s a published campaign', async () => {
+    seed({ campaigns: [campaignRow({ id: 'c1', status: 'Published', scheduleMode: 'immediate' })] });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+  });
+
+  // Review Focus #4 — two campaigns authoring one bundle's window means the
+  // last publish silently wins.
+  it('PUT /api/campaigns/:id refuses a bundle a live campaign already owns', async () => {
+    seed({
+      campaigns: [
+        campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
+        campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'live' })],
+      campaignBundles: [{
+        id: 'cb1', shopId: SHOP.id, campaignId: 'live', bundleId: 'b1',
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const res = await app.request('/api/campaigns/draft', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ bundleIds: ['b1'] }),
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/campaign/i);
+  });
+
+  it('PUT allows a bundle whose owning campaign has ENDED', async () => {
+    seed({
+      campaigns: [
+        campaignRow({ id: 'old', status: 'Published', scheduleMode: 'window',
+          startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' }),
+        campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'old' })],
+    });
+
+    const res = await app.request('/api/campaigns/draft', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ bundleIds: ['b1'] }),
+    }, env('development'));
+
+    expect(res.status).toBe(200);
   });
 });

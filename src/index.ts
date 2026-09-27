@@ -7,6 +7,7 @@ import { variantRoutes } from './routes/variants';
 import { shopRoutes } from './routes/shop';
 import { previewRoutes } from './routes/preview';
 import { templateRoutes } from './routes/templates';
+import { campaignRoutes } from './routes/campaigns';
 import { webhookRoutes } from './lifecycle/webhooks';
 import { createBundleScheduleDeps, runBundleSchedule } from './lifecycle/bundleSchedule';
 import type { Env } from './types/env';
@@ -46,6 +47,7 @@ app.route('/', discountRoutes);
 app.route('/', bundleRoutes);
 app.route('/', variantRoutes);
 app.route('/', shopRoutes);
+app.route('/', campaignRoutes);
 
 // Public template preview page (no auth) — see routes/preview.ts.
 app.route('/', previewRoutes);

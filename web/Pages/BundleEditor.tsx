@@ -903,6 +903,32 @@ export default function BundleEditor() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
+
+                {/* Full width, at the end of the page: the schedule is read after the
+            merchant has decided what the bundle actually IS. Rendered ONCE here,
+            outside the per-operation branches, so it cannot go missing for an
+            operation the way it did when this was hand-placed markup. */}
+                <ScheduleCard
+                  value={{
+                    hasStart, startDate, startTime, hasEnd, endDate, endTime,
+                  }}
+                  onChange={(w) => {
+                    setHasStart(w.hasStart);
+                    setStartDate(w.startDate);
+                    setStartTime(w.startTime);
+                    setHasEnd(w.hasEnd);
+                    setEndDate(w.endDate);
+                    setEndTime(w.endTime);
+                  }}
+                  status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
+                  error={scheduleFieldError}
+                  lastFailure={bundle?.scheduleError ?? null}
+                  startHelpText="Leave off to start as soon as the bundle is saved."
+                  endHelpText="Leave off to run until you switch the bundle off."
+                  footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
+                  lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
+                />
+
               </>
             )}
 
@@ -997,32 +1023,6 @@ export default function BundleEditor() {
             </Card>
           </BlockStack>
         </InlineGrid>
-
-        {/* Full width, at the end of the page: the schedule is read after the
-            merchant has decided what the bundle actually IS. Rendered ONCE here,
-            outside the per-operation branches, so it cannot go missing for an
-            operation the way it did when this was hand-placed markup. */}
-        <ScheduleCard
-          value={{
-            hasStart, startDate, startTime, hasEnd, endDate, endTime,
-          }}
-          onChange={(w) => {
-            setHasStart(w.hasStart);
-            setStartDate(w.startDate);
-            setStartTime(w.startTime);
-            setHasEnd(w.hasEnd);
-            setEndDate(w.endDate);
-            setEndTime(w.endTime);
-          }}
-          status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
-          error={scheduleFieldError}
-          lastFailure={bundle?.scheduleError ?? null}
-          startHelpText="Leave off to start as soon as the bundle is saved."
-          endHelpText="Leave off to run until you switch the bundle off."
-          footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
-          lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
-        />
-
       </BlockStack>
     </Page>
   );

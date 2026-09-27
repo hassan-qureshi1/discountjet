@@ -88,6 +88,68 @@ export function toNumericId(gid: string): string {
   return gid.split('/').pop() ?? '';
 }
 
+/** One entry in a tier's `targets`, as the discount engines read it. */
+export interface TierPickerItem {
+  productId?: string;
+  variantId?: string;
+  productTitle?: string;
+  variantTitle?: string;
+  sku?: string;
+}
+
+/**
+ * Map a product-picker selection into a tier's `targets` items.
+ *
+ * Two shapes, because `buildTierConfig` reads a different field per mode:
+ * `product_id` reads `productId` and `variant_id` reads `variantId`, dropping
+ * any item whose field is missing. So product mode yields ONE item per product
+ * with no `variantId`, and variant mode yields one per variant.
+ *
+ * Ids are numeric, not GIDs — the engines run them through `Number(...)`. Mirrors
+ * `handleSelectResources` in `extensions/discount-tier-ui/src/TierCard.tsx`, so a
+ * discount authored here and one authored in Shopify's own settings page store
+ * identical `targets_full`.
+ *
+ * Deliberately separate from `flattenPickerSelection`, which serves bundles and
+ * carries a price the tier engine has no use for.
+ */
+export function tierItemsFromPicker(
+  selection: PickedProduct[],
+  selectorType: 'product_id' | 'variant_id',
+): TierPickerItem[] {
+  // Keyed so a product (or variant) the picker returns twice lands once.
+  // `forEach` with early returns rather than `for`/`continue`: this package's
+  // lint config forbids both.
+  const byId = new Map<string, TierPickerItem>();
+
+  selection.forEach((product) => {
+    const productId = product.id ? toNumericId(product.id) : '';
+    // No id means nothing the engine could target; a half-item would be dropped
+    // later anyway, silently.
+    if (!productId) return;
+    const productTitle = product.title ?? '';
+
+    if (selectorType === 'product_id') {
+      byId.set(productId, { productId, productTitle });
+      return;
+    }
+
+    (product.variants ?? []).forEach((variant) => {
+      const variantId = variant.id ? toNumericId(variant.id) : '';
+      if (!variantId) return;
+      byId.set(variantId, {
+        productId,
+        variantId,
+        productTitle,
+        variantTitle: variant.title ?? '',
+        sku: (variant as { sku?: string }).sku ?? '',
+      });
+    });
+  });
+
+  return [...byId.values()];
+}
+
 export interface SelectionIds {
   /** `selectionIds` for `resourcePicker({ type: 'product' })` — variants are
    * pre-checked under their owning product. */

@@ -12,7 +12,7 @@ import {
   newTier,
   type ApplyTo, type DiscountType, type Platform, type Tier, type TierFormData, type TierItem,
 } from '../../../src/lib/discountEngines/tier';
-import { flattenPickerSelection, toNumericId } from '../../lib/picker';
+import { tierItemsFromPicker } from '../../lib/picker';
 import { VariantLabel } from '../../components/VariantLabel';
 
 const DISCOUNT_TYPE_OPTIONS: { label: string; value: DiscountType }[] = [
@@ -81,32 +81,50 @@ export function TierFields({
     onChange({ ...value, tiers: value.tiers.filter((t) => t.id !== id) });
   };
 
+  /** The field `buildTierConfig` reads for this tier — the one that must exist. */
+  const keyFor = (tier: Tier, item: TierItem) => (
+    (tier.selectorType || 'variant_id') === 'product_id' ? item.productId : item.variantId
+  );
+
   const pickProducts = async (tier: Tier) => {
     if (!pickerAvailable) return;
+    const selectorType = tier.selectorType || 'variant_id';
+    const isProductMode = selectorType === 'product_id';
     try {
+      const existing = parseTargets(tier.targets);
       const result = await shopify.resourcePicker({
         type: 'product',
         multiple: true,
         action: 'select',
+        // `variants: false` collapses the dialog to whole products, which is
+        // what product mode targets. With `true` the merchant checks individual
+        // variants under each product.
+        filter: { variants: !isProductMode, draft: false, archived: false },
+        // Re-open with the current choices already ticked. Ids go back as GIDs
+        // — the picker's own currency — while `targets` stores numeric ids.
+        selectionIds: existing
+          .map((item) => (isProductMode
+            ? (item.productId && `gid://shopify/Product/${item.productId}`)
+            : (item.variantId && `gid://shopify/ProductVariant/${item.variantId}`)))
+          .filter((id): id is string => Boolean(id))
+          .map((id) => ({ id })),
       });
       if (!result) return;
 
-      // The picker hands back GIDs; the tier engine's `targets` are numeric ids
-      // only and get `Number(...)`-ed, which turns a GID into NaN and drops the
-      // whole tier. Normalise at this boundary — the shared engine module is
-      // also read by the deployed Rust functions and must not be bent to suit
-      // one caller. `toNumericId` is idempotent, so the de-dupe below compares
-      // like with like whether the existing items came from here or the
-      // extension.
-      const picked = flattenPickerSelection(result).map((p) => ({
-        ...p,
-        variantId: toNumericId(p.variantId),
-      }));
-      const existing = parseTargets(tier.targets);
-      const pickedIds = new Set(picked.map((p) => p.variantId));
+      // Ids come back as GIDs and the engine runs `targets` through `Number(...)`,
+      // so a GID becomes NaN and the whole tier is dropped. `tierItemsFromPicker`
+      // normalises and shapes per mode; the shared engine module is also read by
+      // the deployed Rust functions and must not be bent to suit one caller.
+      const picked = tierItemsFromPicker(result, selectorType);
+      const pickedKeys = new Set(picked.map((p) => (isProductMode ? p.productId : p.variantId)));
       const merged: TierItem[] = [
-        ...existing.filter((item) => !item.variantId || !pickedIds.has(item.variantId)),
-        ...picked.map((p) => ({ variantId: p.variantId, productTitle: p.title })),
+        ...existing.filter((item) => {
+          const key = keyFor(tier, item);
+          // An item with no key for this mode is left over from the other mode
+          // and would be silently dropped by the engine — drop it here instead.
+          return Boolean(key) && !pickedKeys.has(key);
+        }),
+        ...picked,
       ];
       updateTier(tier.id, { targets: JSON.stringify(merged) });
     } catch {
@@ -115,8 +133,8 @@ export function TierFields({
     }
   };
 
-  const removeItem = (tier: Tier, variantId: string) => {
-    const remaining = parseTargets(tier.targets).filter((item) => item.variantId !== variantId);
+  const removeItem = (tier: Tier, key: string) => {
+    const remaining = parseTargets(tier.targets).filter((item) => keyFor(tier, item) !== key);
     updateTier(tier.id, { targets: JSON.stringify(remaining) });
   };
 
@@ -161,6 +179,23 @@ export function TierFields({
             return (
               <BlockStack key={tier.id} gap="300">
                 {index > 0 && <Divider />}
+                <Select
+                  label="Match products by"
+                  options={[
+                    { label: 'Specific variants', value: 'variant_id' },
+                    { label: 'Whole products', value: 'product_id' },
+                  ]}
+                  value={tier.selectorType || 'variant_id'}
+                  onChange={(next) => {
+                    if (next === (tier.selectorType || 'variant_id')) return;
+                    // Clearing is not tidiness: items picked in the other mode
+                    // carry the wrong id field for this one, and the engine
+                    // would drop them without saying so.
+                    updateTier(tier.id, { selectorType: next as Tier['selectorType'], targets: '[]' });
+                  }}
+                  helpText="Target one size or colour, or the whole product across every variant."
+                />
+
                 <InlineStack gap="300" wrap>
                   <TextField
                     label={value.discountType === 'percentage' ? 'Discount percentage' : 'Discount amount'}
@@ -185,12 +220,17 @@ export function TierFields({
                     <InlineStack gap="150">
                       {items.map((item) => (
                         <Tag
-                          key={item.variantId ?? item.productTitle}
-                          onRemove={() => (item.variantId ? removeItem(tier, item.variantId) : undefined)}
+                          key={keyFor(tier, item) ?? item.productTitle}
+                          onRemove={() => {
+                            const key = keyFor(tier, item);
+                            return key ? removeItem(tier, key) : undefined;
+                          }}
                         >
                           <VariantLabel
                             resolved={undefined}
-                            fallback={item.productTitle ?? item.variantId ?? 'Unknown product'}
+                            fallback={[item.productTitle, item.variantTitle]
+                              .filter(Boolean).join(' — ')
+                              || keyFor(tier, item) || 'Unknown product'}
                             layout="inline"
                           />
                         </Tag>

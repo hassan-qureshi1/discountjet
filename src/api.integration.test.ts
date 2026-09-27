@@ -3414,6 +3414,16 @@ describe('POST /api/discounts', () => {
     expect(adminGraphql).not.toHaveBeenCalled();
   });
 
+  it('400s a missing form without calling Shopify', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await post({ slug: 'pct-off', title: 'x', startsAt: '2026-10-01T00:00:00.000Z' });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('form is required');
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
   // Review Focus #5
   it('400s a config over 10KB before calling Shopify', async () => {
     seed({ templates: [templateRow()] });

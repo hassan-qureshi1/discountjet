@@ -162,6 +162,11 @@ discountRoutes.post('/api/discounts', async (c) => {
   if (!body.slug) return c.json({ error: 'slug is required' }, 400);
   if (!body.title || !body.title.trim()) return c.json({ error: 'title is required' }, 400);
   if (!body.startsAt) return c.json({ error: 'startsAt is required' }, 400);
+  // Guards the shape only. A throw from `validate` on a well-formed but invalid
+  // form is still a 500 by design, so this must not become a try/catch there.
+  if (body.form === undefined || body.form === null || typeof body.form !== 'object') {
+    return c.json({ error: 'form is required' }, 400);
+  }
 
   const template = await c.get('repos').templates.findBySlug(body.slug);
   if (!template) return c.json({ error: 'Template not found' }, 404);

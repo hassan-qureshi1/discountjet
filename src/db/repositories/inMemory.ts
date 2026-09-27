@@ -482,6 +482,16 @@ export class InMemoryCampaignRepository
       .map((r) => ({ ...r }))
       .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
   }
+
+  /** Compare-and-set, mirroring the real repository's conditional UPDATE. The
+   *  find and the write happen with no `await` between them, exactly as D1's
+   *  single statement does. */
+  async claimForPublish(id: string): Promise<CampaignRow | null> {
+    const i = this.rows.findIndex((r) => r.id === id && this.inScope(r) && r.status === 'Draft');
+    if (i === -1) return null;
+    this.rows[i] = { ...this.rows[i], status: 'Scheduled', updatedAt: new Date().toISOString() };
+    return { ...this.rows[i] };
+  }
 }
 
 export class InMemoryCampaignDiscountRepository
@@ -533,7 +543,9 @@ export class InMemoryCampaignDiscountRepository
     },
   ): Promise<void> {
     const i = this.rows.findIndex((r) => r.id === id && this.inScope(r));
-    if (i !== -1) this.rows[i] = { ...this.rows[i], ...result };
+    if (i !== -1) {
+      this.rows[i] = { ...this.rows[i], ...result, updatedAt: new Date().toISOString() };
+    }
   }
 
   async deleteForCampaign(campaignId: string): Promise<void> {

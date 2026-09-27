@@ -24,6 +24,7 @@ import {
 import { ensureCartTransform } from '../lib/cartTransformRegistration';
 import { assertWindowOrder, deriveStatus, normalizeUtc, shouldBeLive } from '../lib/scheduleWindow';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from '../lib/metafieldDefinitions';
+import { findLockingCampaign } from '../lib/bundleOwnership';
 
 export const bundleRoutes = new Hono<AppEnv>();
 
@@ -232,7 +233,7 @@ function toDto(
 /** Lets `verifyItems` fail with a status without every caller re-checking. */
 class HttpError extends Error {
   constructor(
-    public readonly status: 400 | 502,
+    public readonly status: 400 | 409 | 502,
     message: string,
   ) {
     super(message);
@@ -508,8 +509,10 @@ function hasSumOfItems(body: unknown): boolean {
 }
 
 // GET /api/bundles — the caller's shop's bundles plus a summary strip.
-// `inCampaigns` is 0 until bundle campaigns land (E7). `avgSaving` is the mean
-// per-bundle (sumOfItems - price) over bundles with both set.
+// `inCampaigns` is hardcoded to 0: campaigns exist (see `src/routes/campaigns.ts`)
+// and `bundle.campaignId` would answer it, but wiring this counter up is not part
+// of that work and nothing renders it yet. `avgSaving` is the mean per-bundle
+// (sumOfItems - price) over bundles with both set.
 //
 // Item rows and their sums are fetched in TWO queries total, not two per
 // bundle — see `sumsByBundle` / `findAll` below.
@@ -872,7 +875,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
 
 // PUT /api/bundles/:id — partial update, scoped to the caller's shop (404 when missing).
 bundleRoutes.put('/api/bundles/:id', async (c) => {
-  const { bundles: bundleRepo, bundleItems } = c.get('repos');
+  const { bundles: bundleRepo, bundleItems, campaigns } = c.get('repos');
   const id = c.req.param('id');
 
   const existing = await bundleRepo.findById(id);
@@ -967,6 +970,45 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
     throw err;
+  }
+
+  // THE CAMPAIGN SCHEDULE LOCK, enforced at the write boundary.
+  //
+  // A campaign publishes by stamping ONE window onto its discounts (as their
+  // Shopify startsAt/endsAt) and onto its bundles (as scheduleStart/
+  // scheduleEnd). Both halves carry identical timestamps so they fire
+  // together; letting this PUT move a bundle's bounds while its owning
+  // campaign is still locking breaks exactly that, silently, with the campaign
+  // still reading Published.
+  //
+  // The editor's `scheduleLocked` is the same rule, but it is computed from
+  // data that can be stale — the form may have been open before the campaign
+  // published, or published in another tab — so it cannot be the only gate.
+  // `findLockingCampaign` is shared with `src/routes/campaigns.ts` rather than
+  // re-implemented, and `isCampaignLocking` stays the one predicate behind it.
+  //
+  // Only a CHANGE to a bound is refused: a rename or a price edit on an owned
+  // bundle is none of the campaign's business.
+  if (
+    schedule.scheduleStart !== existing.scheduleStart
+    || schedule.scheduleEnd !== existing.scheduleEnd
+  ) {
+    const owner = await findLockingCampaign(
+      campaigns,
+      existing.campaignId,
+      null,
+      new Date().toISOString(),
+    );
+    if (owner) {
+      return c.json(
+        {
+          error: `This bundle's schedule is owned by campaign "${owner.name}" (${owner.status}), `
+            + `which published it onto that campaign's window. Change the dates on the campaign, `
+            + `or wait until it ends.`,
+        },
+        409,
+      );
+    }
   }
 
   // No `updatedAt` here — `update()` stamps it, so a patch cannot forget to.

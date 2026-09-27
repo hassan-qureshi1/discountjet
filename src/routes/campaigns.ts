@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types/env.d';
 import type { CampaignRow, CampaignBundleRow, CampaignDiscountRow, Repositories } from '../db/repositories';
-import { deriveCampaignStatus, isCampaignLocking, type CampaignStatus } from '../lib/campaignStatus';
+import { deriveCampaignStatus, type CampaignStatus } from '../lib/campaignStatus';
+import { findLockingCampaign } from '../lib/bundleOwnership';
 import { assertWindowOrder, normalizeUtc } from '../lib/scheduleWindow';
 import { getAdapter, type DiscountEngineType } from '../lib/discountEngines/adapters';
 import { createDiscountInShopify } from '../lib/createDiscount';
@@ -217,16 +218,14 @@ async function assertBundleAttachable(
 ): Promise<void> {
   const bundle = await repos.bundles.findById(bundleId);
   if (!bundle) throw new HttpError(404, `Bundle ${bundleId} not found`);
-  if (!bundle.campaignId || bundle.campaignId === currentCampaignId) return;
 
-  const owner = await repos.campaigns.findById(bundle.campaignId);
-  if (!owner) return; // Dangling reference — nothing left to lock against.
-
-  const ownerStatus = deriveCampaignStatus(owner.status, owner.startsAt, owner.endsAt, now);
-  if (isCampaignLocking(ownerStatus)) {
+  // `findLockingCampaign` is shared with the bundle PUT (`src/routes/bundles.ts`)
+  // so the two can never disagree about which statuses lock.
+  const owner = await findLockingCampaign(repos.campaigns, bundle.campaignId, currentCampaignId, now);
+  if (owner) {
     throw new HttpError(
       409,
-      `Bundle ${bundleId} is already owned by campaign "${owner.name}" (${ownerStatus}). `
+      `Bundle ${bundleId} is already owned by campaign "${owner.name}" (${owner.status}). `
       + `Remove it from that campaign before attaching it here.`,
     );
   }
@@ -458,6 +457,19 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
     return c.json({ error: 'This campaign’s window has already closed. Change the dates before publishing.' }, 400);
   }
 
+  // CLAIM the campaign before ANY Shopify work. Everything above this line is
+  // a read or a 4xx, so claiming here costs a rejected request nothing; from
+  // here on a second concurrent handler must lose. The derived gate above is
+  // still the one that produces the good message for an already-Published or
+  // Ended campaign — this is the race the gate cannot close on its own,
+  // because it reads a status that only gets written back after every Admin
+  // round-trip. If the claim is lost, this request has created nothing and
+  // simply stops.
+  const claimed = await repos.campaigns.claimForPublish(id);
+  if (!claimed) {
+    return c.json({ error: 'This campaign is already being published. Reload to see the result.' }, 409);
+  }
+
   const shopDomain = requireShopDomain(c);
   let created = 0;
   let failed = 0;
@@ -532,10 +544,21 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
     }
   }
 
+  // Stamping a bundle is only safe once the DISCOUNT outcome is known. A
+  // campaign whose every discount failed goes back to `Draft` below, and a
+  // bundle stamped before that decision would be left `Scheduled` on the
+  // campaign's window with a Draft campaign behind it: the cron activates it
+  // on the boundary, the merchant never published it, and — a Draft campaign
+  // not locking — a second campaign can claim it. Skipping the loop entirely
+  // is the unwind: a bundle that was never stamped needs no walking back.
+  const discountsFullyFailed = created === 0 && failed > 0;
+
   // Bundles are not written to Shopify here. Stamping the window and the owner
   // is the whole job: the existing cron activates them on the boundary exactly
   // as it does a merchant-scheduled bundle.
-  for (const cb of bundles) {
+  const bundlesToStamp = discountsFullyFailed ? [] : bundles;
+  let bundlesStamped = 0;
+  for (const cb of bundlesToStamp) {
     // `campaignId` is written only HERE, at publish — not when a bundle is
     // attached to a Draft — so the same bundle can sit in two Drafts and the
     // lock has to be re-checked at the one moment it's about to be spent.
@@ -550,21 +573,31 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
       await repos.bundles.update(cb.bundleId, {
         scheduleStart: startsAt, scheduleEnd: endsAt, campaignId: id, status: 'Scheduled',
       });
+      bundlesStamped += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       bundleFailures.push({ bundleId: cb.bundleId, error: message });
     }
   }
 
-  // A campaign that created nothing carries no live-discount risk from a
-  // retry — there is nothing in Shopify yet to duplicate — so it goes back to
-  // Draft rather than being stranded as "published" with nothing published,
-  // whose only escape would be cloning. The moment anything HAS been created,
-  // the invariant above takes over: the status write must land regardless of
-  // any other failure, so this branch only fires when nothing succeeded. Only
-  // `failed` (discounts) drives this — a skipped bundle carries no Shopify
-  // duplication risk and is reported through `bundleFailures` instead.
-  const fullyFailed = created === 0 && failed > 0;
+  // A campaign that put NOTHING live carries no risk from a retry — there is
+  // nothing in Shopify to duplicate and no bundle stamped onto this window —
+  // so it goes back to Draft rather than being stranded as "published" with
+  // nothing published, whose only escape would be cloning. The moment anything
+  // HAS gone live, the invariant above takes over: the status write must land
+  // regardless of any other failure, so this branch only fires when nothing
+  // succeeded.
+  //
+  // BUNDLES COUNT AS MEMBERS HERE. A bundles-only campaign whose every bundle
+  // was skipped created nothing, scheduled nothing and owns nothing — writing
+  // it `Published` would leave a campaign with zero members that PUT, DELETE
+  // and republish all refuse, while the only honest thing to tell the merchant
+  // is "nothing went live, fix it and try again". That sentence is only true
+  // if the stored status agrees, so the two are decided together.
+  //
+  // This is also what releases the claim taken above: reverting to `Draft`
+  // makes the campaign claimable again.
+  const fullyFailed = created === 0 && bundlesStamped === 0;
   const published = fullyFailed ? 'Draft' : deriveCampaignStatus('Scheduled', startsAt, endsAt, now);
   await repos.campaigns.update(
     id,

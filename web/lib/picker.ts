@@ -1,11 +1,13 @@
-// web/bundles/picker.ts
+// web/lib/picker.ts
 //
 // Pure helpers for the App Bridge PRODUCT resource picker (the grouped
 // "Select products" dialog, where variants are checkboxes nested under their
 // product) — as opposed to the flat variant picker. Kept out of the editor
 // component so the mapping between picker payloads and bundle items is
-// unit-testable without rendering anything.
-import type { ResolvedVariant } from './api';
+// unit-testable without rendering anything. Lives here (not under
+// web/bundles/) because it's about Shopify's resource picker, not bundles —
+// the tier form needs it too.
+import type { ResolvedVariant } from '../bundles/api';
 
 /** The slice of App Bridge's `Product`/`ProductVariant` payloads this module
  * reads. Declared structurally rather than importing the full App Bridge types

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { flattenPickerSelection, selectionIdsFromVariants } from './picker';
-import type { ResolvedVariant } from './api';
+import type { ResolvedVariant } from '../bundles/api';
 
 const P1 = 'gid://shopify/Product/1';
 const P2 = 'gid://shopify/Product/2';

@@ -32,7 +32,7 @@ import {
   useVariantsQuery,
 } from '../bundles/hooks';
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
-import { flattenPickerSelection, selectionIdsFromVariants } from '../bundles/picker';
+import { flattenPickerSelection, selectionIdsFromVariants } from '../lib/picker';
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
 import { VariantLabel } from '../components/VariantLabel';

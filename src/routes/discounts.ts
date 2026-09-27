@@ -132,9 +132,22 @@ const DISCOUNT_AUTOMATIC_APP_CREATE = /* GraphQL */ `
   }
 `;
 
+const DISCOUNT_CODE_APP_CREATE = /* GraphQL */ `
+  mutation CreateAppCodeDiscount($discount: DiscountCodeAppInput!) {
+    discountCodeAppCreate(codeAppDiscount: $discount) {
+      codeAppDiscount { discountId }
+      userErrors { field message }
+    }
+  }
+`;
+
 interface CreateBody {
   slug?: string;
   title?: string;
+  /** 'automatic' (the default) or 'code'. The engine is the template's; this is
+   *  only how the discount is TRIGGERED, so both share one config metafield. */
+  method?: 'automatic' | 'code';
+  code?: string;
   startsAt?: string;
   endsAt?: string;
   combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };
@@ -142,8 +155,12 @@ interface CreateBody {
 }
 
 interface DiscountCreateResult {
-  discountAutomaticAppCreate: {
+  discountAutomaticAppCreate?: {
     automaticAppDiscount: { discountId: string } | null;
+    userErrors: Array<{ field: string[]; message: string }>;
+  } | null;
+  discountCodeAppCreate?: {
+    codeAppDiscount: { discountId: string } | null;
     userErrors: Array<{ field: string[]; message: string }>;
   } | null;
 }
@@ -162,6 +179,16 @@ discountRoutes.post('/api/discounts', async (c) => {
   if (!body.slug) return c.json({ error: 'slug is required' }, 400);
   if (!body.title || !body.title.trim()) return c.json({ error: 'title is required' }, 400);
   if (!body.startsAt) return c.json({ error: 'startsAt is required' }, 400);
+  const method = body.method ?? 'automatic';
+  if (method !== 'automatic' && method !== 'code') {
+    return c.json({ error: "method must be 'automatic' or 'code'" }, 400);
+  }
+  // Rejected here rather than at Shopify: a code discount with no code is a
+  // malformed request, and every other rejection on this route happens before
+  // an Admin call.
+  if (method === 'code' && !body.code?.trim()) {
+    return c.json({ error: 'code is required for a discount-code promotion' }, 400);
+  }
   // Guards the shape only. A throw from `validate` on a well-formed but invalid
   // form is still a 500 by design, so this must not become a try/catch there.
   if (body.form === undefined || body.form === null || typeof body.form !== 'object') {
@@ -215,32 +242,46 @@ discountRoutes.post('/api/discounts', async (c) => {
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
   }
 
-  const res = await adminGraphql<DiscountCreateResult>(shopDomain, c.env, DISCOUNT_AUTOMATIC_APP_CREATE, {
-    discount: {
-      title: body.title,
-      functionId,
-      // Required by Shopify for a `discounts`-API-type function — without it
-      // the mutation fails with "Functions configured to use the `discounts`
-      // API type require the discountClasses field to be set." Comes from the
-      // adapter because it is a property of what that function emits.
-      discountClasses: adapter.discountClasses,
-      startsAt: body.startsAt,
-      ...(body.endsAt ? { endsAt: body.endsAt } : {}),
-      ...(body.combinesWith ? { combinesWith: body.combinesWith } : {}),
-      metafields: [{ namespace: adapter.namespace, key: adapter.key, type: 'json', value }],
-    },
-  });
+  // Everything except the trigger is shared: same engine, same functionId, same
+  // serialised config. The Rust function neither knows nor cares whether a code
+  // or the cart brought it into play.
+  const shared = {
+    title: body.title,
+    functionId,
+    // BOTH mutations require this — Shopify rejects either with "Functions
+    // configured to use the `discounts` API type require the discountClasses
+    // field to be set." The 2026-04 docs say `DiscountCodeAppInput` does not
+    // take it; verified against a real store, it does. Comes from the adapter
+    // because it is a property of what that function emits.
+    discountClasses: adapter.discountClasses,
+    startsAt: body.startsAt,
+    ...(body.endsAt ? { endsAt: body.endsAt } : {}),
+    ...(body.combinesWith ? { combinesWith: body.combinesWith } : {}),
+    metafields: [{ namespace: adapter.namespace, key: adapter.key, type: 'json', value }],
+  };
+
+  const res = method === 'code'
+    ? await adminGraphql<DiscountCreateResult>(shopDomain, c.env, DISCOUNT_CODE_APP_CREATE, {
+      discount: { ...shared, code: body.code?.trim() },
+    })
+    : await adminGraphql<DiscountCreateResult>(shopDomain, c.env, DISCOUNT_AUTOMATIC_APP_CREATE, {
+      discount: shared,
+    });
 
   if (res.errors && res.errors.length > 0) {
     return c.json({ error: `Shopify rejected the discount: ${JSON.stringify(res.errors)}` }, 502);
   }
 
-  const userErrors = res.data?.discountAutomaticAppCreate?.userErrors ?? [];
+  const payload = method === 'code' ? res.data?.discountCodeAppCreate : res.data?.discountAutomaticAppCreate;
+
+  const userErrors = payload?.userErrors ?? [];
   if (userErrors.length > 0) {
     return c.json({ error: userErrors.map((e) => e.message).join(' ') }, 502);
   }
 
-  const discountId = res.data?.discountAutomaticAppCreate?.automaticAppDiscount?.discountId;
+  const discountId = payload && 'codeAppDiscount' in payload
+    ? payload.codeAppDiscount?.discountId
+    : payload?.automaticAppDiscount?.discountId;
   if (!discountId) {
     return c.json({ error: 'Shopify returned no discount id' }, 502);
   }

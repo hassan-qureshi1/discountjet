@@ -23,9 +23,16 @@ export interface Template {
   defaults: Record<string, unknown>;
 }
 
+export type DiscountMethod = 'automatic' | 'code';
+
 export interface CreateDiscountInput {
   slug: string;
   title: string;
+  /** How the discount is TRIGGERED. The engine comes from the template; both
+   *  methods write the same `$app:` config. Defaults to 'automatic'. */
+  method?: DiscountMethod;
+  /** Required when `method` is 'code'. */
+  code?: string;
   startsAt: string;
   endsAt?: string;
   combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };

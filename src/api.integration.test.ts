@@ -3410,6 +3410,63 @@ describe('POST /api/discounts', () => {
     expect(input.discountClasses).toEqual(['PRODUCT']);
   });
 
+  it('creates a CODE discount when the merchant asks for one', async () => {
+    seed({ templates: [templateRow()] });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountCodeAppCreate: {
+          codeAppDiscount: { discountId: 'gid://shopify/DiscountCodeNode/9' },
+          userErrors: [],
+        } },
+      } as never);
+
+    const res = await post({
+      slug: 'pct-off', title: 'Spring sale', startsAt: '2026-10-01T00:00:00.000Z',
+      method: 'code', code: 'SPRING20', form: TIER_FORM,
+    });
+
+    expect(res.status).toBe(200);
+    const [, , query, variables] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(String(query)).toContain('discountCodeAppCreate');
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(input.code).toBe('SPRING20');
+    // The 2026-04 docs say DiscountCodeAppInput does not take discountClasses.
+    // A real store says otherwise — omitting it 502s with "Functions configured
+    // to use the `discounts` API type require the discountClasses field".
+    expect(input.discountClasses).toEqual(['PRODUCT']);
+    // Same engine, same config — only the trigger differs.
+    const metafields = input.metafields as Array<{ namespace: string; value: string }>;
+    expect(metafields[0].namespace).toBe('$app:discount-tier');
+    expect(JSON.parse(metafields[0].value).rule_type).toBe('tier-discount');
+  });
+
+  it('400s a code discount with no code, without calling Shopify', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await post({
+      slug: 'pct-off', title: 'x', startsAt: '2026-10-01T00:00:00.000Z',
+      method: 'code', form: TIER_FORM,
+    });
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('still defaults to an automatic discount when no method is given', async () => {
+    seed({ templates: [templateRow()] });
+    mockFunctionsThenCreate();
+
+    await post({ slug: 'pct-off', title: 'x', startsAt: '2026-10-01T00:00:00.000Z', form: TIER_FORM });
+
+    const [, , query] = vi.mocked(adminGraphql).mock.calls[1];
+    expect(String(query)).toContain('discountAutomaticAppCreate');
+  });
+
   it('404s an unknown slug without calling Shopify', async () => {
     seed({ templates: [] });
 

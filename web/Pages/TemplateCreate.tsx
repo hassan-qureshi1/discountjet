@@ -8,9 +8,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Banner, BlockStack, Card, InlineGrid, Page, Spinner, Text, TextField,
+  Banner, BlockStack, Card, InlineGrid, Page, Select, Spinner, Text, TextField,
 } from '@shopify/polaris';
 import { useCreateDiscount, useTemplate } from '../templates/hooks';
+import type { DiscountMethod } from '../templates/api';
 import { TierFields } from '../templates/forms/TierFields';
 import { getMetafieldSizeBytes, type TierFormData } from '../../src/lib/discountEngines/tier';
 import { ScheduleCard } from '../components/ScheduleCard';
@@ -36,6 +37,10 @@ export default function TemplateCreate() {
   const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
 
   const [title, setTitle] = useState('');
+  // How the discount is triggered. The template decides the ENGINE; this only
+  // decides whether a shopper needs a code, so both paths send the same config.
+  const [method, setMethod] = useState<DiscountMethod>('automatic');
+  const [code, setCode] = useState('');
   const [hasStart, setHasStart] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [startTime, setStartTime] = useState('09:00');
@@ -135,6 +140,9 @@ export default function TemplateCreate() {
 
   const canSave = form?.engine === 'tier'
     && title.trim().length > 0
+    // A code discount with no code is rejected by the route; block it here too
+    // rather than letting the merchant press Create and read a 400.
+    && (method === 'automatic' || code.trim().length > 0)
     && !scheduleFieldError
     && !configTooLarge;
 
@@ -145,6 +153,8 @@ export default function TemplateCreate() {
       await createMutation.mutateAsync({
         slug: template.slug,
         title: title.trim(),
+        method,
+        ...(method === 'code' ? { code: code.trim() } : {}),
         startsAt,
         ...(endsAt ? { endsAt } : {}),
         form: form.data,
@@ -191,6 +201,28 @@ export default function TemplateCreate() {
                 requiredIndicator
                 helpText="Shown internally and in Shopify admin's discount list."
               />
+              <Select
+                label="Method"
+                options={[
+                  { label: 'Automatic', value: 'automatic' },
+                  { label: 'Discount code', value: 'code' },
+                ]}
+                value={method}
+                onChange={(next) => setMethod(next as DiscountMethod)}
+                helpText={method === 'automatic'
+                  ? 'Applies at checkout on its own when the cart qualifies.'
+                  : 'The shopper must enter this code at checkout.'}
+              />
+              {method === 'code' && (
+                <TextField
+                  label="Discount code"
+                  value={code}
+                  onChange={setCode}
+                  autoComplete="off"
+                  requiredIndicator
+                  helpText="What the shopper types at checkout, e.g. SPRING20."
+                />
+              )}
             </Card>
 
             {form?.engine === 'tier' && (

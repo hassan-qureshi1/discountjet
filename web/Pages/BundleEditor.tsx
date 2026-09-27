@@ -1036,6 +1036,78 @@ export default function BundleEditor() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
+                <Card>
+                  <BlockStack gap="300">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <Text as="h2" variant="headingSm">Schedule</Text>
+                      <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
+                    </InlineStack>
+
+                    <Checkbox
+                      label="Set a start date"
+                      checked={hasStart}
+                      onChange={setHasStart}
+                      helpText="Leave off to start as soon as the bundle is saved."
+                    />
+                    {hasStart && (
+                    <InlineGrid columns={2} gap="300">
+                      <TextField
+                        label="Start date"
+                        type="date"
+                        value={startDate}
+                        onChange={setStartDate}
+                        autoComplete="off"
+                      />
+                      <TextField
+                        label="Start time"
+                        type="time"
+                        value={startTime}
+                        onChange={setStartTime}
+                        autoComplete="off"
+                      />
+                    </InlineGrid>
+                    )}
+                    <Checkbox
+                      label="Set an end date"
+                      checked={hasEnd}
+                      onChange={setHasEnd}
+                      helpText="Leave off to run until you switch the bundle off."
+                    />
+                    {hasEnd && (
+                    <InlineGrid columns={2} gap="300">
+                      <TextField
+                        label="End date"
+                        type="date"
+                        value={endDate}
+                        onChange={setEndDate}
+                        autoComplete="off"
+                      />
+                      <TextField
+                        label="End time"
+                        type="time"
+                        value={endTime}
+                        onChange={setEndTime}
+                        autoComplete="off"
+                      />
+                    </InlineGrid>
+                    )}
+                    {scheduleFieldError && (
+                    <Banner tone="critical">{scheduleFieldError}</Banner>
+                    )}
+
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Times are in your own timezone. The bundle goes live and comes down
+                      automatically within 5 minutes of each time.
+                    </Text>
+
+                    {bundle?.scheduleError && (
+                    <Banner tone="warning" title="The last scheduled change did not go through">
+                      <p>{bundle.scheduleError}</p>
+                      <p>It will be retried automatically. Saving the bundle also retries it.</p>
+                    </Banner>
+                    )}
+                  </BlockStack>
+                </Card>
               </>
             )}
 
@@ -1133,78 +1205,7 @@ export default function BundleEditor() {
 
         {/* Full width, at the end of the page: the schedule is read after the
             merchant has decided what the bundle actually IS. */}
-        <Card>
-          <BlockStack gap="300">
-            <InlineStack align="space-between" blockAlign="center">
-              <Text as="h2" variant="headingSm">Schedule</Text>
-              <StatusBadge label={previewStatus} tone={STATUS_TONE[previewStatus]} />
-            </InlineStack>
 
-            <Checkbox
-              label="Set a start date"
-              checked={hasStart}
-              onChange={setHasStart}
-              helpText="Leave off to start as soon as the bundle is saved."
-            />
-            {hasStart && (
-              <InlineGrid columns={2} gap="300">
-                <TextField
-                  label="Start date"
-                  type="date"
-                  value={startDate}
-                  onChange={setStartDate}
-                  autoComplete="off"
-                />
-                <TextField
-                  label="Start time"
-                  type="time"
-                  value={startTime}
-                  onChange={setStartTime}
-                  autoComplete="off"
-                />
-              </InlineGrid>
-            )}
-            <Checkbox
-              label="Set an end date"
-              checked={hasEnd}
-              onChange={setHasEnd}
-              helpText="Leave off to run until you switch the bundle off."
-            />
-            {hasEnd && (
-              <InlineGrid columns={2} gap="300">
-                <TextField
-                  label="End date"
-                  type="date"
-                  value={endDate}
-                  onChange={setEndDate}
-                  autoComplete="off"
-                />
-                <TextField
-                  label="End time"
-                  type="time"
-                  value={endTime}
-                  onChange={setEndTime}
-                  autoComplete="off"
-                />
-              </InlineGrid>
-            )}
-            {scheduleFieldError && (
-              <Banner tone="critical">{scheduleFieldError}</Banner>
-            )}
-
-            <Text as="p" variant="bodySm" tone="subdued">
-              Times are in your own timezone. The bundle goes live and comes down
-              automatically within 5 minutes of each time.
-            </Text>
-
-            {bundle?.scheduleError && (
-              <Banner tone="warning" title="The last scheduled change did not go through">
-                <p>{bundle.scheduleError}</p>
-                <p>It will be retried automatically. Saving the bundle also retries it.</p>
-              </Banner>
-            )}
-          </BlockStack>
-        </Card>
       </BlockStack>
     </Page>
   );

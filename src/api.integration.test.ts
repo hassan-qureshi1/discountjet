@@ -3322,3 +3322,141 @@ describe('Template API (protected by requireShop)', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('POST /api/discounts', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const TIER_FORM = {
+    message: 'Buy more save more',
+    applyTo: 'price',
+    discountType: 'percentage',
+    productDiscountSelectionStrategy: 'MAXIMUM',
+    platform: 'BOTH',
+    tiers: [{
+      id: 't1', value: '20', selectorType: 'variant_id',
+      targets: JSON.stringify([{ variantId: '123' }]), min_qty: '3',
+    }],
+  };
+
+  const templateRow = (over: Partial<TemplateRow> = {}): TemplateRow => ({
+    id: 'tpl-1',
+    slug: 'pct-off',
+    name: 'Percentage off',
+    description: 'd',
+    example: null,
+    category: 'Save %',
+    symbol: '%',
+    type: 'tier',
+    defaults: JSON.stringify({ platform: 'BOTH', tiers: [] }),
+    sortOrder: 10,
+    active: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...over,
+  });
+
+  const post = (body: unknown) => app.request(
+    '/api/discounts',
+    {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    env('development'),
+  );
+
+  function mockFunctionsThenCreate() {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountAutomaticAppCreate: {
+          automaticAppDiscount: { discountId: 'gid://shopify/DiscountAutomaticNode/1' },
+          userErrors: [],
+        } },
+      } as never);
+  }
+
+  it('creates the discount and its config in one mutation', async () => {
+    seed({ templates: [templateRow()] });
+    mockFunctionsThenCreate();
+
+    const res = await post({ slug: 'pct-off', title: 'Spring sale', startsAt: '2026-10-01T00:00:00.000Z', form: TIER_FORM });
+
+    expect(res.status).toBe(200);
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(input.functionId).toBe('gid://shopify/Function/tier');
+    const metafields = input.metafields as Array<{ namespace: string; key: string; value: string }>;
+    expect(metafields[0].namespace).toBe('$app:discount-tier');
+    expect(metafields[0].key).toBe('config');
+    expect(JSON.parse(metafields[0].value).rule_type).toBe('tier-discount');
+  });
+
+  it('404s an unknown slug without calling Shopify', async () => {
+    seed({ templates: [] });
+
+    const res = await post({ slug: 'nope', title: 'x', startsAt: '2026-10-01T00:00:00.000Z', form: TIER_FORM });
+
+    expect(res.status).toBe(404);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('400s an invalid form without calling Shopify', async () => {
+    seed({ templates: [templateRow()] });
+
+    const res = await post({ slug: 'pct-off', title: 'x', startsAt: '2026-10-01T00:00:00.000Z', form: { ...TIER_FORM, tiers: [] } });
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #5
+  it('400s a config over 10KB before calling Shopify', async () => {
+    seed({ templates: [templateRow()] });
+    const many = Array.from({ length: 400 }, (_, i) => ({
+      id: `t${i}`, value: String(i + 1), selectorType: 'variant_id',
+      targets: JSON.stringify(Array.from({ length: 20 }, (_, j) => ({ variantId: String(j), productTitle: 'A long product title here' }))),
+      min_qty: '1',
+    }));
+
+    const res = await post({ slug: 'pct-off', title: 'x', startsAt: '2026-10-01T00:00:00.000Z', form: { ...TIER_FORM, tiers: many } });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/10 ?KB|too large/i);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #2 — the template decides the engine; the client does not.
+  it('ignores a client-supplied type and uses the template’s engine', async () => {
+    seed({ templates: [templateRow()] });
+    mockFunctionsThenCreate();
+
+    await post({ slug: 'pct-off', title: 'x', startsAt: '2026-10-01T00:00:00.000Z', type: 'special', form: TIER_FORM });
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const metafields = (variables as { discount: { metafields: Array<{ namespace: string }> } }).discount.metafields;
+    expect(metafields[0].namespace).toBe('$app:discount-tier');
+  });
+
+  it('502s on Shopify userErrors rather than reporting success', async () => {
+    seed({ templates: [templateRow()] });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountAutomaticAppCreate: { automaticAppDiscount: null, userErrors: [{ field: ['title'], message: 'Title is invalid' }] } },
+      } as never);
+
+    const res = await post({ slug: 'pct-off', title: 'Spring sale', startsAt: '2026-10-01T00:00:00.000Z', form: TIER_FORM });
+
+    expect(res.status).toBe(502);
+    expect(await res.text()).toContain('Title is invalid');
+  });
+});

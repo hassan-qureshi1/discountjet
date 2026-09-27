@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
 import type { DiscountRow } from '../db/repositories';
 import { getSyncHealth, reconcileDiscounts } from '../lifecycle/discountSync';
+import { adminGraphql } from '../lib/graphqlAdmin';
+import { getAdapter } from '../lib/discountEngines/adapters';
+import { resolveDiscountFunctionId } from '../lib/discountFunctions';
+import { requireShopDomain } from '../lib/shopDomain';
 import type { AppEnv } from '../types/env.d';
 
 export const discountRoutes = new Hono<AppEnv>();
@@ -117,4 +121,108 @@ discountRoutes.get('/api/discounts/:id', async (c) => {
   // table lands in E8; until then we cannot resolve a name, so return null. The
   // detail UI still renders the locked state from row.campaignId alone.
   return c.json({ discount: toUi(row), campaign: null });
+});
+
+const DISCOUNT_AUTOMATIC_APP_CREATE = /* GraphQL */ `
+  mutation CreateAppDiscount($discount: DiscountAutomaticAppInput!) {
+    discountAutomaticAppCreate(automaticAppDiscount: $discount) {
+      automaticAppDiscount { discountId }
+      userErrors { field message }
+    }
+  }
+`;
+
+interface CreateBody {
+  slug?: string;
+  title?: string;
+  startsAt?: string;
+  endsAt?: string;
+  combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };
+  form?: unknown;
+}
+
+interface DiscountCreateResult {
+  discountAutomaticAppCreate: {
+    automaticAppDiscount: { discountId: string } | null;
+    userErrors: Array<{ field: string[]; message: string }>;
+  } | null;
+}
+
+/**
+ * Create a discount from a template.
+ *
+ * Takes the merchant's FORM DATA, never a pre-built config. A client that could
+ * hand us a finished config could hand us any config, and this one lands on a
+ * real shopper's bill. For the same reason the ENGINE comes from the stored
+ * template, not from the request body.
+ */
+discountRoutes.post('/api/discounts', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as CreateBody;
+
+  if (!body.slug) return c.json({ error: 'slug is required' }, 400);
+  if (!body.title || !body.title.trim()) return c.json({ error: 'title is required' }, 400);
+  if (!body.startsAt) return c.json({ error: 'startsAt is required' }, 400);
+
+  const template = await c.get('repos').templates.findBySlug(body.slug);
+  if (!template) return c.json({ error: 'Template not found' }, 404);
+
+  const adapter = getAdapter(template.type);
+  const form = body.form as never;
+
+  const errors = adapter.validate(form);
+  if (errors.length > 0) return c.json({ error: errors.join(' '), errors }, 400);
+
+  let value: string;
+  try {
+    value = adapter.serialize(form);
+  } catch (err) {
+    return c.json({ error: `Could not build the discount configuration: ${String(err)}` }, 400);
+  }
+
+  const sizeBytes = new TextEncoder().encode(value).length;
+  if (sizeBytes > adapter.maxBytes) {
+    return c.json(
+      { error: `Discount configuration is too large (${(sizeBytes / 1024).toFixed(1)}KB). Maximum size is 10KB.` },
+      400,
+    );
+  }
+
+  const shopDomain = requireShopDomain(c);
+
+  let functionId: string;
+  try {
+    functionId = await resolveDiscountFunctionId(c.env, shopDomain, adapter.functionHandle);
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+  }
+
+  const res = await adminGraphql<DiscountCreateResult>(shopDomain, c.env, DISCOUNT_AUTOMATIC_APP_CREATE, {
+    discount: {
+      title: body.title,
+      functionId,
+      startsAt: body.startsAt,
+      ...(body.endsAt ? { endsAt: body.endsAt } : {}),
+      ...(body.combinesWith ? { combinesWith: body.combinesWith } : {}),
+      metafields: [{ namespace: adapter.namespace, key: adapter.key, type: 'json', value }],
+    },
+  });
+
+  if (res.errors && res.errors.length > 0) {
+    return c.json({ error: `Shopify rejected the discount: ${JSON.stringify(res.errors)}` }, 502);
+  }
+
+  const userErrors = res.data?.discountAutomaticAppCreate?.userErrors ?? [];
+  if (userErrors.length > 0) {
+    return c.json({ error: userErrors.map((e) => e.message).join(' ') }, 502);
+  }
+
+  const discountId = res.data?.discountAutomaticAppCreate?.automaticAppDiscount?.discountId;
+  if (!discountId) {
+    return c.json({ error: 'Shopify returned no discount id' }, 502);
+  }
+
+  // No D1 write: Shopify is the source of truth and the `discounts/create`
+  // webhook already mirrors into the `discount` table. Inserting here would
+  // race that webhook.
+  return c.json({ discountId });
 });

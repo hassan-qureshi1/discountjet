@@ -139,3 +139,26 @@ Table webhook_event {
 
 // Logical (not enforced) link — remove this line if you prefer the ledger drawn detached.
 Ref: webhook_event.shop_id > shopify_shop.id
+
+Table template {
+  id text [pk, note: 'crypto.randomUUID()']
+  slug text [not null, unique, note: 'route key for /templates/:slug']
+  name text [not null]
+  description text [not null]
+  example text
+  category text [not null, note: 'merchant intent; drives gallery filters']
+  symbol text
+  type text [not null, note: 'tier | bundle | special — the engine, never shown to the merchant']
+  defaults text [not null, note: 'JSON: partial form data the create page is seeded with']
+  sort_order integer [not null, default: 0]
+  active integer [not null, default: 1, note: '0/1']
+  created_at text [not null]
+  updated_at text [not null]
+
+  Note: 'GLOBAL — deliberately has no shop_id. Curated content identical for every shop, with nothing to cascade on SHOP_REDACT. Second exception to the tenant rule after webhook_event.'
+
+  indexes {
+    slug [name: 'template_slug_unq', unique]
+    (active, sort_order) [name: 'template_active_sort_idx']
+  }
+}

@@ -561,13 +561,22 @@ export default function BundleEditor() {
     };
   };
 
-  const handleSave = async () => {
+  /**
+   * `statusOverride` is how "Save as draft" works on a CREATE. An existing
+   * bundle has Activate/Deactivate in the More actions menu, but a new one has
+   * no row to act on yet — without this, every bundle a merchant creates goes
+   * live the moment they save it, with no way to stage one first.
+   */
+  const handleSave = async (statusOverride?: BundleStatus) => {
     if (scheduleFieldError) {
       setBannerError(scheduleFieldError);
       return;
     }
     setBannerError(null);
-    const nextStatus: BundleStatus = isUpdateLocked ? 'Draft' : status;
+    // The plan lock still wins: an update-operation bundle the shop can't run
+    // is a draft whatever the merchant clicked.
+    const chosen: BundleStatus = statusOverride ?? status;
+    const nextStatus: BundleStatus = isUpdateLocked ? 'Draft' : chosen;
     const input = buildInput(nextStatus);
     try {
       if (isEdit && id) {
@@ -634,11 +643,25 @@ export default function BundleEditor() {
       subtitle="Define what the bundle is. Scheduling happens later in a bundle campaign."
       primaryAction={{
         content: primaryActionLabel,
-        onAction: handleSave,
+        onAction: () => handleSave(),
         loading: isSaving,
         disabled: !canSave || isSaving,
       }}
-      secondaryActions={[{ content: 'Discard', onAction: () => navigate('/bundles') }]}
+      secondaryActions={
+        isEdit || isUpdateLocked
+          // Editing? Deactivate lives in More actions. Plan-locked? The primary
+          // action is already "Save draft", so a second draft button would be
+          // two buttons doing one thing.
+          ? [{ content: 'Discard', onAction: () => navigate('/bundles') }]
+          : [
+            {
+              content: 'Save as draft',
+              onAction: () => handleSave('Draft'),
+              disabled: !canSave || isSaving,
+            },
+            { content: 'Discard', onAction: () => navigate('/bundles') },
+          ]
+      }
       actionGroups={
         isEdit
           ? [{

@@ -109,6 +109,10 @@ export interface ResolvedVariant {
    * Absent when the product has no imagery at all. */
   imageUrl?: string;
   imageAlt?: string;
+  /** Per-unit price as an exact decimal string in the shop's currency.
+   * Already sent by `GET /api/variants`, which returns the resolved
+   * variant whole; this type simply never declared it. */
+  price?: string;
 }
 
 export interface VariantsResponse {

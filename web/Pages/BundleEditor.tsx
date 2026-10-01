@@ -373,6 +373,41 @@ export default function BundleEditor() {
       ? formatMoney({ amount: String(n), currencyCode })
       : formatMoney(null)
   );
+  // The parent variant's own price, already resolved for its title and
+  // thumbnail — no extra lookup. `undefined` while the resolve is in flight or
+  // when the variant no longer exists, in which case the card shows no price
+  // rather than a guessed one.
+  const parentResolved = parentVariantId ? resolvedVariants.get(parentVariantId) : undefined;
+  const parentPrice = parentResolved?.price != null ? Number(parentResolved.price) : null;
+
+  /**
+   * How the components relate to the parent's list price.
+   *
+   * This is the state that produces the "nothing to discount" rejection: an
+   * expand bundle's price has to sit below the parent product's own price, so
+   * a parent priced under its components leaves no room to discount into and
+   * every price the merchant types is refused. Saying so here — next to both
+   * numbers — turns a 400 on save into something visible while they are still
+   * choosing the product.
+   */
+  const parentComparison = (() => {
+    if (operation !== 'expand' || parentPrice == null || sumOfItems == null) return null;
+    if (sumOfItems > parentPrice) {
+      return (
+        <Text as="span" variant="bodySm" tone="critical">
+          {`Components total ${showMoney(sumOfItems)}, more than this product's `
+            + `${showMoney(parentPrice)}. Raise the product's price in Shopify, or the `
+            + 'bundle price will have nothing to discount from.'}
+        </Text>
+      );
+    }
+    return (
+      <Text as="span" variant="bodySm" tone="subdued">
+        {`Components total ${showMoney(sumOfItems)}.`}
+      </Text>
+    );
+  })();
+
   // The same rule for money INPUTS: the shop's own symbol, or none at all while
   // the currency is unknown. Never a hardcoded `$` — it would assert USD on an
   // AUD or JPY shop just as the old read-path helpers did.
@@ -763,9 +798,19 @@ export default function BundleEditor() {
                     <VariantLabel
                       resolved={resolvedVariants.get(parentVariantId)}
                       fallback={parentTitle ?? titleFor(parentVariantId)}
-                      layout="inline"
                     />
                   ) : null}
+                  selectedActions={parentVariantId ? (
+                    <VariantLinks
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                    />
+                  ) : null}
+                  // No price or comparison line here: a merge bundle's
+                  // adjustment is based on the COMPONENTS' sum, not on this
+                  // variant's own price, so showing that price beside it would
+                  // point at the wrong number.
+                  removeLabel="Remove the bundle line variant"
                   onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
                   onPick={pickParentVariant}
                   pickerAvailable={pickerAvailable}
@@ -848,9 +893,25 @@ export default function BundleEditor() {
                     <VariantLabel
                       resolved={resolvedVariants.get(parentVariantId)}
                       fallback={parentTitle ?? titleFor(parentVariantId)}
-                      layout="inline"
                     />
                   ) : null}
+                  selectedActions={parentVariantId ? (
+                    <VariantLinks
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                    />
+                  ) : null}
+                  // The number every bundle price on this screen is validated
+                  // against — an expand bundle's price must sit below it. Shown
+                  // here because a merchant otherwise has to open the Shopify
+                  // admin to discover what they are being measured against.
+                  priceLabel={parentPrice != null ? (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      {`${showMoney(parentPrice)} · list price`}
+                    </Text>
+                  ) : null}
+                  footnote={parentComparison}
+                  removeLabel="Remove the parent product"
                   onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
                   onPick={pickParentVariant}
                   pickerAvailable={pickerAvailable}

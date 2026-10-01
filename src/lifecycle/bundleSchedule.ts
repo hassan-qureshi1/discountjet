@@ -169,32 +169,76 @@ export async function runBundleSchedule(
       const row = await repos.bundles.findById(bundleId);
       if (!row) continue;
 
-      // Draft is the merchant's manual off-switch — never scheduled over.
-      if (row.status === 'Draft') continue;
-
       // The scanner's `to` was advisory. This is the decision: a window
       // entirely in the past derives `Ended` even though the activation scan
       // found it, so it never spends a pass live.
-      const target = deriveStatus(row.scheduleStart, row.scheduleEnd, now);
-      if (target === row.status) continue;
+      //
+      // `Draft` is the merchant's manual off-switch and is never scheduled
+      // over, so it has no transition at all — but its SALE state is still
+      // `Ended`, which is what the restore below reads.
+      const target =
+        row.status === 'Draft'
+          ? ('Ended' as const)
+          : deriveStatus(row.scheduleStart, row.scheduleEnd, now);
+      const transitions = row.status !== 'Draft' && target !== row.status;
+
+      // WHETHER THIS BUNDLE SHOULD BE PRICED ON SALE RIGHT NOW.
+      //
+      // Narrower than `shouldBeLive(target)` on two counts, both of which are
+      // about not borrowing a price we cannot give back or were never asked to
+      // borrow:
+      //
+      //  - `scheduleEnd !== null` — we only overwrite a merchant's price when
+      //    we know when to hand it back. A sale with no end is not a sale, it
+      //    is a permanent repricing, and that is the merchant's change to make
+      //    rather than ours to make irreversibly on their behalf. (An
+      //    `immediate` campaign stamps a null end onto its bundles, and that
+      //    is the DEFAULT publish path.) The bundle still activates normally;
+      //    only the price overwrite is skipped.
+      //  - `campaignId !== null` — sale pricing is a campaign feature. A
+      //    standalone scheduled expand bundle has no campaign lock, no banner
+      //    and no warning in the editor, so repricing its product would be a
+      //    surprise. It keeps composition-metafield-only behaviour.
+      const saleLive =
+        row.operation === 'expand'
+        && row.status !== 'Draft'
+        && shouldBeLive(target)
+        && row.campaignId !== null
+        && row.scheduleEnd !== null;
+
+      // A row still holding a capture is looked at EVEN IF nothing about its
+      // window is due. That is what the scanner's third query feeds: the
+      // capture is the merchant's real price, and a row that should no longer
+      // be on sale must be restored no matter which edit took it out of the
+      // window.
+      const owesRestore = row.preSalePrice !== null && !saleLive;
+      if (!transitions && !owesRestore) continue;
+
+      // Fetched at most ONCE per bundle: the composition write and the sale
+      // decision both need the components.
+      let itemsCache: Awaited<ReturnType<typeof repos.bundleItems.listForBundle>> | null = null;
+      const loadItems = async () => {
+        if (itemsCache === null) itemsCache = await repos.bundleItems.listForBundle(bundleId);
+        return itemsCache;
+      };
 
       try {
         // The same plan gate the route applies. Leaving it `Scheduled` with a
         // reason is the honest outcome: neither silently live, nor silently
         // ended.
-        if (row.operation === 'update' && target === 'Active' && !isPlusPlan(plan)) {
+        if (transitions && row.operation === 'update' && target === 'Active' && !isPlusPlan(plan)) {
           await repos.bundles.update(bundleId, {
             scheduleError: `Update bundles are not available on this plan. ${planGateReason(plan)}`,
           });
           continue;
         }
 
-        if (row.operation === 'merge') {
+        if (row.operation === 'merge' && transitions) {
           if (!row.parentVariantId) {
             throw new Error(`[bundleSchedule] merge bundle ${bundleId} has no parent variant`);
           }
           if (shouldBeLive(target)) {
-            const items = await repos.bundleItems.listForBundle(bundleId);
+            const items = await loadItems();
             mergeUpserts.push(
               mergeConfigEntry({
                 parentVariantId: row.parentVariantId,
@@ -215,7 +259,10 @@ export async function runBundleSchedule(
             mergeRemovals.push(toVariantGid(row.parentVariantId));
           }
           // Planned, not applied: the batch below decides its fate, so nothing
-          // is persisted for it here.
+          // is persisted for it here. A merge row that somehow still holds a
+          // capture keeps it for now; it no longer transitions after this
+          // pass, so the safety-net scan hands it back and the restore below
+          // runs then.
           mergePending.push({ bundleId, target });
           continue;
         }
@@ -224,16 +271,16 @@ export async function runBundleSchedule(
         let metafieldGid: string | null = null;
         // Set only by a `restore`, to null, and persisted in the SAME update
         // as the status once Shopify has accepted the restore. An `apply`
-        // persists its capture earlier, in its own update, before the Shopify
-        // write. `undefined` leaves the column alone.
+        // persists its capture earlier, in its own conditional write, before
+        // the Shopify write. `undefined` leaves the column alone.
         let preSalePrice: number | null | undefined;
 
-        if (row.operation === 'expand') {
+        if (row.operation === 'expand' && transitions) {
           if (!row.parentVariantId) {
             throw new Error(`[bundleSchedule] expand bundle ${bundleId} has no parent variant`);
           }
           if (shouldBeLive(target)) {
-            const items = await repos.bundleItems.listForBundle(bundleId);
+            const items = await loadItems();
             const written = await deps.transports.writeComposition(
               env,
               domain,
@@ -251,17 +298,29 @@ export async function runBundleSchedule(
             await deps.transports.clearComposition(env, domain, row.parentVariantId);
             metafieldState = 'Cleared';
           }
+        }
 
-          // Expand only, deliberately: an expand parent is the product a
-          // shopper browses, so its page price is what they see. A merge parent
-          // is a representative line for a cart assembled from components and
-          // is never browsed, so repricing it would write to a product nobody
-          // looks at; update bundles are likewise left alone.
-          // Sale pricing: the one place this app overwrites merchant data (the
-          // parent variant's own price). Runs after the metafield work and
-          // before the status write, so a failure here leaves the status
-          // untouched and the whole step is retried next pass.
-          const items = await repos.bundleItems.listForBundle(bundleId);
+        // Sale pricing: the one place this app overwrites merchant data (the
+        // parent variant's own price). Runs after the metafield work and
+        // before the status write, so a failure here leaves the status
+        // untouched and the whole step is retried next pass.
+        //
+        // Deliberately NOT nested inside the operation branch or inside
+        // `transitions`: a row holding a capture must be restorable whatever
+        // its operation now says and whether or not its window is doing
+        // anything today. `saleLive` is the only thing that decides an APPLY,
+        // and it is expand-only.
+        //
+        // Expand-only on the apply side, deliberately: an expand parent is the
+        // product a shopper browses, so its page price is what they see. A
+        // merge parent is a representative line for a cart assembled from
+        // components and is never browsed, so repricing it would write to a
+        // product nobody looks at; update bundles are likewise left alone.
+        if (saleLive || row.preSalePrice !== null) {
+          if (!row.parentVariantId) {
+            throw new Error(`[bundleSchedule] bundle ${bundleId} has no parent variant to price`);
+          }
+          const items = await loadItems();
           const action = decideSaleAction(
             {
               price: row.price,
@@ -269,7 +328,7 @@ export async function runBundleSchedule(
               preSalePrice: row.preSalePrice,
               componentSumMinor: items.reduce((sum, i) => sum + i.price * i.qty, 0),
             },
-            shouldBeLive(target),
+            saleLive,
           );
           // compareAtPrice is overwritten on the variant with NO capture, on
           // purpose. The spec defines it as a standing property of the bundle
@@ -283,22 +342,27 @@ export async function runBundleSchedule(
                 `[bundleSchedule] variant ${row.parentVariantId} no longer exists in Shopify; cannot put bundle ${bundleId} on sale`,
               );
             }
-            // Capture BEFORE the Shopify write. No transaction spans D1 and
-            // Shopify, so the only safe order is the one whose every crash
-            // window loses a sale at worst, never the merchant's price:
-            // captured-but-not-applied is harmless (the pass sees "on sale"
-            // and will not re-capture; the restore writes the same price
-            // back), whereas applied-but-not-captured would let the next pass
-            // record the SALE price as the original.
-            await repos.bundles.update(bundleId, { preSalePrice: live.priceMinor });
-            try {
-              await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
-                priceMinor: action.priceMinor,
-                compareAtMinor: action.compareAtMinor,
-                currencyCode: live.currencyCode,
-              });
-            } catch (err) {
-              // The capture is deliberately KEPT on failure. A throw here does
+            // Capture BEFORE the Shopify write, and CONDITIONALLY. No
+            // transaction spans D1 and Shopify, so the only safe order is the
+            // one whose every crash window loses a sale at worst, never the
+            // merchant's price: captured-but-not-applied is harmless (the pass
+            // sees "on sale" and will not re-capture; the restore writes the
+            // same price back), whereas applied-but-not-captured would let the
+            // next pass record the SALE price as the original.
+            //
+            // The write is conditional on the column still being null because
+            // `decideSaleAction` read the row at the top of this iteration:
+            // two overlapping passes can both decide `apply`, and the second
+            // would otherwise read the now-live SALE price and overwrite the
+            // capture with it. Losing the race means the other pass owns this
+            // sale — nothing has been written here, so simply do not apply.
+            const captured = await repos.bundles.capturePreSalePrice(bundleId, live.priceMinor);
+            if (captured === null) {
+              console.warn(
+                `[bundleSchedule] bundle ${bundleId} (${domain}) was captured by a concurrent pass; leaving its sale to that pass`,
+              );
+            } else {
+              // The capture is deliberately KEPT if this throws. A throw does
               // not mean Shopify rejected the write: a timeout, 502 or dropped
               // connection can surface after Shopify has committed the sale
               // price. Clearing the capture would then erase the only record
@@ -307,7 +371,11 @@ export async function runBundleSchedule(
               // either way: if the write landed, the restore puts the real
               // price back; if not, the restore rewrites a price that is
               // already live. The cost of keeping is at worst a missed sale.
-              throw err;
+              await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+                priceMinor: action.priceMinor,
+                compareAtMinor: action.compareAtMinor,
+                currencyCode: live.currencyCode,
+              });
             }
           } else if (action.kind === 'restore') {
             // Currency comes from Shopify exactly as `apply` gets it, never
@@ -341,8 +409,11 @@ export async function runBundleSchedule(
         if (metafieldState !== null) {
           await repos.bundles.setMetafieldState(bundleId, metafieldState, metafieldGid);
         }
+        // `status` only when there is a transition to record: a row swept in
+        // purely to be restored (a Draft one above all) keeps the status its
+        // merchant chose.
         await repos.bundles.update(bundleId, {
-          status: target,
+          ...(transitions ? { status: target } : {}),
           scheduleError: null,
           ...(preSalePrice !== undefined ? { preSalePrice } : {}),
         });

@@ -36,6 +36,9 @@ function bundleRow(over: Partial<BundleRow> & { id: string; shopId: string }): B
     scheduleError: null,
     status: 'Scheduled',
     blockOnFailure: 0,
+    // Sale pricing is a campaign feature, so the default row is deliberately
+    // campaign-less: a test that wants a sale says so.
+    campaignId: null,
     createdAt: PAST,
     updatedAt: PAST,
     ...over,
@@ -380,6 +383,7 @@ it('captures the pre-sale price and applies the sale when a window opens', async
     [bundleRow({
       id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
       price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      campaignId: 'camp-1',
     })],
     [shop('shop-a')],
     t,
@@ -449,10 +453,12 @@ it('skips a bundle with no parent variant and records why, without aborting the 
       bundleRow({
         id: 'bad', shopId: 'shop-a', operation: 'expand', parentVariantId: null,
         price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+        campaignId: 'camp-1',
       }),
       bundleRow({
         id: 'good', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
         price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+        campaignId: 'camp-1',
       }),
     ],
     [shop('shop-a')],
@@ -482,6 +488,7 @@ it('persists the pre-sale capture before it calls Shopify', async () => {
     [bundleRow({
       id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
       price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      campaignId: 'camp-1',
     })],
     [shop('shop-a')],
     t,
@@ -502,6 +509,7 @@ it('keeps the pre-sale capture when the apply write throws, so a restore is stil
     [bundleRow({
       id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
       price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      campaignId: 'camp-1',
     })],
     [shop('shop-a')],
     t,
@@ -513,6 +521,157 @@ it('keeps the pre-sale capture when the apply write throws, so a restore is stil
   expect(row.preSalePrice).toBe(310000);
   expect(row.status).toBe('Scheduled');
   expect(row.scheduleError).toMatch(/Shopify said no/);
+});
+
+// CRITICAL. An `immediate` campaign — the DEFAULT publish mode — stamps a null
+// end date onto its bundles. Lowering the price there would be a one-way trip:
+// no query in the system can ever select the row for a restore.
+it('does NOT sale-price a bundle with no end date, but still activates it', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: null,
+      campaignId: 'camp-1',
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).not.toHaveBeenCalled();
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  // The merchant's price was never borrowed, so there is nothing to give back.
+  expect(row.preSalePrice).toBeNull();
+  // The bundle itself is live exactly as it was before sale pricing existed.
+  expect(row.status).toBe('Active');
+  expect(t.writeComposition).toHaveBeenCalled();
+});
+
+// The spec scopes sale pricing to bundles selected into a campaign. A
+// standalone scheduled bundle has no campaign lock, no banner and no warning,
+// so repricing its product would be a surprise.
+it('does NOT sale-price a standalone scheduled bundle with no campaign', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      campaignId: null,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).not.toHaveBeenCalled();
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(row.preSalePrice).toBeNull();
+  expect(row.status).toBe('Active');
+});
+
+// THE SAFETY NET. These rows are not due by any window — they are swept in
+// because they are still holding a capture, which is the merchant's real
+// price. Each one was permanently stranded before the third scan existed.
+it('restores a row stranded with its end date cleared, though no window is due', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, status: 'Active',
+      scheduleStart: PAST, scheduleEnd: null, campaignId: 'camp-1',
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000 }),
+  );
+  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBeNull();
+});
+
+it('restores a row stranded on Draft, and leaves it on Draft', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, status: 'Draft',
+      scheduleStart: PAST, scheduleEnd: FUTURE, campaignId: 'camp-1',
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000 }),
+  );
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(row.preSalePrice).toBeNull();
+  // Draft is the merchant's off-switch; restoring the price does not undo it.
+  expect(row.status).toBe('Draft');
+});
+
+it('restores a row stranded by an operation change away from expand', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'merge', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, status: 'Active',
+      scheduleStart: PAST, scheduleEnd: FUTURE, campaignId: 'camp-1',
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000 }),
+  );
+  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBeNull();
+});
+
+// Two overlapping passes. The cron is every five minutes with no overlap guard
+// and this feature adds two Admin subrequests per live bundle, so pass B can
+// still be holding its pre-A read of the row when A's capture lands. B then
+// reads the now-live SALE price — and must not record THAT as the original.
+it('does not overwrite a capture that another pass already landed', async () => {
+  let h!: ReturnType<typeof harness>;
+  const t = pricingTransports({
+    readVariantPrice: vi.fn(async () => {
+      // The other pass, completing in the gap between this pass's read of the
+      // row and its own capture: it captures the real price and leaves the
+      // sale price live on the variant.
+      await h.reposFor('shop-a').bundles.update('b1', { preSalePrice: 310000 });
+      return { priceMinor: 279000, currencyCode: 'USD' };
+    }),
+  });
+  h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      campaignId: 'camp-1',
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  // The real price survives; the sale price did NOT become the capture.
+  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBe(310000);
+  // And this pass declined to apply, because the sale is the other pass's.
+  expect(t.setVariantPricing).not.toHaveBeenCalled();
 });
 
 it('restores in the currency Shopify reports, not the shop row currency', async () => {

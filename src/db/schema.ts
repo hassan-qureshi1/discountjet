@@ -121,10 +121,12 @@ export const bundle = sqliteTable(
      * guarantee, and the only place in this app that holds merchant data we
      * are about to overwrite:
      *
-     *  - written ONCE, in the same update that applies the sale price, and
+     *  - written ONCE, immediately before the sale price is applied, and
      *    never while already non-null — otherwise a second activation pass
      *    would capture the SALE price as if it were the original and the real
-     *    price would be gone;
+     *    price would be gone. This is ENFORCED, not merely intended: the only
+     *    writer is `BundleRepository.capturePreSalePrice`, a conditional
+     *    UPDATE whose `where` includes `pre_sale_price is null`;
      *  - cleared ONLY after Shopify confirms the restore, so a rejected
      *    restore leaves the row visibly mid-sale for the next pass to retry;
      *  - the signal for "this bundle is on sale", independent of campaign

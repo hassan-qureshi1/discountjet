@@ -781,6 +781,67 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(repos.bundles.rows[0].price).toBe(1999); // persisted in minor units
   });
 
+  const putBundle = (body: unknown) => app.request('/api/bundles/bundle-1', {
+    method: 'PUT',
+    headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }, env('development'));
+
+  it('PUT /api/bundles/:id clears compareAtPrice on an explicit null', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ compareAtPrice: null });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBeNull();
+    const json = (await res.json()) as { bundle: Record<string, unknown> };
+    expect(json.bundle).not.toHaveProperty('compareAtPrice');
+  });
+
+  it('PUT /api/bundles/:id leaves compareAtPrice alone when the key is absent', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ price: 19.99 });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('PUT /api/bundles/:id sets compareAtPrice in minor units', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: null })] });
+
+    const res = await putBundle({ compareAtPrice: 31 });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('PUT /api/bundles/:id rejects a negative compareAtPrice with a 400 and writes nothing', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ compareAtPrice: -1 });
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('POST /api/bundles rejects a negative compareAtPrice with a 400 and creates nothing', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
+
+    const res = await app.request('/api/bundles', {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kit', operation: 'expand', compareAtPrice: -5,
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        items: [{ variantId: 'gid://shopify/ProductVariant/2', qty: 1 }],
+      }),
+    }, env('development'));
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows).toHaveLength(0);
+  });
+
   it('PUT /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
     seed({ bundles: [bundleRow({ id: 'bundle-1', shopId: 'other-shop' })] });
 

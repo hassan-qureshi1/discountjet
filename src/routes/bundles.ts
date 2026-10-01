@@ -53,7 +53,8 @@ interface BundleInput {
   items: BundleItemInput[];
   parentVariantId?: string;
   price?: number; // dollars (major units)
-  compareAtPrice?: number; // dollars (major units), like `price`
+  /** Dollars (major units), like `price`. On PUT, `null` clears it; an absent key leaves it. */
+  compareAtPrice?: number | null;
   status?: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   /** UTC ISO-8601, or null for "no bound". Normalized server-side. */
   scheduleStart?: string | null;
@@ -234,6 +235,19 @@ function toDto(
     updated: relativeTime(row.updatedAt),
     ...(row.campaignId ? { campaignId: row.campaignId } : {}),
   };
+}
+
+/**
+ * Boundary check for `compareAtPrice`: absent or null is fine (component sum),
+ * anything else must be a finite, non-negative number. Deliberately NOT
+ * compared against `price` — Shopify enforces its own constraints.
+ */
+function compareAtPriceError(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return 'compareAtPrice must be a non-negative number.';
+  }
+  return null;
 }
 
 /** Lets `verifyItems` fail with a status without every caller re-checking. */
@@ -708,6 +722,9 @@ bundleRoutes.post('/api/bundles', async (c) => {
     return c.json({ error: 'Bundle items must be an array.' }, 400);
   }
 
+  const compareAtError = compareAtPriceError(body.compareAtPrice);
+  if (compareAtError) return c.json({ error: compareAtError }, 400);
+
   // An expand bundle with zero items would write `bundle.composition_v2 =
   // "[]"` below — the Rust cart-transform function treats an empty
   // composition as a hard error and aborts the whole cart-transform
@@ -806,7 +823,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
     operation: body.operation,
     parentVariantId: body.parentVariantId ?? null,
     price: body.price === undefined ? null : toMinorUnits(body.price, currency),
-    compareAtPrice: body.compareAtPrice === undefined
+    compareAtPrice: body.compareAtPrice == null
       ? null
       : toMinorUnits(body.compareAtPrice, currency),
     metafieldState: 'NotYet',
@@ -915,6 +932,9 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (replacesItems && !Array.isArray(bodyItems)) {
     return c.json({ error: 'Bundle items must be an array. Omit `items` to leave them unchanged.' }, 400);
   }
+
+  const compareAtError = compareAtPriceError(body.compareAtPrice);
+  if (compareAtError) return c.json({ error: compareAtError }, 400);
 
   const currency = await shopCurrency(c);
   const existingItems = await bundleItems.listForBundle(id);
@@ -1026,7 +1046,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.operation !== undefined) patch.operation = body.operation;
   if (body.parentVariantId !== undefined) patch.parentVariantId = body.parentVariantId;
   if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
-  if (body.compareAtPrice !== undefined) patch.compareAtPrice = toMinorUnits(body.compareAtPrice, currency);
+  // `null` clears the override (back to the component sum); an absent key is
+  // a different intent and leaves the column alone.
+  if (body.compareAtPrice !== undefined) {
+    patch.compareAtPrice = body.compareAtPrice === null ? null : toMinorUnits(body.compareAtPrice, currency);
+  }
   patch.status = schedule.status;
   patch.scheduleStart = schedule.scheduleStart;
   patch.scheduleEnd = schedule.scheduleEnd;

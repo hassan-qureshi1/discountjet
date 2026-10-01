@@ -222,8 +222,10 @@ export async function runBundleSchedule(
 
         let metafieldState: 'Written' | 'Cleared' | null = null;
         let metafieldGid: string | null = null;
-        // Set only by an `apply`, and persisted in the SAME update as the
-        // status. `undefined` leaves the column alone; `null` clears it.
+        // Set only by a `restore`, to null, and persisted in the SAME update
+        // as the status once Shopify has accepted the restore. An `apply`
+        // persists its capture earlier, in its own update, before the Shopify
+        // write. `undefined` leaves the column alone.
         let preSalePrice: number | null | undefined;
 
         if (row.operation === 'expand') {
@@ -269,6 +271,11 @@ export async function runBundleSchedule(
             },
             shouldBeLive(target),
           );
+          // compareAtPrice is overwritten on the variant with NO capture, on
+          // purpose. The spec defines it as a standing property of the bundle
+          // (the component sum, before, during and after the sale), so it is
+          // not merchant state we borrow and must give back, unlike `price`.
+          // Capturing it would contradict the spec's three-state table.
           if (action.kind === 'apply') {
             const live = await deps.transports.readVariantPrice(env, domain, row.parentVariantId);
             if (live === null) {
@@ -291,24 +298,32 @@ export async function runBundleSchedule(
                 currencyCode: live.currencyCode,
               });
             } catch (err) {
-              // Roll the capture back so one transient Shopify error does not
-              // leave the bundle marked on sale and silently cancel the window.
-              try {
-                await repos.bundles.update(bundleId, { preSalePrice: null });
-              } catch (rollbackErr) {
-                // Still safe: captured-but-not-applied loses a sale, not a price.
-                console.error(`[bundleSchedule] could not roll back the pre-sale capture for ${bundleId}:`, rollbackErr);
-              }
+              // The capture is deliberately KEPT on failure. A throw here does
+              // not mean Shopify rejected the write: a timeout, 502 or dropped
+              // connection can surface after Shopify has committed the sale
+              // price. Clearing the capture would then erase the only record
+              // of the real price, and the next pass would read the SALE price
+              // as "live" and capture that as the original. Keeping it is safe
+              // either way: if the write landed, the restore puts the real
+              // price back; if not, the restore rewrites a price that is
+              // already live. The cost of keeping is at worst a missed sale.
               throw err;
             }
           } else if (action.kind === 'restore') {
-            if (!currency) {
-              throw new Error('[bundleSchedule] the shop row has no currency; cannot restore the variant price');
+            // Currency comes from Shopify exactly as `apply` gets it, never
+            // from the cached shop column: the captured amount is in minor
+            // units of the currency it was read in, and re-expanding it with
+            // a different exponent would restore a price wrong by 100x.
+            const live = await deps.transports.readVariantPrice(env, domain, row.parentVariantId);
+            if (live === null) {
+              throw new Error(
+                `[bundleSchedule] variant ${row.parentVariantId} no longer exists in Shopify; cannot restore bundle ${bundleId}`,
+              );
             }
             await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
               priceMinor: action.priceMinor,
               compareAtMinor: action.compareAtMinor,
-              currencyCode: currency,
+              currencyCode: live.currencyCode,
             });
             // Only now that Shopify has agreed. Before this point a failure
             // throws past here and the captured price survives for the retry.

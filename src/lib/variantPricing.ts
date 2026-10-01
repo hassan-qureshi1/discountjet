@@ -1,5 +1,5 @@
 import { adminGraphql } from './graphqlAdmin';
-import { currencyExponent, toMinorUnits } from './money';
+import { toMinorUnits, toMoney } from './money';
 import type { Env } from '../types/env';
 
 const VARIANT_PRICE_QUERY = `
@@ -43,16 +43,6 @@ export async function readVariantPrice(
   return { priceMinor: toMinorUnits(node.price, currencyCode), currencyCode };
 }
 
-/**
- * Major units as a decimal string is what the Admin API speaks. Uses the
- * shop's own exponent via `currencyExponent`, so a zero-decimal currency
- * (JPY) is not silently divided by 100.
- */
-function toMajorString(minor: number, currencyCode: string): string {
-  const digits = currencyExponent(currencyCode);
-  return (minor / 10 ** digits).toFixed(digits);
-}
-
 export async function setVariantPricing(
   env: Env,
   shopDomain: string,
@@ -79,8 +69,8 @@ export async function setVariantPricing(
     productId,
     variants: [{
       id: variantGid,
-      price: toMajorString(values.priceMinor, values.currencyCode),
-      compareAtPrice: toMajorString(values.compareAtMinor, values.currencyCode),
+      price: toMoney(values.priceMinor, values.currencyCode)!.amount,
+      compareAtPrice: toMoney(values.compareAtMinor, values.currencyCode)!.amount,
     }],
   });
 

@@ -492,7 +492,9 @@ it('persists the pre-sale capture before it calls Shopify', async () => {
   expect(seenAtWrite).toBe(310000);
 });
 
-it('rolls the capture back when the apply write fails, so the next pass retries', async () => {
+// The write may have landed even though the call threw (timeout, 502). The
+// capture is the only record of the real price, so it must survive.
+it('keeps the pre-sale capture when the apply write throws, so a restore is still possible', async () => {
   const t = pricingTransports({
     setVariantPricing: vi.fn(async () => { throw new Error('Shopify said no'); }),
   });
@@ -508,7 +510,29 @@ it('rolls the capture back when the apply write fails, so the next pass retries'
   await runBundleSchedule(ENV, NOW, h.deps);
 
   const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
-  expect(row.preSalePrice).toBeNull();
+  expect(row.preSalePrice).toBe(310000);
   expect(row.status).toBe('Scheduled');
   expect(row.scheduleError).toMatch(/Shopify said no/);
+});
+
+it('restores in the currency Shopify reports, not the shop row currency', async () => {
+  const t = pricingTransports({
+    readVariantPrice: vi.fn(async () => ({ priceMinor: 279000, currencyCode: 'JPY' })),
+  });
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000, currencyCode: 'JPY' }),
+  );
 });

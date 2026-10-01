@@ -468,3 +468,47 @@ it('skips a bundle with no parent variant and records why, without aborting the 
   // The second bundle still got processed — the first did not abort the pass.
   expect(good?.preSalePrice).toBe(310000);
 });
+
+// The ordering IS the guarantee: a test of end state alone passes the broken order too.
+it('persists the pre-sale capture before it calls Shopify', async () => {
+  let seenAtWrite: number | null | undefined;
+  let h!: ReturnType<typeof harness>;
+  const t = pricingTransports({
+    setVariantPricing: vi.fn(async () => {
+      seenAtWrite = (await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice;
+    }),
+  });
+  h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(seenAtWrite).toBe(310000);
+});
+
+it('rolls the capture back when the apply write fails, so the next pass retries', async () => {
+  const t = pricingTransports({
+    setVariantPricing: vi.fn(async () => { throw new Error('Shopify said no'); }),
+  });
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(row.preSalePrice).toBeNull();
+  expect(row.status).toBe('Scheduled');
+  expect(row.scheduleError).toMatch(/Shopify said no/);
+});

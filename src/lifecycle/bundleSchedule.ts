@@ -250,6 +250,11 @@ export async function runBundleSchedule(
             metafieldState = 'Cleared';
           }
 
+          // Expand only, deliberately: an expand parent is the product a
+          // shopper browses, so its page price is what they see. A merge parent
+          // is a representative line for a cart assembled from components and
+          // is never browsed, so repricing it would write to a product nobody
+          // looks at; update bundles are likewise left alone.
           // Sale pricing: the one place this app overwrites merchant data (the
           // parent variant's own price). Runs after the metafield work and
           // before the status write, so a failure here leaves the status
@@ -271,14 +276,31 @@ export async function runBundleSchedule(
                 `[bundleSchedule] variant ${row.parentVariantId} no longer exists in Shopify; cannot put bundle ${bundleId} on sale`,
               );
             }
-            await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
-              priceMinor: action.priceMinor,
-              compareAtMinor: action.compareAtMinor,
-              currencyCode: live.currencyCode,
-            });
-            // Captured from the live read above, never from the bundle's own
-            // price. Persisted with the status below, not in a write of its own.
-            preSalePrice = live.priceMinor;
+            // Capture BEFORE the Shopify write. No transaction spans D1 and
+            // Shopify, so the only safe order is the one whose every crash
+            // window loses a sale at worst, never the merchant's price:
+            // captured-but-not-applied is harmless (the pass sees "on sale"
+            // and will not re-capture; the restore writes the same price
+            // back), whereas applied-but-not-captured would let the next pass
+            // record the SALE price as the original.
+            await repos.bundles.update(bundleId, { preSalePrice: live.priceMinor });
+            try {
+              await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+                priceMinor: action.priceMinor,
+                compareAtMinor: action.compareAtMinor,
+                currencyCode: live.currencyCode,
+              });
+            } catch (err) {
+              // Roll the capture back so one transient Shopify error does not
+              // leave the bundle marked on sale and silently cancel the window.
+              try {
+                await repos.bundles.update(bundleId, { preSalePrice: null });
+              } catch (rollbackErr) {
+                // Still safe: captured-but-not-applied loses a sale, not a price.
+                console.error(`[bundleSchedule] could not roll back the pre-sale capture for ${bundleId}:`, rollbackErr);
+              }
+              throw err;
+            }
           } else if (action.kind === 'restore') {
             if (!currency) {
               throw new Error('[bundleSchedule] the shop row has no currency; cannot restore the variant price');

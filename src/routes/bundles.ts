@@ -53,6 +53,7 @@ interface BundleInput {
   items: BundleItemInput[];
   parentVariantId?: string;
   price?: number; // dollars (major units)
+  compareAtPrice?: number; // dollars (major units), like `price`
   status?: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   /** UTC ISO-8601, or null for "no bound". Normalized server-side. */
   scheduleStart?: string | null;
@@ -75,6 +76,8 @@ interface BundleDto {
   items: BundleItemDto[];
   parentVariantId?: string;
   price: MoneyV2 | null;
+  /** Absent when unset: the component sum is the fallback, so a 0 would read as free. */
+  compareAtPrice?: MoneyV2;
   sumOfItems: MoneyV2 | null;
   status: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   scheduleStart: string | null;
@@ -218,6 +221,9 @@ function toDto(
     items: items.map((item) => toItemDto(item, currency)),
     ...(row.parentVariantId ? { parentVariantId: row.parentVariantId } : {}),
     price: toMoney(row.price, currency),
+    ...(row.compareAtPrice !== null
+      ? { compareAtPrice: toMoney(row.compareAtPrice, currency)! }
+      : {}),
     sumOfItems: toMoney(sumOfItems, currency),
     status: row.status,
     scheduleStart: row.scheduleStart,
@@ -800,6 +806,9 @@ bundleRoutes.post('/api/bundles', async (c) => {
     operation: body.operation,
     parentVariantId: body.parentVariantId ?? null,
     price: body.price === undefined ? null : toMinorUnits(body.price, currency),
+    compareAtPrice: body.compareAtPrice === undefined
+      ? null
+      : toMinorUnits(body.compareAtPrice, currency),
     metafieldState: 'NotYet',
     metafieldGid: null,
     scheduleStart: schedule.scheduleStart,
@@ -1017,6 +1026,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.operation !== undefined) patch.operation = body.operation;
   if (body.parentVariantId !== undefined) patch.parentVariantId = body.parentVariantId;
   if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
+  if (body.compareAtPrice !== undefined) patch.compareAtPrice = toMinorUnits(body.compareAtPrice, currency);
   patch.status = schedule.status;
   patch.scheduleStart = schedule.scheduleStart;
   patch.scheduleEnd = schedule.scheduleEnd;

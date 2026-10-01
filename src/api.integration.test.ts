@@ -674,6 +674,43 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     });
   });
 
+  it('stores compareAtPrice in minor units and returns it as money', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
+    // The create re-resolves the items and the parent from Shopify, then writes
+    // the composition metafield; an expand price must sit below the parent's own.
+    mockVariantResolution([
+      variantNode({ id: 'gid://shopify/ProductVariant/2', price: '15.00' }),
+      variantNode({ id: 'gid://shopify/ProductVariant/1', price: '40.00' }),
+    ]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+    });
+
+    const res = await app.request('/api/bundles', {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kit', operation: 'expand', price: 27.9, compareAtPrice: 31,
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        items: [{ variantId: 'gid://shopify/ProductVariant/2', qty: 1 }],
+      }),
+    }, env('development'));
+
+    expect(res.status).toBe(201);
+    expect(repos.bundles.rows[0]).toMatchObject({ compareAtPrice: 3100 });
+    const json = (await res.json()) as { bundle: { compareAtPrice?: { amount: string } } };
+    expect(json.bundle.compareAtPrice?.amount).toBe('31.00');
+  });
+
+  it('omits compareAtPrice when the merchant set none, rather than inventing one', async () => {
+    seed({ bundles: [bundleRow({ compareAtPrice: null })] });
+
+    const res = await app.request('/api/bundles', { headers: { 'x-shop-domain': 'mystore.myshopify.com' } }, env('development'));
+
+    const json = (await res.json()) as { bundles: Array<Record<string, unknown>> };
+    expect(json.bundles[0]).not.toHaveProperty('compareAtPrice');
+  });
+
   it('POST /api/bundles returns 400 with a JSON error when name is missing', async () => {
     seed();
 

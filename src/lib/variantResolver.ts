@@ -21,10 +21,20 @@ interface VariantNode {
   title: string;
   price: string;
   image: ImageNode | null;
-  product: { id: string; title: string; featuredImage: ImageNode | null } | null;
+  product: {
+    id: string;
+    title: string;
+    handle: string | null;
+    featuredImage: ImageNode | null;
+    /** Null when the product isn't published to the Online Store. */
+    onlineStoreUrl: string | null;
+  } | null;
 }
 
-interface NodesResponse { nodes: (VariantNode | null)[] }
+interface NodesResponse {
+  nodes: (VariantNode | null)[];
+  shop: { primaryDomain: { url: string } | null } | null;
+}
 
 const VARIANT_NODES_QUERY = `
   query BundleVariantNodes($ids: [ID!]!) {
@@ -34,9 +44,12 @@ const VARIANT_NODES_QUERY = `
         title
         price
         image { url altText }
-        product { id title featuredImage { url altText } }
+        product { id title handle featuredImage { url altText } onlineStoreUrl }
       }
     }
+    # Same request, not a second round trip: the fallback storefront url needs
+    # the merchant's own domain, and asking for it here costs nothing extra.
+    shop { primaryDomain { url } }
   }
 `;
 
@@ -48,10 +61,40 @@ export interface ResolvedVariant {
   productTitle?: string;
   variantTitle?: string;
   adminUrl?: string;
+  /**
+   * The product's live storefront page, as Shopify reports it — absent when
+   * the product isn't published to the Online Store.
+   *
+   * Prefers Shopify's own `onlineStoreUrl`, which is authoritative and
+   * survives a renamed handle. Falls back to the shop's primary domain plus
+   * the handle so a merchant still has a way through to an unpublished
+   * product's page — that url can 404 while the product stays unpublished,
+   * which is the deliberate trade for not dead-ending the merchant.
+   */
+  storefrontUrl?: string;
   imageUrl?: string;
   imageAlt?: string;
   /** Per-unit price as an exact decimal string in the shop's currency. */
   price?: string;
+}
+
+/**
+ * Where a shopper would see this product.
+ *
+ * `onlineStoreUrl` is Shopify's own answer and wins whenever it exists: it is
+ * canonical and survives a renamed handle. When the product isn't published to
+ * the Online Store Shopify returns null, so we assemble one from the shop's
+ * primary domain instead rather than leaving the merchant with no way through.
+ * That assembled url can 404 until the product is published — a link that may
+ * not resolve was judged better than no link at all.
+ */
+function storefrontUrlFor(
+  product: { handle: string | null; onlineStoreUrl: string | null },
+  primaryDomain: string | undefined,
+): string | undefined {
+  if (product.onlineStoreUrl) return product.onlineStoreUrl;
+  if (!primaryDomain || !product.handle) return undefined;
+  return `${primaryDomain}/products/${product.handle}`;
 }
 
 /** `Blue T-Shirt / Large`, or undefined when the variant no longer resolves. */
@@ -101,6 +144,9 @@ export async function resolveVariants(
     if (node?.id) byId.set(node.id, node);
   }
 
+  // Trailing slash stripped so the join below can't produce `//products/`.
+  const primaryDomain = result.data?.shop?.primaryDomain?.url?.replace(/\/+$/, '');
+
   const resolved = new Map<string, ResolvedVariant>();
   for (const id of unique) {
     const node = byId.get(id);
@@ -120,6 +166,9 @@ export async function resolveVariants(
       variantTitle: node.title,
       price: node.price,
       adminUrl: `https://${shopDomain}/admin/products/${numericId(node.product.id)}/variants/${numericId(id)}`,
+      ...(storefrontUrlFor(node.product, primaryDomain)
+        ? { storefrontUrl: storefrontUrlFor(node.product, primaryDomain) as string }
+        : {}),
       ...(image ? { imageUrl: image.url } : {}),
       ...(image?.altText ? { imageAlt: image.altText } : {}),
     });

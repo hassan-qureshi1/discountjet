@@ -51,24 +51,76 @@ describe('resolveVariants', () => {
     });
   });
 
-  it('omits the storefront url when the product is not published to the online store', async () => {
+  it('falls back to the shop primary domain when the product has no onlineStoreUrl', async () => {
     vi.mocked(adminGraphql).mockResolvedValue({
-      data: { nodes: [{
-        id: GID, title: 'Large', price: '29.99', image: null,
-        product: {
-          id: 'gid://shopify/Product/9',
-          title: 'Blue T-Shirt',
-          featuredImage: null,
-          // Shopify returns null for a draft or unpublished product. Building a
-          // url from the handle instead would render a confident 404.
-          onlineStoreUrl: null,
-        },
-      }] },
+      data: {
+        nodes: [{
+          id: GID, title: 'Large', price: '29.99', image: null,
+          product: {
+            id: 'gid://shopify/Product/9',
+            title: 'Blue T-Shirt',
+            handle: 'blue-t-shirt',
+            featuredImage: null,
+            // Shopify reports null for a product not published to the Online
+            // Store. The merchant still wants a way through to the page.
+            onlineStoreUrl: null,
+          },
+        }],
+        shop: { primaryDomain: { url: 'https://shop.example.com' } },
+      },
     } as never);
 
     const resolved = await resolveVariants(SHOP, env, [GID]);
 
-    expect(resolved.get(GID)).toMatchObject({ exists: true, adminUrl: expect.any(String) });
+    expect(resolved.get(GID)).toMatchObject({
+      storefrontUrl: 'https://shop.example.com/products/blue-t-shirt',
+    });
+  });
+
+  it('prefers onlineStoreUrl over the constructed fallback when both are available', async () => {
+    vi.mocked(adminGraphql).mockResolvedValue({
+      data: {
+        nodes: [{
+          id: GID, title: 'Large', price: '29.99', image: null,
+          product: {
+            id: 'gid://shopify/Product/9',
+            title: 'Blue T-Shirt',
+            handle: 'blue-t-shirt',
+            featuredImage: null,
+            onlineStoreUrl: 'https://shop.example.com/products/canonical-path',
+          },
+        }],
+        shop: { primaryDomain: { url: 'https://shop.example.com' } },
+      },
+    } as never);
+
+    const resolved = await resolveVariants(SHOP, env, [GID]);
+
+    // Shopify's own url is authoritative — it survives a renamed handle.
+    expect(resolved.get(GID)).toMatchObject({
+      storefrontUrl: 'https://shop.example.com/products/canonical-path',
+    });
+  });
+
+  it('omits the storefront url when there is no handle to build one from', async () => {
+    vi.mocked(adminGraphql).mockResolvedValue({
+      data: {
+        nodes: [{
+          id: GID, title: 'Large', price: '29.99', image: null,
+          product: {
+            id: 'gid://shopify/Product/9',
+            title: 'Blue T-Shirt',
+            handle: null,
+            featuredImage: null,
+            onlineStoreUrl: null,
+          },
+        }],
+        shop: { primaryDomain: { url: 'https://shop.example.com' } },
+      },
+    } as never);
+
+    const resolved = await resolveVariants(SHOP, env, [GID]);
+
     expect(resolved.get(GID)).not.toHaveProperty('storefrontUrl');
   });
 

@@ -29,6 +29,58 @@ describe('resolveVariants', () => {
     });
   });
 
+  it('exposes the storefront url Shopify reports for a published product', async () => {
+    vi.mocked(adminGraphql).mockResolvedValue({
+      data: { nodes: [{
+        id: GID, title: 'Large', price: '29.99', image: null,
+        product: {
+          id: 'gid://shopify/Product/9',
+          title: 'Blue T-Shirt',
+          featuredImage: null,
+          onlineStoreUrl: 'https://test-shop.myshopify.com/products/blue-t-shirt',
+        },
+      }] },
+    } as never);
+
+    const resolved = await resolveVariants(SHOP, env, [GID]);
+
+    // Shopify's own published URL, not one we assemble from the handle: it is
+    // the only value that respects a custom domain and an unpublished product.
+    expect(resolved.get(GID)).toMatchObject({
+      storefrontUrl: 'https://test-shop.myshopify.com/products/blue-t-shirt',
+    });
+  });
+
+  it('omits the storefront url when the product is not published to the online store', async () => {
+    vi.mocked(adminGraphql).mockResolvedValue({
+      data: { nodes: [{
+        id: GID, title: 'Large', price: '29.99', image: null,
+        product: {
+          id: 'gid://shopify/Product/9',
+          title: 'Blue T-Shirt',
+          featuredImage: null,
+          // Shopify returns null for a draft or unpublished product. Building a
+          // url from the handle instead would render a confident 404.
+          onlineStoreUrl: null,
+        },
+      }] },
+    } as never);
+
+    const resolved = await resolveVariants(SHOP, env, [GID]);
+
+    expect(resolved.get(GID)).toMatchObject({ exists: true, adminUrl: expect.any(String) });
+    expect(resolved.get(GID)).not.toHaveProperty('storefrontUrl');
+  });
+
+  it('asks Shopify for onlineStoreUrl rather than deriving one from the handle', async () => {
+    vi.mocked(adminGraphql).mockResolvedValue({ data: { nodes: [null] } } as never);
+
+    await resolveVariants(SHOP, env, [GID]);
+
+    const [, , query] = vi.mocked(adminGraphql).mock.calls[0];
+    expect(String(query)).toContain('onlineStoreUrl');
+  });
+
   it('marks a deleted variant as absent rather than omitting it', async () => {
     vi.mocked(adminGraphql).mockResolvedValue({ data: { nodes: [null] } } as never);
 

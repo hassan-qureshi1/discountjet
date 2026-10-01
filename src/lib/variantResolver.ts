@@ -21,7 +21,13 @@ interface VariantNode {
   title: string;
   price: string;
   image: ImageNode | null;
-  product: { id: string; title: string; featuredImage: ImageNode | null } | null;
+  product: {
+    id: string;
+    title: string;
+    featuredImage: ImageNode | null;
+    /** Null when the product isn't published to the Online Store. */
+    onlineStoreUrl: string | null;
+  } | null;
 }
 
 interface NodesResponse { nodes: (VariantNode | null)[] }
@@ -34,7 +40,7 @@ const VARIANT_NODES_QUERY = `
         title
         price
         image { url altText }
-        product { id title featuredImage { url altText } }
+        product { id title featuredImage { url altText } onlineStoreUrl }
       }
     }
   }
@@ -48,6 +54,14 @@ export interface ResolvedVariant {
   productTitle?: string;
   variantTitle?: string;
   adminUrl?: string;
+  /**
+   * The product's live storefront page, as Shopify reports it — absent when
+   * the product isn't published to the Online Store. Taken from
+   * `onlineStoreUrl` rather than assembled from the handle: only Shopify's
+   * own value respects a custom domain, and only it can say "unpublished"
+   * instead of handing back a url that 404s.
+   */
+  storefrontUrl?: string;
   imageUrl?: string;
   imageAlt?: string;
   /** Per-unit price as an exact decimal string in the shop's currency. */
@@ -120,6 +134,9 @@ export async function resolveVariants(
       variantTitle: node.title,
       price: node.price,
       adminUrl: `https://${shopDomain}/admin/products/${numericId(node.product.id)}/variants/${numericId(id)}`,
+      ...(node.product.onlineStoreUrl
+        ? { storefrontUrl: node.product.onlineStoreUrl }
+        : {}),
       ...(image ? { imageUrl: image.url } : {}),
       ...(image?.altText ? { imageAlt: image.altText } : {}),
     });

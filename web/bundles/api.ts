@@ -101,6 +101,10 @@ export interface ResolvedVariant {
   productTitle?: string;
   variantTitle?: string;
   adminUrl?: string;
+  /** The product's live storefront page. Absent when the product isn't
+   * published to the Online Store, in which case there is no page to link to
+   * and the storefront link is omitted rather than rendered dead. */
+  storefrontUrl?: string;
   /** The variant's own image, falling back to the product's featured image.
    * Absent when the product has no imagery at all. */
   imageUrl?: string;

@@ -1,6 +1,7 @@
 import {
-  BlockStack, InlineStack, Link, Text, Thumbnail,
+  BlockStack, Icon, InlineStack, Link, Text, Thumbnail,
 } from '@shopify/polaris';
+import { ExternalIcon } from '@shopify/polaris-icons';
 import type { ResolvedVariant } from '../bundles/api';
 
 /** Shopify's name for a product's only variant; showing it adds nothing. */
@@ -59,12 +60,26 @@ export function VariantLabel({
   );
 
   if (layout === 'inline') {
+    // Inside a Polaris `Tag` there is no room for a second labelled link, so
+    // the storefront gets an icon-only control. The product title keeps its
+    // admin link, which is where a merchant goes to EDIT; the icon is the
+    // shopper's-eye view.
     return (
       <InlineStack gap="100" blockAlign="center">
         {thumbnail}
         {link}
         {variantTitle && (
           <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
+        )}
+        {resolved.storefrontUrl && (
+          <Link
+            url={resolved.storefrontUrl}
+            target="_blank"
+            accessibilityLabel={`View ${productTitle} in the online store`}
+            removeUnderline
+          >
+            <Icon source={ExternalIcon} tone="subdued" />
+          </Link>
         )}
       </InlineStack>
     );
@@ -78,6 +93,19 @@ export function VariantLabel({
         {variantTitle && (
           <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
         )}
+        {/* The storefront link is omitted entirely for an unpublished product:
+            Shopify reports no `onlineStoreUrl` for one, and a link that 404s is
+            worse than no link. */}
+        <InlineStack gap="150" blockAlign="center">
+          <Link url={resolved.adminUrl} target="_blank">
+            <Text as="span" variant="bodySm">Admin</Text>
+          </Link>
+          {resolved.storefrontUrl && (
+            <Link url={resolved.storefrontUrl} target="_blank">
+              <Text as="span" variant="bodySm">Storefront</Text>
+            </Link>
+          )}
+        </InlineStack>
       </BlockStack>
     </InlineStack>
   );

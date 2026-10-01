@@ -27,6 +27,7 @@ import {
   Text,
   TextField,
 } from '@shopify/polaris';
+import { DeleteIcon } from '@shopify/polaris-icons';
 import {
   useBundleQuery, useCreateBundle, useDeleteBundle, useShopPlanQuery, useUpdateBundle,
   useVariantsQuery,
@@ -36,6 +37,7 @@ import { flattenPickerSelection, selectionIdsFromVariants } from '../lib/picker'
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
 import { VariantLabel } from '../components/VariantLabel';
+import { VariantLinks } from '../components/VariantLinks';
 import { PriceCard } from '../components/PriceCard';
 import { VariantSelectCard } from '../components/VariantSelectCard';
 import {
@@ -885,9 +887,22 @@ export default function BundleEditor() {
                             {' '}
                             / unit
                           </Text>
-                          <Button variant="tertiary" tone="critical" onClick={() => removeItem(c.variantId)}>
-                            Remove
-                          </Button>
+                          {/* Icon-only actions: the row already names the
+                              product, so spelling out "Admin"/"Storefront"
+                              beside it repeated what the row said. Each keeps
+                              an accessibilityLabel naming the product, so the
+                              button is never announced as bare "link". */}
+                          <VariantLinks
+                            resolved={resolvedVariants.get(c.variantId)}
+                            fallback={titleFor(c.variantId)}
+                          />
+                          <Button
+                            variant="tertiary"
+                            tone="critical"
+                            icon={DeleteIcon}
+                            accessibilityLabel={`Remove ${titleFor(c.variantId)} from this bundle`}
+                            onClick={() => removeItem(c.variantId)}
+                          />
                         </InlineStack>
                       </InlineGrid>
                     ))}

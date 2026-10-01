@@ -85,27 +85,18 @@ export function VariantLabel({
     );
   }
 
+  // Stacked layout carries no links of its own: the surfaces that use it lay
+  // each variant out as a row with an action cluster (admin, storefront,
+  // remove), and that cluster owns navigation. Two ways to reach the same
+  // admin page in one row reads as a mistake, not a convenience.
   return (
     <InlineStack gap="200" blockAlign="center" wrap={false}>
       {thumbnail}
       <BlockStack gap="050">
-        {link}
+        <Text as="span" variant="bodyMd" fontWeight="medium">{productTitle}</Text>
         {variantTitle && (
           <Text as="span" variant="bodySm" tone="subdued">{variantTitle}</Text>
         )}
-        {/* The storefront link is omitted entirely for an unpublished product:
-            Shopify reports no `onlineStoreUrl` for one, and a link that 404s is
-            worse than no link. */}
-        <InlineStack gap="150" blockAlign="center">
-          <Link url={resolved.adminUrl} target="_blank">
-            <Text as="span" variant="bodySm">Admin</Text>
-          </Link>
-          {resolved.storefrontUrl && (
-            <Link url={resolved.storefrontUrl} target="_blank">
-              <Text as="span" variant="bodySm">Storefront</Text>
-            </Link>
-          )}
-        </InlineStack>
       </BlockStack>
     </InlineStack>
   );

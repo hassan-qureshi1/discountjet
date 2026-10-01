@@ -2744,6 +2744,52 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(repos.bundles.rows).toHaveLength(0);
   });
 
+  // Review Focus #5
+  describe('PUT an expand bundle against its parent price', () => {
+    const PARENT = 'gid://shopify/ProductVariant/999';
+    const putPrice = (body: unknown) => app.request('/api/bundles/bundle-1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }, env('development'));
+    const expandRow = (preSalePrice: number | null) => bundleRow({
+      id: 'bundle-1',
+      operation: 'expand',
+      parentVariantId: PARENT,
+      price: 2790,
+      preSalePrice,
+      status: 'Active',
+    });
+
+    it('allows saving while its own sale has lowered the parent price', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      // The parent's LIVE price is the sale price, because the sale set it.
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ name: 'Renamed', price: 27.9 });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('still rejects a price at or above the parent when NOT on sale', async () => {
+      seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ price: 27.9 });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a price at or above the PRE-SALE price while on sale', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ price: 31 });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
   // ─── merge price sanity ────────────────────────────────────────────────────
   //
   // `linesMerge` can only REDUCE a price: the Rust cart transform turns the

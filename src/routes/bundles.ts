@@ -361,14 +361,27 @@ function assertExpandPriceBelowParent(
   priceMinor: number,
   parent: ResolvedVariant | undefined,
   currency: string,
+  preSalePrice: number | null,
 ): void {
-  // No live parent price to compare against: the target variant check has
-  // already run, so this is a resolve that returned no price rather than a
-  // deleted variant. Let the save through rather than block on a comparison
-  // we cannot make.
-  if (parent?.price === undefined) return;
-
-  const parentMinor = toMinorUnits(parent.price, currency);
+  // Which parent price is the honest basis depends on whether a sale is in
+  // force. `preSalePrice` is non-null exactly while the schedule pass has
+  // lowered the parent's live price to this bundle's price. Compared against
+  // that live price the bundle would always be "equal to its parent" and every
+  // save would be refused because of our own sale. The pre-sale price is what
+  // the parent costs normally and what it costs again when the window closes,
+  // so it is the price the bundle actually has to undercut. With no sale in
+  // force the live price IS the normal price, and the check is unchanged.
+  let parentMinor: number;
+  if (preSalePrice !== null) {
+    parentMinor = preSalePrice;
+  } else {
+    // No live parent price to compare against: the target variant check has
+    // already run, so this is a resolve that returned no price rather than a
+    // deleted variant. Let the save through rather than block on a comparison
+    // we cannot make.
+    if (parent?.price === undefined) return;
+    parentMinor = toMinorUnits(parent.price, currency);
+  }
   if (priceMinor < parentMinor) return;
 
   const asked = toMoney(priceMinor, currency)!.amount;
@@ -800,7 +813,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       if (body.operation === 'merge') {
         assertPriceBelowComponents(priceMinor, drafts, currency);
       } else if (body.operation === 'expand' && parentVariantId !== undefined) {
-        assertExpandPriceBelowParent(priceMinor, verified.resolved.get(parentVariantId), currency);
+        assertExpandPriceBelowParent(priceMinor, verified.resolved.get(parentVariantId), currency, null);
       }
     }
   } catch (err) {
@@ -1127,7 +1140,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       if (effectiveOperation === 'merge') {
         assertPriceBelowComponents(effectivePriceMinor, drafts ?? existingItems, currency);
       } else if (effectiveOperation === 'expand') {
-        assertExpandPriceBelowParent(effectivePriceMinor, resolvedParent, currency);
+        assertExpandPriceBelowParent(effectivePriceMinor, resolvedParent, currency, existing.preSalePrice);
       }
     }
   } catch (err) {

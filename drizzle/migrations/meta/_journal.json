@@ -71,6 +71,13 @@
       "when": 1790490101933,
       "tag": "0009_red_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790895651810,
+      "tag": "0010_concerned_human_fly",
+      "breakpoints": true
     }
   ]
 }

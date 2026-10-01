@@ -259,6 +259,8 @@ export class InMemoryBundleRepository
     return {
       parentVariantId: null,
       price: null,
+      compareAtPrice: null,
+      preSalePrice: null,
       metafieldState: 'NotYet',
       metafieldGid: null,
       scheduleStart: null,

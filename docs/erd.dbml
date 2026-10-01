@@ -81,6 +81,8 @@ Table bundle {
 
   parent_variant_id text
   price integer [note: 'minor units']
+  compare_at_price integer [note: 'minor units; null = use the sum of the components as the strikethrough']
+  pre_sale_price integer [note: 'minor units; the parent variant''s own price captured before the first sale write; null = not on sale. Written once, cleared only after Shopify confirms the restore']
 
   metafield_state text [not null, default: 'NotYet', note: 'NotYet | Written | Cleared']
   metafield_gid text

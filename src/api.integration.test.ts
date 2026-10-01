@@ -96,6 +96,8 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   operation: 'merge',
   parentVariantId: null,
   price: 2999, // minor units => $29.99
+  compareAtPrice: null,
+  preSalePrice: null,
   metafieldState: 'NotYet',
   metafieldGid: null,
   scheduleStart: null,

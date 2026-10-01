@@ -2783,17 +2783,19 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       expect(error).toContain('27.90');
     });
 
-    it('rejects a price at or above the PRE-SALE price while on sale', async () => {
+    // A price edit during a sale no longer reaches the price comparison at all:
+    // the sale lock below refuses it first, because the campaign owns the price
+    // for the duration of its window. The comparison against the PRE-SALE price
+    // still matters for a PUT that does NOT touch the price (the test above),
+    // where the live parent price is the sale price the cron itself wrote.
+    it('refuses a price edit during a sale before comparing it to anything', async () => {
       seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
-      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
 
       const res = await putPrice({ price: 31 });
 
-      expect(res.status).toBe(400);
-      // The message names the PRE-SALE price (31.00), not the live 27.90.
-      const { error } = (await res.json()) as { error: string };
-      expect(error).toContain('less than the bundle product');
-      expect(error).toContain('31.00');
+      expect(res.status).toBe(409);
+      // No Admin round-trip was needed to say no.
+      expect(vi.mocked(adminGraphql)).not.toHaveBeenCalled();
     });
 
     it('409s a parentVariantId change while a sale is in force and writes nothing', async () => {
@@ -2802,11 +2804,92 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       const res = await putPrice({ parentVariantId: 'gid://shopify/ProductVariant/1000' });
 
       expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('parent product cannot be changed while its sale is running');
       expect(repos.bundles.rows[0].parentVariantId).toBe(PARENT);
       expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
     });
 
-    it('allows the same parentVariantId change when no sale is in force', async () => {
+    // THE SALE LOCK. Each of these is an ordinary merchant action that, before
+    // the guard, left `pre_sale_price` holding the only copy of the real price
+    // on a row no scan would ever reach again.
+    const expectSaleLock = async (res: Response, what: RegExp) => {
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toMatch(what);
+      expect(error).toContain('Wait for the sale window to close');
+    };
+
+    it('409s deactivating to Draft while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ status: 'Draft' }), /status/);
+      expect(repos.bundles.rows[0].status).toBe('Active');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s clearing the end date while a sale is in force', async () => {
+      const repos = seed({
+        bundles: [{ ...expandRow(3100), scheduleEnd: '2026-12-01T00:00:00.000Z' }],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+
+      await expectSaleLock(await putPrice({ scheduleEnd: null }), /end date/);
+      expect(repos.bundles.rows[0].scheduleEnd).toBe('2026-12-01T00:00:00.000Z');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s changing the operation away from expand while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ operation: 'merge', price: 27.9 }), /type/);
+      expect(repos.bundles.rows[0].operation).toBe('expand');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s a price edit while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ price: 25 }), /price/);
+      expect(repos.bundles.rows[0].price).toBe(2790);
+    });
+
+    it('409s a compare-at price edit while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ compareAtPrice: 40 }), /compare-at price/);
+      expect(repos.bundles.rows[0].compareAtPrice).toBeNull();
+    });
+
+    it('refuses to DELETE a bundle while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await app.request('/api/bundles/bundle-1', {
+        method: 'DELETE',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+      }, env('development'));
+
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('cannot be deleted while its sale is running');
+      // The row — and with it the only copy of the real price — is still there.
+      expect(repos.bundles.rows).toHaveLength(1);
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('still deletes a bundle that is not on sale', async () => {
+      const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await app.request('/api/bundles/bundle-1', {
+        method: 'DELETE',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+      }, env('development'));
+
+      expect(res.status).toBe(200);
+      expect(repos.bundles.rows).toHaveLength(0);
+    });
+
+    it('allows a parentVariantId change when no sale is in force', async () => {
       const NEW_PARENT = 'gid://shopify/ProductVariant/1000';
       const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
       mockVariantResolution([{ ...parentNode(NEW_PARENT), price: '31.00' }]);

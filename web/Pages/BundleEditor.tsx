@@ -512,6 +512,7 @@ export default function BundleEditor() {
 
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
+    const compareAt = compareAtSent();
     if (operation === 'update') {
       const overrideItem: BundleItemInput | undefined = parentVariantId
         ? {
@@ -549,7 +550,7 @@ export default function BundleEditor() {
       // "leave the line at whatever the bundle product costs" — so an empty
       // field sends nothing rather than a zero, which would read as free.
       price: priceSentForOperation(operation, priceStr, priceNum),
-      ...(compareAtSent() !== undefined ? { compareAtPrice: compareAtSent() } : {}),
+      ...(compareAt !== undefined ? { compareAtPrice: compareAt } : {}),
       status: nextStatus,
       scheduleStart,
       scheduleEnd,

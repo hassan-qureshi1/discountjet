@@ -929,12 +929,21 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     );
   }
 
-  // The parent cannot be swapped while a sale is in force. `preSalePrice` is
-  // the CURRENT parent's real price, captured before the sale lowered it.
-  // Letting the parent change would strand the old variant on its sale price
-  // (the restore no longer targets it) and write its price onto the new one,
-  // overwriting an unrelated product. Only an actual change is refused; a PUT
-  // that re-sends the same id is a no-op.
+  // THE SALE LOCK, in one sentence: while a sale is in force, nothing that
+  // would take the bundle out of the restore path is allowed.
+  //
+  // `preSalePrice` non-null means the cron has overwritten this variant's real
+  // price and is holding the original. That original is given back by exactly
+  // one mechanism — the cron seeing the bundle and deciding `restore` — so any
+  // edit that changes what the restore would target, or what it would write,
+  // is refused with a 409 until the sale is over. The guards below are each an
+  // instance of that one rule; only an actual CHANGE is refused, so a PUT that
+  // re-sends what is already stored is a no-op.
+  //
+  // The parent: `preSalePrice` is the CURRENT parent's real price. Letting the
+  // parent change would strand the old variant on its sale price (the restore
+  // no longer targets it) and write its price onto the new one, overwriting an
+  // unrelated product.
   if (
     existing.preSalePrice !== null
     && body.parentVariantId !== undefined
@@ -971,6 +980,53 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
 
   const currency = await shopCurrency(c);
   const existingItems = await bundleItems.listForBundle(id);
+
+  // The rest of the sale lock (see the parent guard above for the rule).
+  if (existing.preSalePrice !== null) {
+    const saleLockError = (what: string) =>
+      c.json(
+        {
+          error: `This bundle's ${what} cannot be changed while its sale is running. `
+            + 'Wait for the sale window to close, or end the campaign, and then change it.',
+        },
+        409,
+      );
+
+    // Deactivating. A `Draft` row is the merchant's manual off-switch, which
+    // the cron never schedules over — the sale price would simply stay on the
+    // product with the original held in a row nothing looks at again.
+    if (body.status === 'Draft' && existing.status !== 'Draft') {
+      return saleLockError('status');
+    }
+
+    // Clearing the end date. "No end" is what the cron refuses to start a sale
+    // on in the first place, because there is then no moment at which it hands
+    // the price back.
+    if (body.scheduleEnd === null && existing.scheduleEnd !== null) {
+      return saleLockError('end date');
+    }
+
+    // Leaving `expand`. Sale pricing is expand-only — an `update` or `merge`
+    // bundle is never considered for it — so this is the same stranding by
+    // another door.
+    if (body.operation !== undefined && body.operation !== existing.operation) {
+      return saleLockError('type');
+    }
+
+    // The prices themselves. The campaign owns both for the duration of the
+    // window: `price` is what is live on the variant right now, and
+    // `compareAtPrice` is the strikethrough beside it, so an edit here would
+    // be overwritten by the next pass at best and silently fight the restore
+    // at worst. The editor shows both as read-only for this reason; this is
+    // the same rule at the authority.
+    if (body.price !== undefined && toMinorUnits(body.price, currency) !== existing.price) {
+      return saleLockError('price');
+    }
+    if (body.compareAtPrice !== undefined) {
+      const next = body.compareAtPrice === null ? null : toMinorUnits(body.compareAtPrice, currency);
+      if (next !== existing.compareAtPrice) return saleLockError('compare-at price');
+    }
+  }
 
   // Effective operation/items after this PUT is applied — reject before any
   // write if the result would be an expand bundle with zero items (see the
@@ -1049,8 +1105,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // `findLockingCampaign` is shared with `src/routes/campaigns.ts` rather than
   // re-implemented, and `isCampaignLocking` stays the one predicate behind it.
   //
-  // Only a CHANGE to a bound is refused: a rename or a price edit on an owned
-  // bundle is none of the campaign's business.
+  // Only a CHANGE to a bound is refused: a rename on an owned bundle is none
+  // of the campaign's business. A PRICE edit is, but only while the campaign's
+  // sale is actually in force — that is the sale lock above, which keys off
+  // `preSalePrice` (the live overwrite) rather than off ownership, so an owned
+  // bundle that is not currently on sale can still be repriced.
   if (
     schedule.scheduleStart !== existing.scheduleStart
     || schedule.scheduleEnd !== existing.scheduleEnd
@@ -1377,6 +1436,23 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
 
   const existing = await bundleRepo.findById(id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
+
+  // The sale lock, same rule as the PUT guards: `preSalePrice` is the only
+  // copy of this variant's real price, and deleting the row destroys it — the
+  // product would stay at its sale price forever with nothing left to restore
+  // from. Refused until the sale is over, not deferred: restoring from here
+  // would mean an Admin write on the way out of a handler whose whole job is
+  // to remove state, and a failure would leave neither the row nor the price.
+  if (existing.preSalePrice !== null) {
+    return c.json(
+      {
+        error: 'This bundle cannot be deleted while its sale is running, because it is holding '
+          + 'the product\'s original price. Wait for the sale window to close, or end the '
+          + 'campaign, and then delete it.',
+      },
+      409,
+    );
+  }
 
   // Best-effort: clearing the metafield is not fatal to the delete — the
   // row is going away regardless, and a stale composition_v2/merge_bundles

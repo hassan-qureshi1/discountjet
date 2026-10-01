@@ -929,6 +929,26 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     );
   }
 
+  // The parent cannot be swapped while a sale is in force. `preSalePrice` is
+  // the CURRENT parent's real price, captured before the sale lowered it.
+  // Letting the parent change would strand the old variant on its sale price
+  // (the restore no longer targets it) and write its price onto the new one,
+  // overwriting an unrelated product. Only an actual change is refused; a PUT
+  // that re-sends the same id is a no-op.
+  if (
+    existing.preSalePrice !== null
+    && body.parentVariantId !== undefined
+    && body.parentVariantId !== existing.parentVariantId
+  ) {
+    return c.json(
+      {
+        error: 'This bundle\'s parent product cannot be changed while its sale is running. '
+          + 'Wait for the sale window to close, or end the campaign, and then change it.',
+      },
+      409,
+    );
+  }
+
   // ONE predicate for "this PUT replaces the components", used by the fallback
   // below AND by the re-resolution gate further down. They used to be spelled
   // differently (`body.items ?? …` vs `body.items !== undefined`), and

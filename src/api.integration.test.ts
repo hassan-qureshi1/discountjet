@@ -2778,6 +2778,9 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       const res = await putPrice({ price: 27.9 });
 
       expect(res.status).toBe(400);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('less than the bundle product');
+      expect(error).toContain('27.90');
     });
 
     it('rejects a price at or above the PRE-SALE price while on sale', async () => {
@@ -2787,6 +2790,50 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
       const res = await putPrice({ price: 31 });
 
       expect(res.status).toBe(400);
+      // The message names the PRE-SALE price (31.00), not the live 27.90.
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('less than the bundle product');
+      expect(error).toContain('31.00');
+    });
+
+    it('409s a parentVariantId change while a sale is in force and writes nothing', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await putPrice({ parentVariantId: 'gid://shopify/ProductVariant/1000' });
+
+      expect(res.status).toBe(409);
+      expect(repos.bundles.rows[0].parentVariantId).toBe(PARENT);
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('allows the same parentVariantId change when no sale is in force', async () => {
+      const NEW_PARENT = 'gid://shopify/ProductVariant/1000';
+      const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(NEW_PARENT), price: '31.00' }]);
+      // Naming the parent counts as a composition input, so the live bundle's
+      // composition is re-written through the Admin API.
+      vi.mocked(adminGraphql).mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+      const res = await putPrice({ parentVariantId: NEW_PARENT });
+
+      expect(res.status).toBe(200);
+      expect(repos.bundles.rows[0].parentVariantId).toBe(NEW_PARENT);
+    });
+
+    it('accepts a PUT re-sending the same parentVariantId during a sale', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+      // Naming the parent counts as a composition input, so the live bundle's
+      // composition is re-written through the Admin API.
+      vi.mocked(adminGraphql).mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+      const res = await putPrice({ parentVariantId: PARENT, name: 'Renamed' });
+
+      expect(res.status).toBe(200);
     });
   });
 

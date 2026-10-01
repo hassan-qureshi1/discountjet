@@ -20,6 +20,7 @@
 // it at publish, but the merchant would be shown something false in the
 // meantime and only find out much later. So a `useCampaigns` error disables
 // every row instead of silently treating everything as unlocked.
+import { useState } from 'react';
 import {
   Badge, Banner, BlockStack, Card, Checkbox, InlineStack, Spinner, Text,
 } from '@shopify/polaris';
@@ -40,7 +41,15 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
   const bundles = bundlesData?.bundles ?? [];
   const allCampaigns = campaignsData?.campaigns ?? [];
   const updateOpEligible = planData?.updateOpEligible ?? false;
-  const selected = new Set(campaign.bundleIds);
+  // What the merchant has clicked but the server has not confirmed yet. The
+  // checked state used to come straight off `campaign.bundleIds`, so a click
+  // showed nothing until the PUT *and* the follow-up refetch had both landed,
+  // while `isPending` disabled every row in the meantime — a second of a dead,
+  // unchanged control that reads as "the checkbox does nothing", and swallows
+  // any further click. The optimistic set is shown immediately and dropped
+  // once the server's own answer arrives or the write fails.
+  const [optimistic, setOptimistic] = useState<Set<string> | null>(null);
+  const selected = optimistic ?? new Set(campaign.bundleIds);
 
   // A failed `useCampaigns` means "we cannot name, or even confirm, a
   // bundle's lock owner right now" — never "there are no other campaigns".
@@ -52,7 +61,19 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
     const next = new Set(selected);
     if (next.has(bundleId)) next.delete(bundleId);
     else next.add(bundleId);
-    await updateMutation.mutateAsync({ id: campaign.id, input: { bundleIds: Array.from(next) } });
+    setOptimistic(next);
+    try {
+      await updateMutation.mutateAsync({ id: campaign.id, input: { bundleIds: Array.from(next) } });
+      // Server state is authoritative again from here: dropping the optimistic
+      // set lets the refetched campaign take over, so a write the server
+      // altered (or rejected a member of) is never masked by what we guessed.
+      setOptimistic(null);
+    } catch {
+      // Put the checkbox back where the server still has it, rather than
+      // leaving a tick the server never accepted. The reason is already shown
+      // by the `updateMutation.error` banner above, so it is not repeated here.
+      setOptimistic(null);
+    }
   };
 
   if (bundlesLoading || campaignsLoading || planLoading) {
@@ -101,7 +122,11 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
               const ownerLocks = Boolean(owner) && isCampaignLocking(owner!.status);
 
               const planGate = gateOperation(bundle.operation, updateOpEligible, planData?.planName);
-              const disabled = !canVerifyLocks || ownerLocks || !planGate.enabled || updateMutation.isPending;
+              // `isPending` deliberately absent: a write in flight used to disable
+              // every row, so a merchant selecting several bundles in a row had
+              // all but the first click swallowed. Each toggle sends the whole
+              // set, so a later write simply supersedes an earlier one.
+              const disabled = !canVerifyLocks || ownerLocks || !planGate.enabled;
 
               return (
                 <InlineStack key={bundle.id} align="space-between" blockAlign="center">

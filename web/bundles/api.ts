@@ -32,6 +32,9 @@ export interface BundleInput {
   items: BundleItemInput[];
   parentVariantId?: string;
   price?: number;
+  /** Major units. A number sets it, an explicit `null` clears it back to "use
+   * the component sum", and an absent key leaves the stored value untouched. */
+  compareAtPrice?: number | null;
   status?: BundleStatus;
   scheduleStart?: string | null;
   scheduleEnd?: string | null;

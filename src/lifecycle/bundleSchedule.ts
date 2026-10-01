@@ -14,6 +14,8 @@ import {
 } from '../lib/bundleMetafields';
 import type { MergeBundleConfig } from '../lib/bundleMetafields';
 import { toMoney } from '../lib/money';
+import { decideSaleAction } from '../lib/salePrice';
+import { readVariantPrice, setVariantPricing } from '../lib/variantPricing';
 import { deriveStatus, shouldBeLive } from '../lib/scheduleWindow';
 import { isPlusPlan, planGateReason } from '../lib/shopPlan';
 import type { Env } from '../types/env';
@@ -40,6 +42,17 @@ export interface BundleTransports {
       removeParentVariantIds: string[];
     },
   ): Promise<{ metafieldGid: string | null }>;
+  readVariantPrice(
+    env: Env,
+    shopDomain: string,
+    variantGid: string,
+  ): Promise<{ priceMinor: number; currencyCode: string } | null>;
+  setVariantPricing(
+    env: Env,
+    shopDomain: string,
+    variantGid: string,
+    values: { priceMinor: number; compareAtMinor: number; currencyCode: string },
+  ): Promise<void>;
 }
 
 export interface BundleScheduleDeps {
@@ -57,7 +70,13 @@ export function createBundleScheduleDeps(env: Env): BundleScheduleDeps {
     shops: createShopRepository(env.DB),
     reposFor: (shopId) => createRepositories(env.DB, shopId),
     getToken: (domain) => getShopAccessToken(domain, env),
-    transports: { writeComposition, clearComposition, applyMergeBatch },
+    transports: {
+      writeComposition,
+      clearComposition,
+      applyMergeBatch,
+      readVariantPrice,
+      setVariantPricing,
+    },
   };
 }
 
@@ -203,6 +222,9 @@ export async function runBundleSchedule(
 
         let metafieldState: 'Written' | 'Cleared' | null = null;
         let metafieldGid: string | null = null;
+        // Set only by an `apply`, and persisted in the SAME update as the
+        // status. `undefined` leaves the column alone; `null` clears it.
+        let preSalePrice: number | null | undefined;
 
         if (row.operation === 'expand') {
           if (!row.parentVariantId) {
@@ -227,6 +249,49 @@ export async function runBundleSchedule(
             await deps.transports.clearComposition(env, domain, row.parentVariantId);
             metafieldState = 'Cleared';
           }
+
+          // Sale pricing: the one place this app overwrites merchant data (the
+          // parent variant's own price). Runs after the metafield work and
+          // before the status write, so a failure here leaves the status
+          // untouched and the whole step is retried next pass.
+          const items = await repos.bundleItems.listForBundle(bundleId);
+          const action = decideSaleAction(
+            {
+              price: row.price,
+              compareAtPrice: row.compareAtPrice,
+              preSalePrice: row.preSalePrice,
+              componentSumMinor: items.reduce((sum, i) => sum + i.price * i.qty, 0),
+            },
+            shouldBeLive(target),
+          );
+          if (action.kind === 'apply') {
+            const live = await deps.transports.readVariantPrice(env, domain, row.parentVariantId);
+            if (live === null) {
+              throw new Error(
+                `[bundleSchedule] variant ${row.parentVariantId} no longer exists in Shopify; cannot put bundle ${bundleId} on sale`,
+              );
+            }
+            await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+              priceMinor: action.priceMinor,
+              compareAtMinor: action.compareAtMinor,
+              currencyCode: live.currencyCode,
+            });
+            // Captured from the live read above, never from the bundle's own
+            // price. Persisted with the status below, not in a write of its own.
+            preSalePrice = live.priceMinor;
+          } else if (action.kind === 'restore') {
+            if (!currency) {
+              throw new Error('[bundleSchedule] the shop row has no currency; cannot restore the variant price');
+            }
+            await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+              priceMinor: action.priceMinor,
+              compareAtMinor: action.compareAtMinor,
+              currencyCode: currency,
+            });
+            // Only now that Shopify has agreed. Before this point a failure
+            // throws past here and the captured price survives for the retry.
+            preSalePrice = null;
+          }
         }
 
         // Shopify has agreed, so record the transport bookkeeping BEFORE the
@@ -239,7 +304,11 @@ export async function runBundleSchedule(
         if (metafieldState !== null) {
           await repos.bundles.setMetafieldState(bundleId, metafieldState, metafieldGid);
         }
-        await repos.bundles.update(bundleId, { status: target, scheduleError: null });
+        await repos.bundles.update(bundleId, {
+          status: target,
+          scheduleError: null,
+          ...(preSalePrice !== undefined ? { preSalePrice } : {}),
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[bundleSchedule] bundle ${bundleId} (${domain}) failed to reach ${target}:`, err);

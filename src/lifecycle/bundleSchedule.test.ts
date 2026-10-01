@@ -27,6 +27,8 @@ function bundleRow(over: Partial<BundleRow> & { id: string; shopId: string }): B
     operation: 'update',
     parentVariantId: null,
     price: null,
+    compareAtPrice: null,
+    preSalePrice: null,
     metafieldState: 'NotYet',
     metafieldGid: null,
     scheduleStart: null,
@@ -45,6 +47,8 @@ function noopTransports(): BundleTransports {
     writeComposition: vi.fn(async () => ({ metafieldGid: 'gid://shopify/Metafield/1' })),
     clearComposition: vi.fn(async () => {}),
     applyMergeBatch: vi.fn(async () => ({ metafieldGid: null })),
+    readVariantPrice: vi.fn(async () => ({ priceMinor: 310000, currencyCode: 'USD' })),
+    setVariantPricing: vi.fn(async () => {}),
   };
 }
 
@@ -362,4 +366,105 @@ describe('runBundleSchedule transports', () => {
     expect(row.status).toBe('Scheduled');
     expect(row.scheduleError).toMatch(/no price/i);
   });
+});
+
+function pricingTransports(over: Partial<BundleTransports> = {}): BundleTransports {
+  return { ...noopTransports(), ...over };
+}
+
+const PARENT = 'gid://shopify/ProductVariant/1';
+
+it('captures the pre-sale price and applies the sale when a window opens', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 279000 }),
+  );
+  // The live price just read is what must be captured — not the sale price.
+  expect(await h.reposFor('shop-a').bundles.findById('b1')).toMatchObject({ preSalePrice: 310000, status: 'Active' });
+});
+
+// Review Focus #2 — the restore must stay possible after a failed write.
+it('leaves pre_sale_price set when the restore write fails, so the next pass retries', async () => {
+  const t = pricingTransports({
+    setVariantPricing: vi.fn(async () => { throw new Error('Shopify said no'); }),
+  });
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  // Clearing this before Shopify confirmed would strand the sale forever with
+  // nothing left to restore from.
+  expect(row.preSalePrice).toBe(310000);
+  expect(row.scheduleError).toMatch(/Shopify said no/);
+});
+
+// Review Focus #3 — the campaign may be gone; the restore must not care.
+it('restores a bundle whose campaign was deleted mid-sale', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: null, status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000 }),
+  );
+  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBeNull();
+});
+
+// Review Focus #4 — one unpriceable row must not abort the shop's sweep.
+it('skips a bundle with no parent variant and records why, without aborting the pass', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [
+      bundleRow({
+        id: 'bad', shopId: 'shop-a', operation: 'expand', parentVariantId: null,
+        price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      }),
+      bundleRow({
+        id: 'good', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+        price: 279000, status: 'Scheduled', scheduleStart: PAST, scheduleEnd: FUTURE,
+      }),
+    ],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const bad = await h.reposFor('shop-a').bundles.findById('bad');
+  const good = await h.reposFor('shop-a').bundles.findById('good');
+  expect(bad?.scheduleError).toBeTruthy();
+  expect(bad?.preSalePrice).toBeNull();
+  // The second bundle still got processed — the first did not abort the pass.
+  expect(good?.preSalePrice).toBe(310000);
 });

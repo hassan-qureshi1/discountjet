@@ -9,20 +9,27 @@
 // and must say why rather than just vanishing.
 //
 // Ownership is NOT a block. A bundle held by another still-live
-// (Scheduled/Published) campaign — that campaign's `bundle.campaignId` claim,
-// set at ITS publish — can still be ticked, because a Draft only lists the
-// bundle and writes nothing to it. The row names the owner as information; the
-// server refuses a genuine clash at publish, where the window is written.
+// (Scheduled/Published) campaign can still be ticked, because a Draft only
+// lists the bundle and writes nothing to it. The row names the holders and
+// their windows as information; the server refuses a genuine OVERLAP at
+// publish, where the window is written.
+//
+// Which campaigns hold a bundle is read from the CAMPAIGN LIST, never from
+// `bundle.campaignId` — see `holdersOfBundle`. That column now names whoever
+// owns the bundle right now, re-derived by the schedule pass, so a campaign
+// queued for a future window is absent from it; a badge driven by it showed
+// nothing for exactly the case the merchant can provoke, then met them with a
+// 409 they had been given no warning of.
 //
 // Three requests feed this screen (`useBundlesQuery`, `useCampaigns`,
 // `useShopPlanQuery`), and all three need a spinner on load and a Banner on
 // error per `web/CLAUDE.md` — not just the first one. `useCampaigns` in
-// particular is what NAMES a bundle's owning campaign: if it fails,
-// defaulting its list to empty (as if failure meant "no other campaigns
-// exist") would show a held bundle as unheld, which is false. Ownership no
-// longer blocks selection, but the merchant should not tick rows while the UI
-// cannot say who else holds them, so a `useCampaigns` error disables every
-// row instead of silently treating everything as unowned.
+// particular is the ONLY source of a bundle's holders: if it fails, defaulting
+// its list to empty (as if failure meant "no other campaigns exist") would show
+// a held bundle as unheld, which is false. Ownership no longer blocks
+// selection, but the merchant should not tick rows while the UI cannot say who
+// else holds them, so a `useCampaigns` error disables every row instead of
+// silently treating everything as unheld.
 import { useState } from 'react';
 import {
   Badge, Banner, BlockStack, Card, Checkbox, InlineStack, Spinner, Text, TextField,
@@ -33,7 +40,7 @@ import { useBundlesQuery, useShopPlanQuery, useUpdateBundle } from '../../bundle
 import type { Bundle, BundleInput } from '../../bundles/api';
 import { currencySymbol } from '../../lib/money';
 import { gateOperation, OP_TONE } from '../../bundles/ops';
-import { isCampaignLocking } from '../../../src/lib/campaignStatus';
+import { describeHolder, holdersOfBundle } from '../bundleOwner';
 import { StatusBadge } from '../../components/StatusBadge';
 
 /**
@@ -155,9 +162,9 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
   const moneyPrefix = currencySymbol(planData?.currencyCode);
   const selected = optimistic ?? new Set(campaign.bundleIds);
 
-  // A failed `useCampaigns` means "we cannot name a bundle's owning campaign
-  // right now" — never "there are no other campaigns". Every row is disabled
-  // until it recovers, rather than rendering a held bundle as unheld.
+  // A failed `useCampaigns` means "we cannot name a bundle's holders right
+  // now" — never "there are no other campaigns". Every row is disabled until
+  // it recovers, rather than rendering a held bundle as unheld.
   const canVerifyLocks = !campaignsError;
 
   const toggle = async (bundleId: string) => {
@@ -221,26 +228,22 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
         <Card>
           <BlockStack gap="300">
             {bundles.map((bundle) => {
-              // Owned by another campaign's `bundle.campaignId` claim, set only
-              // at THAT campaign's publish — never at attach — so a bundle
-              // merely listed in another Draft's bundleIds is still free here.
-              const owner = bundle.campaignId && bundle.campaignId !== campaign.id
-                ? allCampaigns.find((c) => c.id === bundle.campaignId)
-                : undefined;
-              // `isCampaignLocking` rather than a hand-written status list, so
-              // this can never disagree with the server or with BundleEditor
-              // about which statuses own a bundle.
-              const ownerLocks = Boolean(owner) && isCampaignLocking(owner!.status);
+              // Every still-live campaign that LISTS this bundle, published or
+              // merely scheduled — not just whichever one happens to own it at
+              // this instant. A queue is shown as a queue, in the order it
+              // runs, because any one of these windows is a window this
+              // campaign's dates must avoid.
+              const holders = holdersOfBundle(allCampaigns, bundle.id, campaign.id);
 
               const planGate = gateOperation(bundle.operation, updateOpEligible, planData?.planName);
               // `isPending` deliberately absent: a write in flight used to disable
               // every row, so a merchant selecting several bundles in a row had
               // all but the first click swallowed. Each toggle sends the whole
               // set, so a later write simply supersedes an earlier one.
-              // `ownerLocks` is absent on purpose: ticking a row only lists the
+              // `holders` is absent on purpose: ticking a row only lists the
               // bundle in this Draft and writes nothing to it, so another
               // campaign holding it is information, not a block. The server
-              // refuses at publish, where the window is actually written.
+              // refuses an overlap at publish, where the window is written.
               const disabled = !canVerifyLocks || !planGate.enabled;
 
               return (
@@ -266,12 +269,13 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
                       />
                     )}
                     <Badge tone={OP_TONE[bundle.operation]}>{bundle.operation}</Badge>
-                    {ownerLocks && owner && (
+                    {holders.map((holder) => (
                       <StatusBadge
-                        label={`Owned by "${owner.name}" (${owner.status})`}
+                        key={holder.id}
+                        label={describeHolder(holder)}
                         tone="info"
                       />
-                    )}
+                    ))}
                     {!planGate.enabled && (
                       <Badge tone="warning">{planGate.reason}</Badge>
                     )}

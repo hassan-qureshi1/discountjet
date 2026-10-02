@@ -352,7 +352,13 @@ campaignRoutes.put('/api/campaigns/:id', async (c) => {
       // conflicted with here (a merchant plans next month's sale while this
       // month's runs). The real refusal lives at publish, where
       // `assertBundleAttachable` still runs for every bundle, because publish
-      // is the one path that writes the window to the bundle.
+      // is the one path that writes the window to the bundle. The existence
+      // check remains because an unknown id is a client error, not an
+      // ownership conflict.
+      for (const bundleId of body.bundleIds) {
+        const bundle = await repos.bundles.findById(bundleId);
+        if (!bundle) throw new HttpError(404, `Bundle ${bundleId} not found`);
+      }
     }
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);

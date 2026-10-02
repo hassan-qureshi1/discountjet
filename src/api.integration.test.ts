@@ -4285,6 +4285,21 @@ describe('Campaign API', () => {
     expect(res.status).toBe(200);
   });
 
+  it('404s a PUT that lists a bundleId that does not exist, rather than failing on the foreign key', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' })],
+    });
+
+    const res = await app.request('/api/campaigns/draft', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ bundleIds: ['nope'] }),
+    }, env('development'));
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toMatch(/Bundle nope not found/);
+  });
+
   it('PUT allows a bundle whose owning campaign has ENDED', async () => {
     seed({
       campaigns: [

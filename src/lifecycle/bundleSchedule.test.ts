@@ -843,12 +843,15 @@ it('does not let the next campaign capture while the previous capture is outstan
   expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBeNull();
 });
 
+// Deliberately DUE — `Scheduled` with a start already past — so the pass runs
+// the whole per-bundle body against two candidate owners rather than
+// short-circuiting before the resolution is exercised.
 it('leaves a bundle alone while its current owner is still running', async () => {
   const t = pricingTransports();
   const h = harness(
     [bundleRow({
       id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
-      price: 279000, campaignId: 'nov', status: 'Active',
+      price: 279000, campaignId: 'nov', status: 'Scheduled',
       scheduleStart: PAST, scheduleEnd: FUTURE,
     })],
     [shop('shop-a')],
@@ -862,5 +865,99 @@ it('leaves a bundle alone while its current owner is still running', async () =>
   await runBundleSchedule(ENV, NOW, h.deps);
 
   // December is queued, not owed anything yet.
-  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.campaignId).toBe('nov');
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(row.campaignId).toBe('nov');
+  // December's window is open-ended, so a null end here would mean the queued
+  // campaign had been stamped on — which the campaignId check alone would miss
+  // if the two shared an id prefix or the stamp were partial.
+  expect(row.scheduleEnd).toBe(FUTURE);
+  expect(row.status).toBe('Active');
+});
+
+// The handover, end to end, over the two passes it is designed to take. The
+// three tests above each pin one pass; this is the only one that proves the
+// queue actually drains — that the row is left in a state the due-scan picks up
+// again, and that December's sale eventually applies having captured the
+// merchant's REAL price rather than November's sale price.
+it('completes a handover over two passes, capturing the real price for the new owner', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: 'nov', status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+    [{ campaign: { id: 'dec', status: 'Published', startsAt: PAST, endsAt: FUTURE }, bundleIds: ['b1'] }],
+  );
+
+  // PASS 1 — restore only. Nothing is re-stamped while the capture is out, so
+  // the row stays on November's window and stays due.
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const afterFirst = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(afterFirst.preSalePrice).toBeNull();
+  expect(afterFirst.campaignId).toBe('nov');
+  expect(afterFirst.scheduleEnd).toBe(PAST);
+  // Still `Active`, NOT `Ended`: an `Ended` row with a past window matches
+  // neither due-scan query, and the handover behind it would never happen.
+  expect(afterFirst.status).toBe('Active');
+  expect(t.setVariantPricing).toHaveBeenCalledTimes(1);
+
+  // PASS 2 — the capture is back, so the bundle changes hands and takes
+  // December's sale.
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const afterSecond = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(afterSecond.campaignId).toBe('dec');
+  expect(afterSecond.scheduleEnd).toBe(FUTURE);
+  expect(afterSecond.status).toBe('Active');
+  // THE POINT OF THE WHOLE TWO-PASS DANCE: the price December captured is the
+  // merchant's real 310000, read live off the restored variant — not the
+  // 279000 sale price November had left on it.
+  expect(afterSecond.preSalePrice).toBe(310000);
+  expect(t.setVariantPricing).toHaveBeenLastCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 279000 }),
+  );
+});
+
+// The failure the capture design exists for, on the one pass where a handover
+// is waiting: a restore that throws must not have moved the bundle onto the
+// incoming campaign's window, or the next pass would read the open window as
+// "already on sale", write `Active`, clear the error and never retry.
+it('keeps a failed restore on the old window and retries it next pass', async () => {
+  const t = pricingTransports({
+    setVariantPricing: vi.fn(async () => { throw new Error('Shopify said no'); }),
+  });
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: 'nov', status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+    [{ campaign: { id: 'dec', status: 'Published', startsAt: PAST, endsAt: FUTURE }, bundleIds: ['b1'] }],
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const afterFirst = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(afterFirst.preSalePrice).toBe(310000);
+  expect(afterFirst.campaignId).toBe('nov');
+  expect(afterFirst.scheduleStart).toBe(PAST);
+  expect(afterFirst.scheduleEnd).toBe(PAST);
+  expect(afterFirst.status).toBe('Active');
+  expect(afterFirst.scheduleError).toMatch(/Shopify said no/);
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const afterSecond = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  // Retried, not abandoned — and the merchant can still see why.
+  expect(t.setVariantPricing).toHaveBeenCalledTimes(2);
+  expect(afterSecond.preSalePrice).toBe(310000);
+  expect(afterSecond.campaignId).toBe('nov');
+  expect(afterSecond.scheduleError).toMatch(/Shopify said no/);
 });

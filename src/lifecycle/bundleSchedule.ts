@@ -230,33 +230,78 @@ export async function runBundleSchedule(
       // OWNERSHIP, RESOLVED RATHER THAN READ.
       //
       // Before the window is looked at, work out which campaign's window
-      // contains `now` and, if it is not the one stamped on the row, hand the
-      // bundle over: `campaignId` and the window come from the new owner, and
-      // the status goes back to `Scheduled` so the NEXT pass activates it
-      // through the ordinary path.
+      // contains `now`. When it is not the one stamped on the row, the bundle
+      // changes hands — but ONLY ONCE THE OUTGOING OWNER'S CAPTURE IS BACK.
+      //
+      // That ordering is the whole safety of a queue, and it is a HARD
+      // precondition, not a preference. `pre_sale_price` non-null means the
+      // merchant's real price is still on loan, and the row is the only record
+      // of it. Re-stamping first would move the bundle onto the incoming
+      // campaign's open window before the restore was attempted; if that
+      // restore then threw — the timeout-after-a-committed-write case this
+      // whole design is built around — the next pass would see a current
+      // window, `saleLive` true and `owesRestore` false, write `Active`, clear
+      // the error message and never retry. The merchant's product would sit at
+      // the OLD sale price for the whole of the new campaign with nothing to
+      // show for it.
+      //
+      // So a pass that finds a capture outstanding restores it under the OLD
+      // window and hands over on the next pass. Nothing is written here in
+      // that case, so a failed restore leaves the row exactly where it was:
+      // still due, still carrying its capture, still showing its error.
+      //
+      // With the capture already back, the re-stamp is unconditional and the
+      // rest of the iteration proceeds normally — `Scheduled` on the new
+      // owner's window derives `Active`, so the bundle activates and takes the
+      // new sale in this same pass. Capturing is safe precisely because
+      // `pre_sale_price` is null: the variant is at the merchant's own price.
       //
       // `Draft` is the merchant's manual off-switch, so a handover is never
       // forced onto one. `row` is a copy, so updating it in step with the
-      // write below just keeps the rest of this iteration reading what was
-      // persisted.
-      let handover = false;
-      if (row.status !== 'Draft') {
-        // eslint-disable-next-line no-await-in-loop
-        const owner = await resolveCurrentOwner(repos, bundleId, row.campaignId, now);
-        if (owner !== null && owner.id !== row.campaignId) {
+      // write keeps the rest of this iteration reading what was persisted.
+      //
+      // The whole block is guarded like the body below: a bundle whose
+      // ownership cannot be resolved records the reason and is skipped, rather
+      // than taking the rest of the shop's bundles down with it.
+      let restoreBeforeHandover = false;
+      try {
+        if (row.status !== 'Draft') {
           // eslint-disable-next-line no-await-in-loop
-          await repos.bundles.update(bundleId, {
-            campaignId: owner.id,
-            scheduleStart: owner.startsAt,
-            scheduleEnd: owner.endsAt,
-            status: 'Scheduled',
-          });
-          row.campaignId = owner.id;
-          row.scheduleStart = owner.startsAt;
-          row.scheduleEnd = owner.endsAt;
-          row.status = 'Scheduled';
-          handover = true;
+          const owner = await resolveCurrentOwner(repos, bundleId, row.campaignId, now);
+          if (owner !== null && owner.id !== row.campaignId) {
+            if (row.preSalePrice !== null) {
+              restoreBeforeHandover = true;
+            } else {
+              // Publish refuses a campaign with no start, so this is not
+              // reachable today — and it is checked anyway rather than trusted,
+              // because a `Scheduled` row with a null `scheduleStart` is
+              // matched by NEITHER due-scan query and would be stranded
+              // silently and permanently.
+              if (owner.startsAt === null) {
+                throw new Error(
+                  `[bundleSchedule] campaign ${owner.id} is current but has no start date; refusing to stamp it onto bundle ${bundleId}`,
+                );
+              }
+              // eslint-disable-next-line no-await-in-loop
+              await repos.bundles.update(bundleId, {
+                campaignId: owner.id,
+                scheduleStart: owner.startsAt,
+                scheduleEnd: owner.endsAt,
+                status: 'Scheduled',
+              });
+              row.campaignId = owner.id;
+              row.scheduleStart = owner.startsAt;
+              row.scheduleEnd = owner.endsAt;
+              row.status = 'Scheduled';
+            }
+          }
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[bundleSchedule] bundle ${bundleId} (${domain}) failed to resolve its owner:`, err);
+        // eslint-disable-next-line no-await-in-loop
+        await repos.bundles.update(bundleId, { scheduleError: message });
+        continue;
       }
 
       // The scanner's `to` was advisory. This is the decision: a window
@@ -270,24 +315,14 @@ export async function runBundleSchedule(
         row.status === 'Draft'
           ? ('Ended' as const)
           : deriveStatus(row.scheduleStart, row.scheduleEnd, now);
-      // A HANDOVER PASS NEITHER ACTIVATES NOR APPLIES. It only re-stamps (done
-      // above) and restores (below), and the incoming campaign's sale starts on
-      // the NEXT pass.
-      //
-      // That is not a missing optimisation, it is the whole safety of a queue.
-      // The outgoing campaign's capture is the merchant's real price, and it is
-      // still outstanding at the instant the boundary is crossed. If this pass
-      // also applied, `decideSaleAction` would see `onSale` and return `none` —
-      // so the new sale would never be applied at all, and worse, a later pass
-      // that did apply would read the OLD sale price as live and record THAT as
-      // the original. Restoring first and applying next pass costs one cron
-      // interval and loses nothing.
-      //
-      // Skipping the transition as well is what makes that second pass happen:
-      // `Scheduled` with a start already past is exactly what the due-scan
-      // looks for, whereas writing `Active` here would leave a bundle that is
-      // live, not on sale, and no longer due.
-      const transitions = !handover && row.status !== 'Draft' && target !== row.status;
+      // A pass that owes the outgoing owner a restore does not TRANSITION
+      // either. The old window has closed, so `target` is `Ended`, and writing
+      // it would drop the row out of the due-scan altogether — neither
+      // `Scheduled` with a past start nor `Active` with a past end — and the
+      // handover queued behind the restore would never happen. Leaving the
+      // status alone keeps the row due next pass, which is the same reason the
+      // restore path has always left it alone on failure.
+      const transitions = !restoreBeforeHandover && row.status !== 'Draft' && target !== row.status;
 
       // WHETHER THIS BUNDLE SHOULD BE PRICED ON SALE RIGHT NOW.
       //
@@ -306,11 +341,13 @@ export async function runBundleSchedule(
       //    standalone scheduled expand bundle has no campaign lock, no banner
       //    and no warning in the editor, so repricing its product would be a
       //    surprise. It keeps composition-metafield-only behaviour.
-      //  - `!handover` — see the note on `transitions` above: on the pass that
-      //    changes hands, the previous owner's capture is restored and the new
-      //    owner's sale waits for the next one.
+      //  - `!restoreBeforeHandover` — the outgoing owner's capture comes back
+      //    before the incoming campaign is allowed to borrow anything. The old
+      //    window has normally closed anyway, so this is belt and braces; it
+      //    also covers a bundle left carrying a stale open window, which would
+      //    otherwise read as `already on sale` and loop forever doing nothing.
       const saleLive =
-        !handover
+        !restoreBeforeHandover
         && row.operation === 'expand'
         && row.status !== 'Draft'
         && shouldBeLive(target)

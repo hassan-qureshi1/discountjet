@@ -87,6 +87,13 @@ export function DiscountsStep({ campaign }: { campaign: Campaign }) {
   const [form, setForm] = useState<TierFormData>(blankTierForm());
 
   const nonTierRows = campaign.discounts.filter((d) => d.type !== 'tier');
+  // A clone numbers its discount titles so the copy can publish at all: the
+  // source's are already live in Shopify under the originals, and Shopify
+  // refuses a duplicate title. The number keeps it publishable; it does not
+  // make it a good name, and only the merchant knows what this one is for.
+  // Matched on the counted suffix rather than a stored flag, so nothing has to
+  // be remembered about how the campaign came to exist.
+  const copiedRows = campaign.discounts.filter((d) => / \(\d+\)$/.test(d.name));
 
   const openModal = () => {
     setModalError(null);
@@ -147,6 +154,17 @@ export function DiscountsStep({ campaign }: { campaign: Campaign }) {
     <BlockStack gap="400">
       {updateMutation.error && !modalOpen && (
         <Banner tone="critical">{updateMutation.error.message}</Banner>
+      )}
+      {copiedRows.length > 0 && (
+        <Banner tone="warning" title="Rename these before publishing">
+          <p>
+            {`${copiedRows.map((d) => d.name).join(', ')} — copied from another campaign, `}
+            whose discounts already exist in Shopify under the original names.
+            Shopify requires a discount title to be unique, so these were given a
+            number to keep them publishable. Give them names that mean something
+            to you before you publish.
+          </p>
+        </Banner>
       )}
       {nonTierRows.length > 0 && (
         <Banner tone="warning" title="Some discounts aren't editable in this slice">

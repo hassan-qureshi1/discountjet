@@ -648,10 +648,18 @@ campaignRoutes.post('/api/campaigns/:id/clone', async (c) => {
     // elsewhere in this file for repeated sequential writes.
     // eslint-disable-next-line no-await-in-loop
     await repos.campaignDiscounts.create({
-      name: cd.name,
+      // Renamed, not copied. The source's discount is already live in Shopify
+      // under this exact title, and `discountAutomaticAppCreate` refuses a
+      // duplicate — so a verbatim copy made every clone unpublishable, and
+      // clone is the ONLY way to edit a published campaign. The merchant can
+      // rename it to anything they like in the builder before publishing.
+      name: `${cd.name} (copy)`,
       type: cd.type,
       method: cd.method,
-      code: cd.code,
+      // Discount codes must be unique in Shopify too, so the same collision
+      // applies — but a shopper types this at checkout, so it cannot take the
+      // title's " (copy)" suffix. Kept code-shaped instead.
+      code: cd.code === null ? null : `${cd.code}-COPY`,
       configJson: cd.configJson,
       configBytes: cd.configBytes,
       // The one invariant this route exists to protect: a carried-over gid

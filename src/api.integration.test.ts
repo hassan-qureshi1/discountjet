@@ -4438,6 +4438,90 @@ describe('Campaign API', () => {
     expect(res.status).not.toBe(409);
   });
 
+  it('publishes a clone end to end, which is what the rename exists for', async () => {
+    // The test whose absence let this ship: the clone route and the publish
+    // route were each correct, and combining them failed every time because
+    // nothing exercised the pair.
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'window',
+        startsAt: '2099-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z',
+      })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', name: 'BFCM 1', publishState: 'created',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+    });
+
+    const cloneRes = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+    const { campaignId } = (await cloneRes.json()) as { campaignId: string };
+
+    mockFunctionsThenCreate();
+    const res = await publish(campaignId);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { created: number; failed: number };
+    expect(body).toMatchObject({ created: 1, failed: 0 });
+
+    // The title Shopify was asked for is the renamed one, not the source's.
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(input.title).not.toBe('BFCM 1');
+
+    // And the source's own discount is untouched by any of it.
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toMatchObject({
+      name: 'BFCM 1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+    });
+  });
+
+  it('renames a cloned discount, because Shopify refuses a duplicate title', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', name: 'BFCM 1' })],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
+
+    // The source's discount is already live in Shopify under this exact title,
+    // and `discountAutomaticAppCreate` rejects a duplicate. Carrying the name
+    // over verbatim made every clone unpublishable — and clone is the only way
+    // to edit a published campaign.
+    expect(copied!.name).not.toBe('BFCM 1');
+    expect(copied!.name).toContain('BFCM 1');
+    // The source keeps its own name.
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')!.name).toBe('BFCM 1');
+  });
+
+  it('renames a cloned discount CODE too, which must also be unique in Shopify', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', name: 'Spring code', method: 'code', code: 'SPRING20',
+      })],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
+
+    expect(copied!.code).not.toBe('SPRING20');
+    expect(copied!.code).toContain('SPRING20');
+    // A shopper types this at checkout, so it must stay code-shaped: no
+    // spaces or parentheses, unlike the title suffix.
+    expect(copied!.code).toMatch(/^[A-Z0-9_-]+$/);
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')!.code).toBe('SPRING20');
+  });
+
   it('clones into an independent Draft with no Shopify identities', async () => {
     const repos = seed({
       campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],

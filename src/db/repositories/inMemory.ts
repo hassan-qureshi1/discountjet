@@ -695,7 +695,16 @@ export class InMemoryTemplateRepository implements ITemplateRepository {
  * Mirrors the real predicates — including that it returns ids only.
  */
 export class InMemoryDueBundleScanner implements IDueBundleScanner {
-  constructor(private readonly rows: BundleRow[]) {}
+  /**
+   * Campaigns and their bundle links are optional because most cron tests have
+   * neither — but a fake that cannot see them would be LAXER than the real
+   * scanner, which is the one way a fake is allowed not to be.
+   */
+  constructor(
+    private readonly rows: BundleRow[],
+    private readonly campaigns: CampaignRow[] = [],
+    private readonly campaignBundles: CampaignBundleRow[] = [],
+  ) {}
 
   async findDue(now: string): Promise<DueBundle[]> {
     const due: DueBundle[] = [];
@@ -708,6 +717,21 @@ export class InMemoryDueBundleScanner implements IDueBundleScanner {
         due.push({ shopId: r.shopId, bundleId: r.id, to: 'Ended' });
         seen.add(r.id);
       }
+    }
+    // The handover scan — see `DueBundleScanner.findDue`. A bundle whose
+    // holding campaign's window contains `now` while the row names someone
+    // else, which is how a campaign published for a future window (and every
+    // queue with a gap in it) ever becomes due at all.
+    for (const link of this.campaignBundles) {
+      const c = this.campaigns.find((x) => x.id === link.campaignId);
+      const row = this.rows.find((x) => x.id === link.bundleId);
+      if (!c || !row || seen.has(row.id)) continue;
+      if (c.status !== 'Scheduled' && c.status !== 'Published') continue;
+      if (c.startsAt === null || c.startsAt > now) continue;
+      if (c.endsAt !== null && c.endsAt <= now) continue;
+      if (row.campaignId === c.id) continue;
+      due.push({ shopId: row.shopId, bundleId: row.id, to: 'Active' });
+      seen.add(row.id);
     }
     // The safety net — see `DueBundleScanner.findDue`.
     for (const r of this.rows) {

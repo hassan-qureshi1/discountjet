@@ -257,15 +257,30 @@ export async function runBundleSchedule(
       // `pre_sale_price` is null: the variant is at the merchant's own price.
       //
       // `Draft` is the merchant's manual off-switch, so a handover is never
-      // forced onto one. `row` is a copy, so updating it in step with the
-      // write keeps the rest of this iteration reading what was persisted.
+      // forced onto a bundle a campaign ALREADY OWNS: switching it off
+      // mid-queue must not be undone by the next campaign in line.
+      //
+      // An UNOWNED `Draft` row is a different thing entirely, and is the
+      // ordinary shape of a bundle a campaign published for a future window:
+      // publish writes nothing to it, so it keeps whatever status the merchant
+      // had it in — usually `Draft`, since a campaign bundle is scheduled by
+      // its campaign rather than by hand. Refusing that one would mean a
+      // future campaign never ran its bundles at all, and it is not an
+      // off-switch being overridden: before ownership became derived, publish
+      // stamped exactly this row unconditionally. `resolveCurrentOwner`
+      // returns null when no campaign holds it, so a genuinely standalone
+      // Draft bundle is still never touched.
+      //
+      // `row` is a copy, so updating it in step with the write keeps the rest
+      // of this iteration reading what was persisted.
       //
       // The whole block is guarded like the body below: a bundle whose
       // ownership cannot be resolved records the reason and is skipped, rather
       // than taking the rest of the shop's bundles down with it.
       let restoreBeforeHandover = false;
       try {
-        if (row.status !== 'Draft') {
+        const draftOffSwitch = row.status === 'Draft' && row.campaignId !== null;
+        if (!draftOffSwitch) {
           // eslint-disable-next-line no-await-in-loop
           const owner = await resolveCurrentOwner(repos, bundleId, row.campaignId, now);
           if (owner !== null && owner.id !== row.campaignId) {
@@ -342,10 +357,15 @@ export async function runBundleSchedule(
       //    and no warning in the editor, so repricing its product would be a
       //    surprise. It keeps composition-metafield-only behaviour.
       //  - `!restoreBeforeHandover` — the outgoing owner's capture comes back
-      //    before the incoming campaign is allowed to borrow anything. The old
-      //    window has normally closed anyway, so this is belt and braces; it
-      //    also covers a bundle left carrying a stale open window, which would
-      //    otherwise read as `already on sale` and loop forever doing nothing.
+      //    before the incoming campaign is allowed to borrow anything. This is
+      //    the one that stops B repricing over A's capture on the pass where
+      //    the bundle changes hands, and it is NOT belt and braces: the flag is
+      //    only set when a DIFFERENT campaign is current, so it says nothing
+      //    about a bundle carrying a stale open window under its existing
+      //    owner. That case is handled where it arises — `decideSaleAction`
+      //    returns `none` while a capture is outstanding, so nothing is
+      //    re-borrowed, and publish refuses to stamp over an outstanding
+      //    capture so the cron is never asked to.
       const saleLive =
         !restoreBeforeHandover
         && row.operation === 'expand'

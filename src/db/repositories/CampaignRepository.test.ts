@@ -104,3 +104,21 @@ describe('CampaignDiscountRepository', () => {
     expect(params).toContain('c1');
   });
 });
+
+describe('CampaignBundleRepository.listCampaignIdsForBundle', () => {
+  it('scopes the lookup by shop as well as bundle', async () => {
+    const { fake, campaignBundles } = repos();
+    await campaignBundles.listCampaignIdsForBundle('b1');
+
+    const { sql, params } = fake.lastQuery();
+    expect(sql).toMatch(/"shop_id" = \?/i);
+    expect(sql).toMatch(/"bundle_id" = \?/i);
+    expect(params).toContain(SHOP);
+    expect(params).toContain('b1');
+  });
+
+  it('returns ids, not rows, and never undefined for a miss', async () => {
+    const { campaignBundles } = repos([]);
+    await expect(campaignBundles.listCampaignIdsForBundle('nope')).resolves.toEqual([]);
+  });
+});

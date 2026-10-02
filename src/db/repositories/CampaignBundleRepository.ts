@@ -13,6 +13,7 @@ export interface ICampaignBundleRepository
   extends IShopScopedRepository<CampaignBundleRow, CampaignBundleNew> {
   listForCampaign(campaignId: string): Promise<CampaignBundleRow[]>;
   deleteForCampaign(campaignId: string): Promise<void>;
+  listCampaignIdsForBundle(bundleId: string): Promise<string[]>;
 }
 
 /**
@@ -42,5 +43,21 @@ export class CampaignBundleRepository
     await this.db
       .delete(campaignBundle)
       .where(this.scope(eq(campaignBundle.campaignId, campaignId)));
+  }
+
+  /**
+   * Which campaigns hold this bundle, by id.
+   *
+   * Asked by two callers for the same reason — the publish-time overlap check
+   * and the cron's ownership resolution both need to know who else wants this
+   * bundle — so it exists once rather than as two similar queries.
+   */
+  async listCampaignIdsForBundle(bundleId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ campaignId: campaignBundle.campaignId })
+      .from(campaignBundle)
+      .where(this.scope(eq(campaignBundle.bundleId, bundleId)))
+      .all();
+    return rows.map((r) => r.campaignId);
   }
 }

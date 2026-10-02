@@ -602,6 +602,12 @@ export class InMemoryCampaignBundleRepository
       .map((r) => ({ ...r }));
   }
 
+  async listCampaignIdsForBundle(bundleId: string): Promise<string[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.bundleId === bundleId)
+      .map((r) => r.campaignId);
+  }
+
   async deleteForCampaign(campaignId: string): Promise<void> {
     this.rows = this.rows.filter((r) => !(this.inScope(r) && r.campaignId === campaignId));
   }

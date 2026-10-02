@@ -93,7 +93,7 @@ Table bundle {
   status text [not null, note: 'Active | Scheduled | Ended | Draft']
   block_on_failure integer [not null, default: 0, note: '0/1']
 
-  campaign_id text [ref: > campaign.id, note: 'ON DELETE SET NULL — set at publish when a campaign takes over this bundle''s schedule; the lock is derived from the owning campaign''s status, not from this column']
+  campaign_id text [ref: > campaign.id, note: 'ON DELETE SET NULL — set at publish only when the campaign''s window is already current, otherwise written by the schedule pass when the window arrives. Cache of the current owner re-derived from campaign windows each pass, not a durable claim. pre_sale_price, not this, makes a sale restorable.']
 
   created_at text [not null]
   updated_at text [not null]

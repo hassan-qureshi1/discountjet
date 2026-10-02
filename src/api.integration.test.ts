@@ -4010,10 +4010,18 @@ describe('Campaign API', () => {
     expect(input.endsAt).toBe('2099-02-01T00:00:00.000Z');
     // The window is in the future, so the campaign is only QUEUED: the bundle
     // is left exactly as it was, because stamping now would overwrite whichever
-    // campaign is running it. The cron takes it over at the boundary.
+    // campaign is running it.
     expect(repos.bundles.rows[0]).toMatchObject({
       scheduleStart: null, scheduleEnd: null, campaignId: null, status: 'Draft',
     });
+    // And the merchant is TOLD so. An untouched bundle used to be reported as
+    // `{status: 'Scheduled', bundleFailures: []}`, indistinguishable from one
+    // that had been scheduled — while nothing in the cron could find the row
+    // again. The schedule pass reaches it through its campaign now
+    // (`DueBundleScanner`'s handover scan); this is the half that says so.
+    const body = (await res.json()) as { bundlesStamped: number; bundlesQueued: number };
+    expect(body.bundlesStamped).toBe(0);
+    expect(body.bundlesQueued).toBe(1);
   });
 
   it('stamps every bundle with the campaign’s window when that window is current', async () => {
@@ -4250,16 +4258,20 @@ describe('Campaign API', () => {
     expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'live' });
   });
 
+  // Dated 2099 deliberately. The original fixture used 2026-11/2026-12, which
+  // stopped being a future window on 2026-12-31 — after which publish answers
+  // with its closed-window 400, the overlap gate is never reached and this
+  // test fails on a date with no code change behind it.
   it('refuses to publish a campaign whose window overlaps another holding the same bundle', async () => {
     const repos = seed({
       campaigns: [
         campaignRow({
           id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
-          startsAt: '2026-11-01T00:00:00.000Z', endsAt: '2026-11-30T00:00:00.000Z',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: '2099-11-30T00:00:00.000Z',
         }),
         campaignRow({
           id: 'clash', status: 'Draft', scheduleMode: 'window',
-          startsAt: '2026-11-15T00:00:00.000Z', endsAt: '2026-12-15T00:00:00.000Z',
+          startsAt: '2099-11-15T00:00:00.000Z', endsAt: '2099-12-15T00:00:00.000Z',
         }),
       ],
       bundles: [bundleRow({ id: 'b1', name: 'Weekend Away Set' })],
@@ -4281,19 +4293,25 @@ describe('Campaign API', () => {
     expect(repos.campaigns.rows.find((r) => r.id === 'clash')).toMatchObject({ status: 'Draft' });
   });
 
-  it('publishes a campaign queued AFTER another on the same bundle', async () => {
+  // Rewritten: the original asserted only that the bundle was left alone, which
+  // was equally true of the bug — December was left alone FOR EVER, because a
+  // bundle publish never wrote to matched no due-scan query. The response must
+  // say the bundle was queued rather than silently nothing, and the schedule
+  // pass must be able to find it (`DueBundleScanner`'s handover scan, and
+  // `bundleSchedule.test.ts`'s takeover cases, cover that half).
+  it('publishes a campaign queued AFTER another on the same bundle, and says the bundle is queued', async () => {
     const repos = seed({
       campaigns: [
         campaignRow({
           id: 'nov', status: 'Published', scheduleMode: 'window',
-          startsAt: '2026-11-01T00:00:00.000Z', endsAt: '2026-11-30T00:00:00.000Z',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: '2099-11-30T00:00:00.000Z',
         }),
         campaignRow({
           id: 'dec', status: 'Draft', scheduleMode: 'window',
-          startsAt: '2026-12-01T00:00:00.000Z', endsAt: '2026-12-31T00:00:00.000Z',
+          startsAt: '2099-12-01T00:00:00.000Z', endsAt: '2099-12-31T00:00:00.000Z',
         }),
       ],
-      bundles: [bundleRow({ id: 'b1', campaignId: 'nov', scheduleEnd: '2026-11-30T00:00:00.000Z' })],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'nov', scheduleEnd: '2099-11-30T00:00:00.000Z' })],
       campaignBundles: [
         campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
         campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
@@ -4303,14 +4321,85 @@ describe('Campaign API', () => {
     const res = await publish('dec');
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string; bundleFailures: unknown[] };
+    const body = (await res.json()) as {
+      status: string; bundlesStamped: number; bundlesQueued: number; bundleFailures: unknown[];
+    };
     // Queueing is not a failure: no spurious entry, and the campaign is
     // Scheduled rather than reverted to Draft for having stamped nothing.
     expect(body.bundleFailures).toEqual([]);
     expect(body.status).toBe('Scheduled');
+    // Said out loud, so "Scheduled, 0 failures" cannot be read as "it ran".
+    expect(body.bundlesStamped).toBe(0);
+    expect(body.bundlesQueued).toBe(1);
     // December must NOT have taken the bundle: November is still running it,
     // and overwriting its window is the failure this whole design prevents.
     expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'nov' });
+  });
+
+  // HALF-OPEN WINDOWS, END TO END. `windowsOverlap` pins `[start, end)` at the
+  // unit level, but contiguous windows are the path merchants will actually
+  // write — Launchpad's own guidance is to schedule events one after another —
+  // and nothing above that unit test protected them. A `<=` slipping into the
+  // comparison would refuse every back-to-back schedule in the product with
+  // the suite still green.
+  it('publishes a campaign whose window merely TOUCHES another on the same bundle', async () => {
+    const BOUNDARY = '2099-12-01T00:00:00.000Z';
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: BOUNDARY,
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: BOUNDARY, endsAt: '2099-12-31T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; bundlesQueued: number };
+    expect(body.status).toBe('Scheduled');
+    expect(body.bundlesQueued).toBe(1);
+    expect(repos.campaigns.rows.find((r) => r.id === 'dec')).toMatchObject({ status: 'Scheduled' });
+  });
+
+  // The other half of the same rule: a null end is "runs forever", not "no
+  // constraint". Reading it as no constraint would make an unbounded campaign
+  // overlap NOTHING and let a second campaign publish straight through it.
+  it('refuses a campaign queued behind a holder with NO end date', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'forever', name: 'Evergreen', status: 'Published', scheduleMode: 'window',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: null,
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2099-12-01T00:00:00.000Z', endsAt: '2099-12-31T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1', name: 'Weekend Away Set' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'forever', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(409);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toContain('Evergreen');
+    expect(error).toContain('Weekend Away Set');
+    expect(repos.campaigns.rows.find((r) => r.id === 'dec')).toMatchObject({ status: 'Draft' });
   });
 
   // Review Focus #5 — an immediate campaign must not appear to do nothing.

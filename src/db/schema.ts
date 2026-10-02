@@ -159,11 +159,14 @@ export const bundle = sqliteTable(
     scheduleError: text('schedule_error'),
     blockOnFailure: integer('block_on_failure').notNull().default(0),
 
-    // Set at publish only when the campaign's window is already current,
-    // otherwise written by the schedule pass when the window arrives. It is
-    // the campaign that owns the bundle NOW, re-derived each pass from campaign
-    // windows, and therefore a cache of that derivation rather than a durable
-    // claim. Multiple campaigns may share a bundle if their windows do not
+    // Set at publish only when the campaign's window is already current AND
+    // the bundle holds no outstanding capture; otherwise the schedule pass
+    // writes it, reaching the row through its campaign (`DueBundleScanner`'s
+    // handover scan) on the first pass after the window arrives — or, when the
+    // outgoing campaign's `pre_sale_price` is still out, the pass after that
+    // one has handed the merchant's price back. It is the campaign that owns
+    // the bundle NOW, re-derived each pass from campaign windows, and
+    // therefore a cache of that derivation rather than a durable claim. Multiple campaigns may share a bundle if their windows do not
     // overlap; this column names whichever one owns it right now. Note that
     // `pre_sale_price`, not this column, is what makes a sale restorable.
     // Deleting a campaign sets this null, freeing the bundle — the schedule was

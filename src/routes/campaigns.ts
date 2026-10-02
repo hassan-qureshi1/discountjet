@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types/env.d';
 import type { CampaignRow, CampaignBundleRow, CampaignDiscountRow, Repositories } from '../db/repositories';
-import { deriveCampaignStatus, type CampaignStatus } from '../lib/campaignStatus';
+import { deriveCampaignStatus, isCampaignLocking, type CampaignStatus } from '../lib/campaignStatus';
 import { uniqueCode, uniqueName } from '../lib/uniqueName';
 import { deleteDiscountInShopify } from '../lib/deleteDiscount';
 import { findLockingCampaign } from '../lib/bundleOwnership';
+import { windowsOverlap } from '../lib/windowOverlap';
 import { assertWindowOrder, normalizeUtc } from '../lib/scheduleWindow';
 import { getAdapter, type DiscountEngineType } from '../lib/discountEngines/adapters';
 import { createDiscountInShopify } from '../lib/createDiscount';
@@ -502,6 +503,31 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
     return c.json({ error: 'This campaign’s window has already closed. Change the dates before publishing.' }, 400);
   }
 
+  // Several campaigns may share a bundle provided their windows do not
+  // overlap, so the refusal moves from "someone else holds it" to "someone
+  // else holds it WHEN this one would". It runs before the claim below: a
+  // refusal must leave this campaign a Draft, not a claimed one. Only a
+  // locking campaign counts — a Draft holds nothing and an Ended one has let go.
+  for (const cb of bundles) {
+    // eslint-disable-next-line no-await-in-loop
+    const holderIds = await repos.campaignBundles.listCampaignIdsForBundle(cb.bundleId);
+    for (const otherId of holderIds) {
+      if (otherId === id) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const other = await repos.campaigns.getById(otherId);
+      const otherStatus = deriveCampaignStatus(other.status, other.startsAt, other.endsAt, now);
+      if (!isCampaignLocking(otherStatus)) continue;
+      if (windowsOverlap({ startsAt, endsAt }, { startsAt: other.startsAt, endsAt: other.endsAt })) {
+        // eslint-disable-next-line no-await-in-loop
+        const bundle = await repos.bundles.getById(cb.bundleId);
+        return c.json({
+          error: `${bundle.name} is already in "${other.name}" (${otherStatus}), whose window overlaps this one. `
+            + `Change this campaign's dates, or remove that bundle.`,
+        }, 409);
+      }
+    }
+  }
+
   // CLAIM the campaign before ANY Shopify work. Everything above this line is
   // a read or a 4xx, so claiming here costs a rejected request nothing; from
   // here on a second concurrent handler must lose. The derived gate above is
@@ -608,6 +634,13 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
   // as it does a merchant-scheduled bundle.
   const bundlesToStamp = discountsFullyFailed ? [] : bundles;
   let bundlesStamped = 0;
+  let bundlesQueued = 0;
+  // Whether THIS campaign's window contains now. Decided once, ahead of the
+  // loop and ahead of any ownership check: a campaign queued for the future
+  // does not touch the bundle at all, so there is nothing for
+  // `assertBundleAttachable` to guard and running it would record a spurious
+  // failure against a legitimate sequential publish.
+  const takesBundlesNow = deriveCampaignStatus('Scheduled', startsAt, endsAt, now) === 'Published';
   for (const cb of bundlesToStamp) {
     // `campaignId` is written only HERE, at publish — not when a bundle is
     // attached to a Draft — so the same bundle can sit in two Drafts and the
@@ -617,6 +650,15 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
     // (bundle deleted meanwhile) is handled the same way. Either way this
     // must not abort the loop or the campaign's status write below.
     try {
+      if (!takesBundlesNow) {
+        // Queued: the cron takes the bundle over at the boundary. Stamping now
+        // would overwrite whichever campaign is running it. Existence is still
+        // checked so a deleted bundle is reported rather than silently queued.
+        // eslint-disable-next-line no-await-in-loop
+        await repos.bundles.getById(cb.bundleId);
+        bundlesQueued += 1;
+        continue;
+      }
       // eslint-disable-next-line no-await-in-loop
       await assertBundleAttachable(repos, cb.bundleId, id, now);
       // eslint-disable-next-line no-await-in-loop
@@ -647,7 +689,7 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
   //
   // This is also what releases the claim taken above: reverting to `Draft`
   // makes the campaign claimable again.
-  const fullyFailed = created === 0 && bundlesStamped === 0;
+  const fullyFailed = created === 0 && bundlesStamped === 0 && bundlesQueued === 0;
   const published = fullyFailed ? 'Draft' : deriveCampaignStatus('Scheduled', startsAt, endsAt, now);
   await repos.campaigns.update(
     id,

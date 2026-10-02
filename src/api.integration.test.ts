@@ -3990,7 +3990,7 @@ describe('Campaign API', () => {
       } as never);
   }
 
-  it('creates each discount with the CAMPAIGN’s window and stamps every bundle', async () => {
+  it('creates each discount with the CAMPAIGN’s window and queues, not stamps, a bundle for a future window', async () => {
     const repos = seed({
       campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
         startsAt: '2099-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z' })],
@@ -4008,11 +4008,31 @@ describe('Campaign API', () => {
     // The whole design in one assertion: the discount carries the CAMPAIGN's window.
     expect(input.startsAt).toBe('2099-01-01T00:00:00.000Z');
     expect(input.endsAt).toBe('2099-02-01T00:00:00.000Z');
-    // And the bundle carries the same two timestamps, so they fire together.
-    // `status: 'Scheduled'` matters too — it's exactly what `DueBundleScanner`
-    // filters on, so dropping it would leave campaign bundles permanently inert.
+    // The window is in the future, so the campaign is only QUEUED: the bundle
+    // is left exactly as it was, because stamping now would overwrite whichever
+    // campaign is running it. The cron takes it over at the boundary.
     expect(repos.bundles.rows[0]).toMatchObject({
-      scheduleStart: '2099-01-01T00:00:00.000Z',
+      scheduleStart: null, scheduleEnd: null, campaignId: null, status: 'Draft',
+    });
+  });
+
+  it('stamps every bundle with the campaign’s window when that window is current', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z' })],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    // The bundle carries the same two timestamps as the discounts, so they fire
+    // together. `status: 'Scheduled'` matters too — it's exactly what
+    // `DueBundleScanner` filters on, so dropping it would leave campaign
+    // bundles permanently inert.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      scheduleStart: '2020-01-01T00:00:00.000Z',
       scheduleEnd: '2099-02-01T00:00:00.000Z',
       campaignId: 'c1',
       status: 'Scheduled',
@@ -4193,7 +4213,13 @@ describe('Campaign API', () => {
   // lock is only ever written at publish, so the same bundle can sit in two
   // Drafts until one of them publishes. The second publish must skip it
   // rather than steal it out from under the first.
-  it('skips a bundle a different still-locking campaign already owns, without aborting publish', async () => {
+  // The overlap pre-check refuses a campaign that SHARES a bundle with an
+  // overlapping one before anything is claimed, so it is no longer what this
+  // path is reached by. `assertBundleAttachable` remains the last line of
+  // defence on the stamp: here the bundle's `campaignId` names a locking owner
+  // that holds no `campaign_bundle` row for it (stale ownership), which the
+  // pre-check cannot see, so the stamp branch must still refuse to steal it.
+  it('skips stamping a bundle whose recorded owner still locks it, without aborting publish', async () => {
     const repos = seed({
       campaigns: [
         campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
@@ -4222,6 +4248,86 @@ describe('Campaign API', () => {
     expect(body.bundleFailures[0].error).toMatch(/already owned/i);
     // The bundle keeps its original owner — nothing stole it.
     expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'live' });
+  });
+
+  it('refuses to publish a campaign whose window overlaps another holding the same bundle', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
+          startsAt: '2026-11-01T00:00:00.000Z', endsAt: '2026-11-30T00:00:00.000Z',
+        }),
+        campaignRow({
+          id: 'clash', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2026-11-15T00:00:00.000Z', endsAt: '2026-12-15T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1', name: 'Weekend Away Set' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'clash', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('clash');
+
+    expect(res.status).toBe(409);
+    const { error } = (await res.json()) as { error: string };
+    // Both halves named: with several campaigns a merchant cannot otherwise
+    // tell which pair to fix.
+    expect(error).toContain('Weekend Away Set');
+    expect(error).toContain('November');
+    // Refused BEFORE the claim: still a Draft, not a claimed one.
+    expect(repos.campaigns.rows.find((r) => r.id === 'clash')).toMatchObject({ status: 'Draft' });
+  });
+
+  it('publishes a campaign queued AFTER another on the same bundle', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', status: 'Published', scheduleMode: 'window',
+          startsAt: '2026-11-01T00:00:00.000Z', endsAt: '2026-11-30T00:00:00.000Z',
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2026-12-01T00:00:00.000Z', endsAt: '2026-12-31T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'nov', scheduleEnd: '2026-11-30T00:00:00.000Z' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; bundleFailures: unknown[] };
+    // Queueing is not a failure: no spurious entry, and the campaign is
+    // Scheduled rather than reverted to Draft for having stamped nothing.
+    expect(body.bundleFailures).toEqual([]);
+    expect(body.status).toBe('Scheduled');
+    // December must NOT have taken the bundle: November is still running it,
+    // and overwriting its window is the failure this whole design prevents.
+    expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'nov' });
+  });
+
+  // Review Focus #5 — an immediate campaign must not appear to do nothing.
+  it('stamps a free bundle immediately when the publishing campaign is already current', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'now', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2099-01-01T00:00:00.000Z',
+      })],
+      bundles: [bundleRow({ id: 'b1', campaignId: null })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'now', bundleId: 'b1' })],
+    });
+
+    const res = await publish('now');
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'now' });
   });
 
   it('GET /api/campaigns returns campaigns with a DERIVED status', async () => {

@@ -4438,6 +4438,29 @@ describe('Campaign API', () => {
     expect(res.status).not.toBe(409);
   });
 
+  it('counts past an existing copy, so a SECOND clone does not collide', async () => {
+    // The flaw in a fixed suffix: clone twice and both copies are called
+    // "... (copy)", which fails on publish exactly when a merchant is
+    // iterating on a campaign.
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [
+        campaignDiscountRow({ id: 'cd1', campaignId: 'c1', name: 'BFCM 1' }),
+        // A previous clone already took the first free number.
+        campaignDiscountRow({ id: 'cd2', campaignId: 'other', name: 'BFCM 1 (2)' }),
+      ],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
+
+    expect(copied!.name).toBe('BFCM 1 (3)');
+  });
+
   it('publishes a clone end to end, which is what the rename exists for', async () => {
     // The test whose absence let this ship: the clone route and the publish
     // route were each correct, and combining them failed every time because
@@ -4493,8 +4516,7 @@ describe('Campaign API', () => {
     // and `discountAutomaticAppCreate` rejects a duplicate. Carrying the name
     // over verbatim made every clone unpublishable — and clone is the only way
     // to edit a published campaign.
-    expect(copied!.name).not.toBe('BFCM 1');
-    expect(copied!.name).toContain('BFCM 1');
+    expect(copied!.name).toBe('BFCM 1 (2)');
     // The source keeps its own name.
     expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')!.name).toBe('BFCM 1');
   });
@@ -4514,8 +4536,7 @@ describe('Campaign API', () => {
     const { campaignId } = (await res.json()) as { campaignId: string };
     const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
 
-    expect(copied!.code).not.toBe('SPRING20');
-    expect(copied!.code).toContain('SPRING20');
+    expect(copied!.code).toBe('SPRING20-2');
     // A shopper types this at checkout, so it must stay code-shaped: no
     // spaces or parentheses, unlike the title suffix.
     expect(copied!.code).toMatch(/^[A-Z0-9_-]+$/);

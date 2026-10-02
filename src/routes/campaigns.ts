@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types/env.d';
 import type { CampaignRow, CampaignBundleRow, CampaignDiscountRow, Repositories } from '../db/repositories';
 import { deriveCampaignStatus, type CampaignStatus } from '../lib/campaignStatus';
+import { uniqueCode, uniqueName } from '../lib/uniqueName';
 import { findLockingCampaign } from '../lib/bundleOwnership';
 import { assertWindowOrder, normalizeUtc } from '../lib/scheduleWindow';
 import { getAdapter, type DiscountEngineType } from '../lib/discountEngines/adapters';
@@ -643,23 +644,29 @@ campaignRoutes.post('/api/campaigns/:id/clone', async (c) => {
     publishedAt: null,
   });
 
+  // Every discount name and code this shop already has, so a clone can count
+  // past them. Scoped by the repository, so it is this shop's and no other's.
+  // The source's own values are in here too — that is the point: the clone
+  // must not reuse them.
+  const existing = await repos.campaignDiscounts.findAll();
+  const takenNames = new Set(existing.map((d) => d.name));
+  const takenCodes = new Set(existing.flatMap((d) => (d.code === null ? [] : [d.code])));
+
   for (const cd of discounts) {
     // Sequential on purpose — see the `no-await-in-loop` convention used
     // elsewhere in this file for repeated sequential writes.
     // eslint-disable-next-line no-await-in-loop
     await repos.campaignDiscounts.create({
       // Renamed, not copied. The source's discount is already live in Shopify
-      // under this exact title, and `discountAutomaticAppCreate` refuses a
-      // duplicate — so a verbatim copy made every clone unpublishable, and
-      // clone is the ONLY way to edit a published campaign. The merchant can
-      // rename it to anything they like in the builder before publishing.
-      name: `${cd.name} (copy)`,
+      // under this exact title, and Shopify refuses a duplicate — so a
+      // verbatim copy made every clone unpublishable, and clone is the ONLY
+      // way to edit a published campaign. Counted rather than given a fixed
+      // suffix, because a fixed one collides again on the second clone, which
+      // is exactly when a merchant is iterating. Editable in the builder.
+      name: uniqueName(cd.name, takenNames),
       type: cd.type,
       method: cd.method,
-      // Discount codes must be unique in Shopify too, so the same collision
-      // applies — but a shopper types this at checkout, so it cannot take the
-      // title's " (copy)" suffix. Kept code-shaped instead.
-      code: cd.code === null ? null : `${cd.code}-COPY`,
+      code: cd.code === null ? null : uniqueCode(cd.code, takenCodes),
       configJson: cd.configJson,
       configBytes: cd.configBytes,
       // The one invariant this route exists to protect: a carried-over gid

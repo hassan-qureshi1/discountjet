@@ -4,22 +4,25 @@
 // shop. Selecting/deselecting writes straight through `useUpdateCampaign` —
 // same "view over the Draft, not a buffer" rule as DiscountsStep.
 //
-// Two things a row can be locked by, and both must say why rather than just
-// vanishing:
-//   1. Owned by another still-live (Scheduled/Published) campaign — that
-//      campaign's `bundle.campaignId` claim, set at ITS publish.
-//   2. An `update`-operation bundle on a shop that isn't Shopify Plus
-//      eligible — the same non-blocking gate `OperationPicker` uses.
+// A row can be disabled by an `update`-operation bundle on a shop that isn't
+// Shopify Plus eligible — the same non-blocking gate `OperationPicker` uses —
+// and must say why rather than just vanishing.
+//
+// Ownership is NOT a block. A bundle held by another still-live
+// (Scheduled/Published) campaign — that campaign's `bundle.campaignId` claim,
+// set at ITS publish — can still be ticked, because a Draft only lists the
+// bundle and writes nothing to it. The row names the owner as information; the
+// server refuses a genuine clash at publish, where the window is written.
 //
 // Three requests feed this screen (`useBundlesQuery`, `useCampaigns`,
 // `useShopPlanQuery`), and all three need a spinner on load and a Banner on
 // error per `web/CLAUDE.md` — not just the first one. `useCampaigns` in
-// particular is what NAMES a locked bundle's owner: if it fails, defaulting
-// its list to empty (as if failure meant "no other campaigns exist") would
-// render a genuinely locked bundle as selectable. The server still refuses
-// it at publish, but the merchant would be shown something false in the
-// meantime and only find out much later. So a `useCampaigns` error disables
-// every row instead of silently treating everything as unlocked.
+// particular is what NAMES a bundle's owning campaign: if it fails,
+// defaulting its list to empty (as if failure meant "no other campaigns
+// exist") would show a held bundle as unheld, which is false. Ownership no
+// longer blocks selection, but the merchant should not tick rows while the UI
+// cannot say who else holds them, so a `useCampaigns` error disables every
+// row instead of silently treating everything as unowned.
 import { useState } from 'react';
 import {
   Badge, Banner, BlockStack, Card, Checkbox, InlineStack, Spinner, Text, TextField,
@@ -152,10 +155,9 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
   const moneyPrefix = currencySymbol(planData?.currencyCode);
   const selected = optimistic ?? new Set(campaign.bundleIds);
 
-  // A failed `useCampaigns` means "we cannot name, or even confirm, a
-  // bundle's lock owner right now" — never "there are no other campaigns".
-  // Every row is disabled until it recovers, rather than rendering a locked
-  // bundle as free.
+  // A failed `useCampaigns` means "we cannot name a bundle's owning campaign
+  // right now" — never "there are no other campaigns". Every row is disabled
+  // until it recovers, rather than rendering a held bundle as unheld.
   const canVerifyLocks = !campaignsError;
 
   const toggle = async (bundleId: string) => {
@@ -202,7 +204,7 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
       </Text>
       {campaignsError && (
         <Banner tone="critical">
-          {`Couldn't check which campaigns already own a bundle, so selection is disabled until this loads: ${campaignsError.message}`}
+          {`Couldn't load your campaigns, so bundle owners can't be shown and selection is disabled until this loads: ${campaignsError.message}`}
         </Banner>
       )}
       {planError && (
@@ -270,7 +272,7 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
                         tone="info"
                       />
                     )}
-                    {!ownerLocks && !planGate.enabled && (
+                    {!planGate.enabled && (
                       <Badge tone="warning">{planGate.reason}</Badge>
                     )}
                   </InlineStack>

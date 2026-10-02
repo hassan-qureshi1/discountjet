@@ -4262,7 +4262,7 @@ describe('Campaign API', () => {
   });
 
   it('lets a Draft select a bundle another campaign owns, because a Draft writes nothing to it', async () => {
-    seed({
+    const repos = seed({
       campaigns: [
         campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
         campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' }),
@@ -4283,6 +4283,9 @@ describe('Campaign API', () => {
     // Planning next month's campaign while this month's runs is ordinary. The
     // refusal belongs at publish, which is where the window is written.
     expect(res.status).toBe(200);
+    // ...and the selection must actually have been written, not merely accepted.
+    expect(repos.campaignBundles.rows.filter((r) => r.campaignId === 'draft').map((r) => r.bundleId))
+      .toEqual(['b1']);
   });
 
   it('404s a PUT that lists a bundleId that does not exist, rather than failing on the foreign key', async () => {

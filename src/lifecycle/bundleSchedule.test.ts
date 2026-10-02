@@ -445,6 +445,53 @@ it('restores a bundle whose campaign was deleted mid-sale', async () => {
   expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBeNull();
 });
 
+it('clears the capture when the parent variant no longer exists, so the bundle is not stuck forever', async () => {
+  // The variant was deleted in Shopify while the sale was live. There is
+  // nothing left to restore the price TO, so holding the capture achieves
+  // nothing: it only re-fails every pass and — because DELETE refuses a bundle
+  // that still holds one — leaves the bundle permanently undeletable.
+  const t = pricingTransports({ readVariantPrice: vi.fn(async () => null) });
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: 'camp-1', status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(row.preSalePrice).toBeNull();
+  // Said plainly, because a cleared capture is a price we can no longer put
+  // back and the merchant should be able to find out why.
+  expect(row.scheduleError).toMatch(/no longer exists/i);
+  // Nothing was written to a variant that is gone.
+  expect(t.setVariantPricing).not.toHaveBeenCalled();
+});
+
+it('still restores normally when the variant does exist, so the clear is not a blanket give-up', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: 'camp-1', status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000 }),
+  );
+});
+
 // Review Focus #4 — one unpriceable row must not abort the shop's sweep.
 it('skips a bundle with no parent variant and records why, without aborting the pass', async () => {
   const t = pricingTransports();

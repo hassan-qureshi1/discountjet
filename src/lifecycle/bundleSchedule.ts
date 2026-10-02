@@ -274,6 +274,11 @@ export async function runBundleSchedule(
         // persists its capture earlier, in its own conditional write, before
         // the Shopify write. `undefined` leaves the column alone.
         let preSalePrice: number | null | undefined;
+        // A note to leave on an otherwise successful pass. The status write below
+        // clears `scheduleError` by default, because reaching the target IS the
+        // success; this carries the one case that succeeds and still has something
+        // the merchant needs told.
+        let restoreNote: string | null = null;
 
         if (row.operation === 'expand' && transitions) {
           if (!row.parentVariantId) {
@@ -384,18 +389,29 @@ export async function runBundleSchedule(
             // a different exponent would restore a price wrong by 100x.
             const live = await deps.transports.readVariantPrice(env, domain, row.parentVariantId);
             if (live === null) {
-              throw new Error(
-                `[bundleSchedule] variant ${row.parentVariantId} no longer exists in Shopify; cannot restore bundle ${bundleId}`,
-              );
+              // The variant was deleted in Shopify while the sale was live.
+              // Everywhere else a failed restore KEEPS the capture, because
+              // the price can still be put back on a later pass. Here it
+              // cannot: there is no variant left to put it back on. Holding it
+              // would re-fail every five minutes forever and — since DELETE
+              // refuses a bundle that still holds a capture — leave the bundle
+              // permanently undeletable. So the capture is released and the
+              // reason recorded, rather than guarding a price with nowhere to
+              // go. This is the ONE case where clearing without a confirmed
+              // write is right, and it is right because the thing being
+              // guarded no longer exists.
+              restoreNote = `The parent variant no longer exists in Shopify, so its pre-sale price of ${row.preSalePrice} could not be restored.`;
+              preSalePrice = null;
+            } else {
+              await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+                priceMinor: action.priceMinor,
+                compareAtMinor: action.compareAtMinor,
+                currencyCode: live.currencyCode,
+              });
+              // Only now that Shopify has agreed. Before this point a failure
+              // throws past here and the captured price survives for the retry.
+              preSalePrice = null;
             }
-            await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
-              priceMinor: action.priceMinor,
-              compareAtMinor: action.compareAtMinor,
-              currencyCode: live.currencyCode,
-            });
-            // Only now that Shopify has agreed. Before this point a failure
-            // throws past here and the captured price survives for the retry.
-            preSalePrice = null;
           }
         }
 
@@ -414,7 +430,7 @@ export async function runBundleSchedule(
         // merchant chose.
         await repos.bundles.update(bundleId, {
           ...(transitions ? { status: target } : {}),
-          scheduleError: null,
+          scheduleError: restoreNote,
           ...(preSalePrice !== undefined ? { preSalePrice } : {}),
         });
       } catch (err) {

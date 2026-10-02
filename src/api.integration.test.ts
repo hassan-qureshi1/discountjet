@@ -4660,6 +4660,9 @@ describe('Campaign API', () => {
 
     const clone = repos.campaigns.rows.find((r) => r.id === campaignId);
     expect(clone).toMatchObject({ status: 'Draft', publishedAt: null });
+    // Counted, not suffixed with a word: cloning a clone used to stack
+    // "(copy) (copy)" rather than counting upwards.
+    expect(clone!.name).toBe('Spring (2)');
 
     const copied = repos.campaignDiscounts.rows.filter((r) => r.campaignId === campaignId);
     expect(copied).toHaveLength(1);

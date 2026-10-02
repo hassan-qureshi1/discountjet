@@ -11,9 +11,23 @@
  * least expects to be stopped. Counting is what actually holds.
  */
 
+/**
+ * The name underneath any counter this function previously added.
+ *
+ * Without it, cloning a clone fed `"BFCM 1 (2)"` back in as the base and
+ * produced `"BFCM 1 (2) (2)"`, then `"… (2) (2) (2)"` — the number growing
+ * sideways instead of upwards. Anchored to the very end and requiring the
+ * exact ` (digits)` shape, so a name that merely ends in a number — "Buy 1
+ * get 1" — is left alone rather than quietly renamed.
+ */
+function withoutCounter(name: string): string {
+  return name.replace(/ \(\d+\)$/, '');
+}
+
 /** `'BFCM 1'` -> `'BFCM 1 (2)'`, `'BFCM 1 (3)'`, … until one is free. */
-export function uniqueName(base: string, taken: ReadonlySet<string>): string {
-  if (!taken.has(base)) return base;
+export function uniqueName(name: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(name)) return name;
+  const base = withoutCounter(name);
   // From 2, because the original is the first: a merchant reading "(2)"
   // understands the second copy, where "(1)" would suggest they lost one.
   for (let n = 2; n < 1000; n += 1) {
@@ -32,8 +46,11 @@ export function uniqueName(base: string, taken: ReadonlySet<string>): string {
  * code to print on a banner or read down a phone, so the suffix stays within
  * the characters a code is normally written in.
  */
-export function uniqueCode(base: string, taken: ReadonlySet<string>): string {
-  if (!taken.has(base)) return base;
+export function uniqueCode(code: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(code)) return code;
+  // Same reasoning as the title: count from SPRING20, not SPRING20-2, or a
+  // clone of a clone becomes SPRING20-2-2.
+  const base = code.replace(/-\d+$/, '');
   for (let n = 2; n < 1000; n += 1) {
     const candidate = `${base}-${n}`;
     if (!taken.has(candidate)) return candidate;

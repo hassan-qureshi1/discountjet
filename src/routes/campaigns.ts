@@ -669,8 +669,16 @@ campaignRoutes.post('/api/campaigns/:id/clone', async (c) => {
     repos.campaignBundles.listForCampaign(id),
   ]);
 
+  // Every campaign name this shop holds, so the copy can count past them.
+
+  const allCampaigns = await repos.campaigns.listByStatus();
+
   const clone = await repos.campaigns.create({
-    name: `${source.name} (copy)`,
+    // Counted like the discounts below, not a bare " (copy)" — cloning a clone
+    // produced "BFCM Sale (copy) (copy)", the suffix growing sideways instead
+    // of upwards. `uniqueName` sees through an existing number to the name
+    // underneath, so a third clone is "(3)" rather than three suffixes.
+    name: uniqueName(`${source.name} (2)`, new Set(allCampaigns.map((x) => x.name))),
     description: source.description,
     status: 'Draft',
     scheduleMode: source.scheduleMode,

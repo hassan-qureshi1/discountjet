@@ -73,6 +73,41 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)}KB`;
 }
 
+/**
+ * A discount's name, editable in place.
+ *
+ * Saves on blur rather than per keystroke: each save is a PUT of the whole
+ * discount array, so saving mid-word would be both wasteful and visibly laggy.
+ * Reverts to the stored name if the field is emptied — a nameless discount is
+ * not a thing the merchant can have meant.
+ */
+function DiscountNameField({
+  name,
+  onRename,
+}: {
+  name: string;
+  onRename: (next: string) => void;
+}) {
+  const [value, setValue] = useState(name);
+
+  return (
+    <TextField
+      label="Discount name"
+      labelHidden
+      value={value}
+      onChange={setValue}
+      onBlur={() => {
+        if (value.trim() === '') {
+          setValue(name);
+          return;
+        }
+        onRename(value);
+      }}
+      autoComplete="off"
+    />
+  );
+}
+
 export function DiscountsStep({ campaign }: { campaign: Campaign }) {
   const updateMutation = useUpdateCampaign();
   const { data: templatesData } = useTemplates();
@@ -145,6 +180,26 @@ export function DiscountsStep({ campaign }: { campaign: Campaign }) {
     }
   };
 
+  /**
+   * Rename one discount, through the same whole-array PUT every other edit on
+   * this step uses.
+   *
+   * A clone arrives with counted names — "BFCM 1 (2)" — which keep it
+   * publishable but mean nothing to the merchant. Renaming had to happen in
+   * Shopify admin, on a discount this campaign has not even created yet. It
+   * belongs here, next to the name being complained about.
+   */
+  const handleRename = async (id: string, name: string) => {
+    const trimmed = name.trim();
+    const current = campaign.discounts.find((d) => d.id === id);
+    // Nothing to save, and an empty name would publish a nameless discount.
+    if (!current || trimmed === '' || trimmed === current.name) return;
+    const discounts = campaign.discounts.map(toInput).map((d, i) => (
+      campaign.discounts[i].id === id ? { ...d, name: trimmed } : d
+    ));
+    await updateMutation.mutateAsync({ id: campaign.id, input: { discounts } });
+  };
+
   const handleRemove = async (id: string) => {
     const discounts = campaign.discounts.filter((d) => d.id !== id).map(toInput);
     await updateMutation.mutateAsync({ id: campaign.id, input: { discounts } });
@@ -160,9 +215,9 @@ export function DiscountsStep({ campaign }: { campaign: Campaign }) {
           <p>
             {`${copiedRows.map((d) => d.name).join(', ')} — copied from another campaign, `}
             whose discounts already exist in Shopify under the original names.
-            Shopify requires a discount title to be unique, so these were given a
-            number to keep them publishable. Give them names that mean something
-            to you before you publish.
+            Shopify requires a discount title to be unique, so these were numbered
+            to keep them publishable. Edit the names below to something that means
+            something to you.
           </p>
         </Banner>
       )}
@@ -191,7 +246,13 @@ export function DiscountsStep({ campaign }: { campaign: Campaign }) {
           {campaign.discounts.map((d, index) => (
             <IndexTable.Row id={d.id} key={d.id} position={index}>
               <IndexTable.Cell>
-                <Text as="span" fontWeight="semibold">{d.name}</Text>
+                <DiscountNameField
+                  // Keyed by id so a rename on one row cannot carry its draft
+                  // into another when the list reorders.
+                  key={d.id}
+                  name={d.name}
+                  onRename={(next) => handleRename(d.id, next)}
+                />
               </IndexTable.Cell>
               <IndexTable.Cell>{ENGINE_LABEL[d.type]}</IndexTable.Cell>
               <IndexTable.Cell>{METHOD_LABEL[d.method]}</IndexTable.Cell>

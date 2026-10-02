@@ -20,6 +20,19 @@ describe('uniqueName', () => {
     expect(uniqueName('BFCM 1', new Set(['BFCM 1', 'BFCM 1 (3)']))).toBe('BFCM 1 (2)');
   });
 
+  it('counts from the ORIGINAL name, so suffixes never stack', () => {
+    // Cloning a clone fed `"BFCM 1 (2)"` back in as the base and produced
+    // `"BFCM 1 (2) (2)"`, then `"... (2) (2) (2)"`. The counter has to see
+    // through an existing number to the name underneath it.
+    expect(uniqueName('BFCM 1 (2)', new Set(['BFCM 1', 'BFCM 1 (2)']))).toBe('BFCM 1 (3)');
+  });
+
+  it('keeps a number that is part of the real name', () => {
+    // "Buy 1 get 1" ends in a digit but not in a counted suffix; stripping it
+    // would quietly rename the merchant's discount.
+    expect(uniqueName('Buy 1 get 1', new Set())).toBe('Buy 1 get 1');
+  });
+
   it('does not treat a different name as a collision', () => {
     expect(uniqueName('BFCM', new Set(['BFCM 1']))).toBe('BFCM');
   });

@@ -3,3 +3,5 @@
 // would drift, and the drift is silent: the app writes config the Rust
 // function misreads and a real discount misprices at checkout.
 export * from '../../../src/lib/discountEngines/bundle';
+// The campaign-ownership key, shared with the Worker that writes it.
+export * from '../../../src/lib/discountEngines/campaignLock';

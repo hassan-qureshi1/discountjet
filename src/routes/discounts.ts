@@ -1,9 +1,7 @@
 import { Hono } from 'hono';
 import type { DiscountRow } from '../db/repositories';
 import { getSyncHealth, reconcileDiscounts } from '../lifecycle/discountSync';
-import { adminGraphql } from '../lib/graphqlAdmin';
-import { getAdapter } from '../lib/discountEngines/adapters';
-import { resolveDiscountFunctionId } from '../lib/discountFunctions';
+import { createDiscountInShopify } from '../lib/createDiscount';
 import { requireShopDomain } from '../lib/shopDomain';
 import type { AppEnv } from '../types/env.d';
 
@@ -123,24 +121,6 @@ discountRoutes.get('/api/discounts/:id', async (c) => {
   return c.json({ discount: toUi(row), campaign: null });
 });
 
-const DISCOUNT_AUTOMATIC_APP_CREATE = /* GraphQL */ `
-  mutation CreateAppDiscount($discount: DiscountAutomaticAppInput!) {
-    discountAutomaticAppCreate(automaticAppDiscount: $discount) {
-      automaticAppDiscount { discountId }
-      userErrors { field message }
-    }
-  }
-`;
-
-const DISCOUNT_CODE_APP_CREATE = /* GraphQL */ `
-  mutation CreateAppCodeDiscount($discount: DiscountCodeAppInput!) {
-    discountCodeAppCreate(codeAppDiscount: $discount) {
-      codeAppDiscount { discountId }
-      userErrors { field message }
-    }
-  }
-`;
-
 interface CreateBody {
   slug?: string;
   title?: string;
@@ -152,17 +132,6 @@ interface CreateBody {
   endsAt?: string;
   combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };
   form?: unknown;
-}
-
-interface DiscountCreateResult {
-  discountAutomaticAppCreate?: {
-    automaticAppDiscount: { discountId: string } | null;
-    userErrors: Array<{ field: string[]; message: string }>;
-  } | null;
-  discountCodeAppCreate?: {
-    codeAppDiscount: { discountId: string } | null;
-    userErrors: Array<{ field: string[]; message: string }>;
-  } | null;
 }
 
 /**
@@ -194,14 +163,6 @@ discountRoutes.post('/api/discounts', async (c) => {
     return c.json({ error: 'title is required' }, 400);
   }
 
-  /**
-   * Shopify's own admin titles a code discount with its code, and the discounts
-   * list — ours and theirs — shows that title. Letting the two differ would name
-   * the same promotion two ways depending on which screen the merchant is on, so
-   * the code wins and any title sent alongside it is ignored rather than
-   * silently half-used.
-   */
-  const title = method === 'code' ? (body.code as string).trim() : (body.title as string).trim();
   // Guards the shape only. A throw from `validate` on a well-formed but invalid
   // form is still a 500 by design, so this must not become a try/catch there.
   if (body.form === undefined || body.form === null || typeof body.form !== 'object') {
@@ -211,96 +172,22 @@ discountRoutes.post('/api/discounts', async (c) => {
   const template = await c.get('repos').templates.findBySlug(body.slug);
   if (!template) return c.json({ error: 'Template not found' }, 404);
 
-  const adapter = getAdapter(template.type);
-  const form = body.form as never;
-
-  const errors = adapter.validate(form);
-  if (errors.length > 0) return c.json({ error: errors.join(' '), errors }, 400);
-
-  let value: string;
-  try {
-    value = adapter.serialize(form);
-  } catch (err) {
-    return c.json({ error: `Could not build the discount configuration: ${String(err)}` }, 400);
-  }
-
-  // `validate` passed on the FORM, but the builder drops rules it cannot
-  // resolve (e.g. a `product_id` tier whose items only carry `variantId`).
-  // Without this the mutation succeeds and the merchant gets a live promotion
-  // that does nothing at checkout, with no error anywhere.
-  if (!adapter.isActionable(JSON.parse(value))) {
-    return c.json(
-      {
-        error:
-          'This promotion has no usable rules. Check that each tier has products selected and a numeric discount value.',
-      },
-      400,
-    );
-  }
-
-  const sizeBytes = new TextEncoder().encode(value).length;
-  if (sizeBytes > adapter.maxBytes) {
-    return c.json(
-      { error: `Discount configuration is too large (${(sizeBytes / 1024).toFixed(1)}KB). Maximum size is 10KB.` },
-      400,
-    );
-  }
-
   const shopDomain = requireShopDomain(c);
 
-  let functionId: string;
-  try {
-    functionId = await resolveDiscountFunctionId(c.env, shopDomain, adapter.functionHandle);
-  } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
-  }
-
-  // Everything except the trigger is shared: same engine, same functionId, same
-  // serialised config. The Rust function neither knows nor cares whether a code
-  // or the cart brought it into play.
-  const shared = {
-    title,
-    functionId,
-    // BOTH mutations require this — Shopify rejects either with "Functions
-    // configured to use the `discounts` API type require the discountClasses
-    // field to be set." The 2026-04 docs say `DiscountCodeAppInput` does not
-    // take it; verified against a real store, it does. Comes from the adapter
-    // because it is a property of what that function emits.
-    discountClasses: adapter.discountClasses,
+  const outcome = await createDiscountInShopify(c.env, shopDomain, {
+    engineType: template.type,
+    form: body.form,
+    method,
+    title: body.title,
+    code: body.code,
     startsAt: body.startsAt,
-    ...(body.endsAt ? { endsAt: body.endsAt } : {}),
-    ...(body.combinesWith ? { combinesWith: body.combinesWith } : {}),
-    metafields: [{ namespace: adapter.namespace, key: adapter.key, type: 'json', value }],
-  };
-
-  const res = method === 'code'
-    ? await adminGraphql<DiscountCreateResult>(shopDomain, c.env, DISCOUNT_CODE_APP_CREATE, {
-      discount: { ...shared, code: body.code?.trim() },
-    })
-    : await adminGraphql<DiscountCreateResult>(shopDomain, c.env, DISCOUNT_AUTOMATIC_APP_CREATE, {
-      discount: shared,
-    });
-
-  if (res.errors && res.errors.length > 0) {
-    return c.json({ error: `Shopify rejected the discount: ${JSON.stringify(res.errors)}` }, 502);
-  }
-
-  const payload = method === 'code' ? res.data?.discountCodeAppCreate : res.data?.discountAutomaticAppCreate;
-
-  const userErrors = payload?.userErrors ?? [];
-  if (userErrors.length > 0) {
-    return c.json({ error: userErrors.map((e) => e.message).join(' ') }, 502);
-  }
-
-  const discountId = payload && 'codeAppDiscount' in payload
-    ? payload.codeAppDiscount?.discountId
-    : payload?.automaticAppDiscount?.discountId;
-  if (!discountId) {
-    return c.json({ error: 'Shopify returned no discount id' }, 502);
-  }
+    endsAt: body.endsAt,
+    combinesWith: body.combinesWith,
+  });
+  if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
 
   // No D1 write: Shopify is the source of truth and the `discounts/create`
   // webhook already mirrors into the `discount` table. Inserting here would
   // race that webhook.
-  return c.json({ discountId });
+  return c.json({ discountId: outcome.discountId });
 });

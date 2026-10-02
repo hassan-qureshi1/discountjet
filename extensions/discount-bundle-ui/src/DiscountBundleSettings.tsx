@@ -2,6 +2,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import {
+  CAMPAIGN_METAFIELD_KEY,
   buildBundleConfig,
   getMetafieldSizeBytes,
   METAFIELD_KEY,
@@ -95,6 +96,15 @@ function App() {
     const raw = shopify.data?.metafields?.find((m) => m.key === METAFIELD_KEY)?.value;
     return parseMetafield(raw);
   }, []);
+
+  // Present only on a discount a campaign created. The campaign authored this
+  // configuration and re-authors it on every publish, so an edit made here
+  // would either be overwritten without warning or leave the two permanently
+  // disagreeing. Read-only is the honest state, not a restriction.
+  const campaignId = useMemo(
+    () => shopify.data?.metafields?.find((m) => m.key === CAMPAIGN_METAFIELD_KEY)?.value ?? null,
+    [],
+  );
   const [formData, setFormData] = useState<BundleFormData>(initial);
 
   useEffect(() => {
@@ -164,6 +174,30 @@ function App() {
       <s-option value="CHECKOUT">Online store only</s-option>
     </s-select>
   );
+
+  if (campaignId) {
+    // No `onSubmit`: without a save handler there is nothing for an edit to
+    // land in, so the discount cannot be changed from here even if a control
+    // were somehow reachable. The review summary is the same read-only view
+    // the wizard's last step shows, so a merchant still sees what it does.
+    return (
+      <s-function-settings>
+        <s-heading>Set up your Buy X, get Y discount</s-heading>
+        <s-section>
+          <s-stack gap="base">
+            <s-banner tone="info" heading="Managed by a campaign">
+              <s-text>
+                This discount was created by a campaign, which controls its
+                settings and its schedule. Edit it from the campaign in the
+                DiscountJet app rather than here.
+              </s-text>
+            </s-banner>
+            <ReviewSummary formData={formData} />
+          </s-stack>
+        </s-section>
+      </s-function-settings>
+    );
+  }
 
   return (
     <s-function-settings onSubmit={(event) => event.waitUntil?.(apply())}>

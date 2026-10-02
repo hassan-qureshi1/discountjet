@@ -26,6 +26,9 @@ export interface Bundle {
   items: BundleItem[];
   parentVariantId?: string;
   price: MoneyV2 | null;
+  /** Absent when none is stored — null means "use the component sum", and a
+   * zero would read as "compare-at is free". */
+  compareAtPrice?: MoneyV2;
   sumOfItems: MoneyV2 | null;
   status: BundleStatus;
   scheduleStart: string | null;
@@ -34,6 +37,9 @@ export interface Bundle {
   metafieldState: 'NotYet' | 'Written' | 'Cleared';
   metafieldGid?: string;
   updated: string;
+  /** Set only when a campaign PUBLISHES this bundle onto its window. Used by
+   * the campaign builder to show a bundle as locked by another live campaign. */
+  campaignId?: string;
 }
 
 export interface BundleSummary {

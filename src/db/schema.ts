@@ -108,6 +108,31 @@ export const bundle = sqliteTable(
 
     parentVariantId: text('parent_variant_id'),
     price: integer('price'), // minor units
+    /**
+     * What to publish as the parent variant's `compareAtPrice`, in minor
+     * units. Null means "use the sum of the components", so an existing
+     * bundle needs no backfill and a merchant who never touches this field
+     * still gets an honest strikethrough.
+     */
+    compareAtPrice: integer('compare_at_price'),
+    /**
+     * The parent variant's own price, captured immediately BEFORE the first
+     * sale write, in minor units. This column is the entire restore
+     * guarantee, and the only place in this app that holds merchant data we
+     * are about to overwrite:
+     *
+     *  - written ONCE, immediately before the sale price is applied, and
+     *    never while already non-null — otherwise a second activation pass
+     *    would capture the SALE price as if it were the original and the real
+     *    price would be gone. This is ENFORCED, not merely intended: the only
+     *    writer is `BundleRepository.capturePreSalePrice`, a conditional
+     *    UPDATE whose `where` includes `pre_sale_price is null`;
+     *  - cleared ONLY after Shopify confirms the restore, so a rejected
+     *    restore leaves the row visibly mid-sale for the next pass to retry;
+     *  - the signal for "this bundle is on sale", independent of campaign
+     *    status, so a bundle restores even if its campaign was deleted.
+     */
+    preSalePrice: integer('pre_sale_price'),
 
     metafieldState: text('metafield_state', { enum: ['NotYet', 'Written', 'Cleared'] })
       .notNull()
@@ -133,6 +158,20 @@ export const bundle = sqliteTable(
     // has no way to know why.
     scheduleError: text('schedule_error'),
     blockOnFailure: integer('block_on_failure').notNull().default(0),
+
+    // Set at publish only when the campaign's window is already current AND
+    // the bundle holds no outstanding capture; otherwise the schedule pass
+    // writes it, reaching the row through its campaign (`DueBundleScanner`'s
+    // handover scan) on the first pass after the window arrives — or, when the
+    // outgoing campaign's `pre_sale_price` is still out, the pass after that
+    // one has handed the merchant's price back. It is the campaign that owns
+    // the bundle NOW, re-derived each pass from campaign windows, and
+    // therefore a cache of that derivation rather than a durable claim. Multiple campaigns may share a bundle if their windows do not
+    // overlap; this column names whichever one owns it right now. Note that
+    // `pre_sale_price`, not this column, is what makes a sale restorable.
+    // Deleting a campaign sets this null, freeing the bundle — the schedule was
+    // the campaign's, but the bundle is the merchant's.
+    campaignId: text('campaign_id').references(() => campaign.id, { onDelete: 'set null' }),
 
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
@@ -254,5 +293,108 @@ export const template = sqliteTable(
   (t) => ({
     slugUnq: uniqueIndex('template_slug_unq').on(t.slug),
     activeSortIdx: index('template_active_sort_idx').on(t.active, t.sortOrder),
+  }),
+);
+
+// ─── campaign ───────────────────────────────────────────────────────────────
+//
+// A campaign groups discounts and bundles onto ONE window. It has no runtime
+// behaviour of its own: publishing stamps that window onto its members, and
+// each member is then scheduled by the mechanism it already had — Shopify for
+// discounts, our cron for bundles. Both carry the same two timestamps, so they
+// fire together by construction rather than by coordination.
+//
+// `status` is `Draft` until published and DERIVED from the window afterwards
+// (see src/lib/campaignStatus.ts). The stored value is a cache of that
+// derivation, refreshed on read — never an independent source of truth.
+export const campaign = sqliteTable(
+  'campaign',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id').notNull().references(() => shopifyShop.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    description: text('description'),
+    status: text('status', { enum: ['Draft', 'Scheduled', 'Published', 'Ended'] }).notNull(),
+
+    scheduleMode: text('schedule_mode', { enum: ['immediate', 'window'] }).notNull(),
+    // Normalized UTC ISO-8601, like every other schedule column in this schema.
+    startsAt: text('starts_at'),
+    endsAt: text('ends_at'),
+
+    publishedAt: text('published_at'),
+
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    shopStatusIdx: index('campaign_shop_status_idx').on(t.shopId, t.status),
+  }),
+);
+
+// ─── campaign_discount ──────────────────────────────────────────────────────
+//
+// A discount the campaign authors: its config before publish, its Shopify
+// identity after. `type` uses the lowercase engine names so it matches
+// `DiscountEngineType` and `discount.type` — one vocabulary, not two.
+export const campaignDiscount = sqliteTable(
+  'campaign_discount',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id').notNull().references(() => shopifyShop.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').notNull().references(() => campaign.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    type: text('type', { enum: ['tier', 'bundle', 'special'] }).notNull(),
+    method: text('method', { enum: ['automatic', 'code'] }).notNull(),
+    // Required when `method` is 'code'; it becomes the discount's title.
+    code: text('code'),
+
+    // The merchant's FORM state for this discount — NOT the serialized
+    // `$app:` metafield value. Publish creates the discount through the same
+    // path `POST /api/discounts` uses (adapter lookup -> validate ->
+    // serialize -> size check), and that path's INPUT is a form; `serialize`
+    // is what produces the metafield value from it. A pre-serialized config
+    // could be neither re-validated nor rendered back into form fields to
+    // edit a draft, so the form is what this column holds.
+    configJson: text('config_json').notNull(),
+    // Size in bytes of the SERIALIZED config — i.e. what
+    // `getAdapter(type).sizeBytes(form)` returns for `configJson` above — not
+    // the byte length of `configJson` itself. 10 KB is Shopify's cap on the
+    // metafield value, so the meter has to measure that value, not the form.
+    // Written by `validateDiscountInput` on `PUT /api/campaigns/:id`, and read
+    // by the builder's Summary step to flag a discount over the cap.
+    configBytes: integer('config_bytes').notNull(),
+
+    shopifyGid: text('shopify_gid'),
+    publishState: text('publish_state', { enum: ['pending', 'created', 'failed'] }).notNull(),
+    publishError: text('publish_error'),
+
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    campaignIdx: index('campaign_discount_campaign_idx').on(t.campaignId),
+  }),
+);
+
+// ─── campaign_bundle ────────────────────────────────────────────────────────
+//
+// A reference to an existing E6 bundle. No config is authored here — the bundle
+// owns its own definition; the campaign only owns its SCHEDULE while live.
+export const campaignBundle = sqliteTable(
+  'campaign_bundle',
+  {
+    id: text('id').primaryKey(),
+    shopId: text('shop_id').notNull().references(() => shopifyShop.id, { onDelete: 'cascade' }),
+    campaignId: text('campaign_id').notNull().references(() => campaign.id, { onDelete: 'cascade' }),
+    bundleId: text('bundle_id').notNull().references(() => bundle.id, { onDelete: 'cascade' }),
+
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (t) => ({
+    // The same bundle twice in one campaign is a bug, not a use case.
+    campaignBundleUnq: uniqueIndex('campaign_bundle_unq').on(t.campaignId, t.bundleId),
   }),
 );

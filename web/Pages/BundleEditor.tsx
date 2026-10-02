@@ -19,6 +19,7 @@ import {
   Divider,
   InlineGrid,
   InlineStack,
+  Link,
   List,
   Modal,
   Page,
@@ -27,15 +28,19 @@ import {
   Text,
   TextField,
 } from '@shopify/polaris';
+import { DeleteIcon } from '@shopify/polaris-icons';
 import {
   useBundleQuery, useCreateBundle, useDeleteBundle, useShopPlanQuery, useUpdateBundle,
   useVariantsQuery,
 } from '../bundles/hooks';
 import type { BundleInput, BundleItemInput, ResolvedVariant } from '../bundles/api';
+import { useCampaign } from '../campaigns/hooks';
+import { isCampaignLocking } from '../../src/lib/campaignStatus';
 import { flattenPickerSelection, selectionIdsFromVariants } from '../lib/picker';
 import { OperationPicker } from '../components/OperationPicker';
 import { ScheduleCard } from '../components/ScheduleCard';
 import { VariantLabel } from '../components/VariantLabel';
+import { VariantLinks } from '../components/VariantLinks';
 import { PriceCard } from '../components/PriceCard';
 import { VariantSelectCard } from '../components/VariantSelectCard';
 import {
@@ -52,6 +57,7 @@ import { sumItemPrices } from '../bundles/preview';
 import {
   fromUtcIso, toUtcIso,
 } from '../lib/schedule';
+import { ApiError } from '../api';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
  *  `price` is a plain number for the live preview only — the server re-resolves
@@ -111,12 +117,24 @@ export default function BundleEditor() {
 
   const { data, isLoading, error } = useBundleQuery(id);
   const bundle = data?.bundle;
-  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+  const isNotFound = error instanceof ApiError && error.status === 404;
 
   // CORRECTED gating: no app-tier concept, only `update` is Plus-gated.
   // Defaults to false while the plan is loading (fail closed).
   const { data: planData } = useShopPlanQuery();
   const updateOpEligible = planData?.updateOpEligible ?? false;
+
+  // A campaign that PUBLISHED this bundle onto its window owns the schedule
+  // for as long as it's still locking (Scheduled/Published) — editing the
+  // window here would silently desynchronise the bundle from the campaign's
+  // discounts, which fire on the campaign's dates regardless of what this
+  // form saves. `isCampaignLocking` is imported rather than re-implemented so
+  // this can never disagree with the campaign screens about which statuses
+  // lock. A campaign whose window has ENDED no longer locks, so the bundle
+  // becomes editable again with no further action needed.
+  const { data: owningCampaignData } = useCampaign(bundle?.campaignId);
+  const owningCampaign = owningCampaignData?.campaign;
+  const scheduleLocked = Boolean(owningCampaign) && isCampaignLocking(owningCampaign!.status);
 
   const pickerAvailable = isResourcePickerAvailable();
 
@@ -145,6 +163,9 @@ export default function BundleEditor() {
   // bundle product's price alone" — defaulting to 0 would send a real zero and
   // price the bundle free. Merge rejects a blank price with its own message.
   const [priceStr, setPriceStr] = useState('');
+  // Blank means "no stored compare-at" (use the component sum) and is sent as
+  // an explicit null — never coerced to 0, which would strike through £0.00.
+  const [compareAtStr, setCompareAtStr] = useState('');
   const [parentVariantId, setParentVariantId] = useState<string | undefined>(undefined);
   const [parentTitle, setParentTitle] = useState<string | undefined>(undefined);
   const [items, setItems] = useState<DraftItem[]>([]);
@@ -177,6 +198,8 @@ export default function BundleEditor() {
     }
     const bundlePrice = moneyAmount(bundle.price);
     setPriceStr(bundlePrice != null ? String(bundlePrice) : '');
+    const bundleCompareAt = moneyAmount(bundle.compareAtPrice ?? null);
+    setCompareAtStr(bundleCompareAt != null ? String(bundleCompareAt) : '');
     setParentVariantId(bundle.parentVariantId);
     setItems(bundle.items.map((it) => ({
       variantId: it.variantId,
@@ -371,6 +394,41 @@ export default function BundleEditor() {
       ? formatMoney({ amount: String(n), currencyCode })
       : formatMoney(null)
   );
+  // The parent variant's own price, already resolved for its title and
+  // thumbnail — no extra lookup. `undefined` while the resolve is in flight or
+  // when the variant no longer exists, in which case the card shows no price
+  // rather than a guessed one.
+  const parentResolved = parentVariantId ? resolvedVariants.get(parentVariantId) : undefined;
+  const parentPrice = parentResolved?.price != null ? Number(parentResolved.price) : null;
+
+  /**
+   * How the components relate to the parent's list price.
+   *
+   * This is the state that produces the "nothing to discount" rejection: an
+   * expand bundle's price has to sit below the parent product's own price, so
+   * a parent priced under its components leaves no room to discount into and
+   * every price the merchant types is refused. Saying so here — next to both
+   * numbers — turns a 400 on save into something visible while they are still
+   * choosing the product.
+   */
+  const parentComparison = (() => {
+    if (operation !== 'expand' || parentPrice == null || sumOfItems == null) return null;
+    if (sumOfItems > parentPrice) {
+      return (
+        <Text as="span" variant="bodySm" tone="critical">
+          {`Components total ${showMoney(sumOfItems)}, more than this product's `
+            + `${showMoney(parentPrice)}. Raise the product's price in Shopify, or the `
+            + 'bundle price will have nothing to discount from.'}
+        </Text>
+      );
+    }
+    return (
+      <Text as="span" variant="bodySm" tone="subdued">
+        {`Components total ${showMoney(sumOfItems)}.`}
+      </Text>
+    );
+  })();
+
   // The same rule for money INPUTS: the shop's own symbol, or none at all while
   // the currency is unknown. Never a hardcoded `$` — it would assert USD on an
   // AUD or JPY shop just as the old read-path helpers did.
@@ -440,8 +498,22 @@ export default function BundleEditor() {
     return 'Active';
   })();
 
+  /**
+   * What `compareAtPrice` to put on the wire (expand only): a number sets it,
+   * blank sends an explicit null to clear it, and a locked field sends nothing
+   * so the stored value is left untouched while a campaign owns the pricing.
+   */
+  const compareAtSent = (): number | null | undefined => {
+    if (operation !== 'expand' || scheduleLocked) return undefined;
+    const trimmed = compareAtStr.trim();
+    if (trimmed === '') return null;
+    const parsed = parseFloat(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
+    const compareAt = compareAtSent();
     if (operation === 'update') {
       const overrideItem: BundleItemInput | undefined = parentVariantId
         ? {
@@ -479,6 +551,7 @@ export default function BundleEditor() {
       // "leave the line at whatever the bundle product costs" — so an empty
       // field sends nothing rather than a zero, which would read as free.
       price: priceSentForOperation(operation, priceStr, priceNum),
+      ...(compareAt !== undefined ? { compareAtPrice: compareAt } : {}),
       status: nextStatus,
       scheduleStart,
       scheduleEnd,
@@ -761,9 +834,19 @@ export default function BundleEditor() {
                     <VariantLabel
                       resolved={resolvedVariants.get(parentVariantId)}
                       fallback={parentTitle ?? titleFor(parentVariantId)}
-                      layout="inline"
                     />
                   ) : null}
+                  selectedActions={parentVariantId ? (
+                    <VariantLinks
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                    />
+                  ) : null}
+                  // No price or comparison line here: a merge bundle's
+                  // adjustment is based on the COMPONENTS' sum, not on this
+                  // variant's own price, so showing that price beside it would
+                  // point at the wrong number.
+                  removeLabel="Remove the bundle line variant"
                   onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
                   onPick={pickParentVariant}
                   pickerAvailable={pickerAvailable}
@@ -838,6 +921,32 @@ export default function BundleEditor() {
                   helpText="Must be below the bundle product's own price."
                   comparison={showMoney(sumOfItems)}
                   saving={hasExpandPrice && save != null && save > 0 ? showMoney(save) : null}
+                  disabled={scheduleLocked}
+                  footer={(
+                    <>
+                      {scheduleLocked && owningCampaign && (
+                        <Banner tone="info" title="This bundle's pricing is controlled by a campaign">
+                          <p>
+                            {'The campaign '}
+                            <Link url={`/campaigns/${owningCampaign.id}`}>{owningCampaign.name}</Link>
+                            {` sets the price and compare-at price for its window, so both are read-only while that campaign is ${owningCampaign.status}.`}
+                          </p>
+                        </Banner>
+                      )}
+                      <TextField
+                        label="Compare-at price"
+                        type="number"
+                        prefix={moneyPrefix}
+                        value={compareAtStr}
+                        onChange={setCompareAtStr}
+                        autoComplete="off"
+                        min={0}
+                        disabled={scheduleLocked}
+                        placeholder={sumOfItems != null ? sumOfItems.toFixed(2) : undefined}
+                        helpText="What the components cost separately. Shown struck through on the product page. Leave blank to use the sum of the components."
+                      />
+                    </>
+                  )}
                 />
                 <VariantSelectCard
                   title="Parent product"
@@ -846,9 +955,25 @@ export default function BundleEditor() {
                     <VariantLabel
                       resolved={resolvedVariants.get(parentVariantId)}
                       fallback={parentTitle ?? titleFor(parentVariantId)}
-                      layout="inline"
                     />
                   ) : null}
+                  selectedActions={parentVariantId ? (
+                    <VariantLinks
+                      resolved={resolvedVariants.get(parentVariantId)}
+                      fallback={parentTitle ?? titleFor(parentVariantId)}
+                    />
+                  ) : null}
+                  // The number every bundle price on this screen is validated
+                  // against — an expand bundle's price must sit below it. Shown
+                  // here because a merchant otherwise has to open the Shopify
+                  // admin to discover what they are being measured against.
+                  priceLabel={parentPrice != null ? (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      {`${showMoney(parentPrice)} · list price`}
+                    </Text>
+                  ) : null}
+                  footnote={parentComparison}
+                  removeLabel="Remove the parent product"
                   onRemove={() => { setParentVariantId(undefined); setParentTitle(undefined); }}
                   onPick={pickParentVariant}
                   pickerAvailable={pickerAvailable}
@@ -885,9 +1010,22 @@ export default function BundleEditor() {
                             {' '}
                             / unit
                           </Text>
-                          <Button variant="tertiary" tone="critical" onClick={() => removeItem(c.variantId)}>
-                            Remove
-                          </Button>
+                          {/* Icon-only actions: the row already names the
+                              product, so spelling out "Admin"/"Storefront"
+                              beside it repeated what the row said. Each keeps
+                              an accessibilityLabel naming the product, so the
+                              button is never announced as bare "link". */}
+                          <VariantLinks
+                            resolved={resolvedVariants.get(c.variantId)}
+                            fallback={titleFor(c.variantId)}
+                          />
+                          <Button
+                            variant="tertiary"
+                            tone="critical"
+                            icon={DeleteIcon}
+                            accessibilityLabel={`Remove ${titleFor(c.variantId)} from this bundle`}
+                            onClick={() => removeItem(c.variantId)}
+                          />
                         </InlineStack>
                       </InlineGrid>
                     ))}
@@ -903,31 +1041,6 @@ export default function BundleEditor() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
-
-                {/* Full width, at the end of the page: the schedule is read after the
-            merchant has decided what the bundle actually IS. Rendered ONCE here,
-            outside the per-operation branches, so it cannot go missing for an
-            operation the way it did when this was hand-placed markup. */}
-                <ScheduleCard
-                  value={{
-                    hasStart, startDate, startTime, hasEnd, endDate, endTime,
-                  }}
-                  onChange={(w) => {
-                    setHasStart(w.hasStart);
-                    setStartDate(w.startDate);
-                    setStartTime(w.startTime);
-                    setHasEnd(w.hasEnd);
-                    setEndDate(w.endDate);
-                    setEndTime(w.endTime);
-                  }}
-                  status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
-                  error={scheduleFieldError}
-                  lastFailure={bundle?.scheduleError ?? null}
-                  startHelpText="Leave off to start as soon as the bundle is saved."
-                  endHelpText="Leave off to run until you switch the bundle off."
-                  footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
-                  lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
-                />
 
               </>
             )}
@@ -975,6 +1088,43 @@ export default function BundleEditor() {
                 </BlockStack>
               </Card>
             )}
+
+            {/* Full width, at the end of the page: the schedule is read after the
+                merchant has decided what the bundle actually IS. Rendered ONCE
+                here, outside the per-operation branches, so every operation
+                (including merge and update) gets a schedule — the scheduling
+                cron itself is generic over all three (see
+                src/lifecycle/bundleSchedule.ts), so the UI must be too. */}
+            <ScheduleCard
+              value={{
+                hasStart, startDate, startTime, hasEnd, endDate, endTime,
+              }}
+              onChange={(w) => {
+                setHasStart(w.hasStart);
+                setStartDate(w.startDate);
+                setStartTime(w.startTime);
+                setHasEnd(w.hasEnd);
+                setEndDate(w.endDate);
+                setEndTime(w.endTime);
+              }}
+              status={{ label: previewStatus, tone: STATUS_TONE[previewStatus] }}
+              error={scheduleFieldError}
+              lastFailure={bundle?.scheduleError ?? null}
+              disabled={scheduleLocked}
+              bannerSlot={scheduleLocked && owningCampaign ? (
+                <Banner tone="info" title="This bundle's schedule is owned by a campaign">
+                  <p>
+                    {'The campaign '}
+                    <Link url={`/campaigns/${owningCampaign.id}`}>{owningCampaign.name}</Link>
+                    {` published this bundle onto its own window, so the schedule below is read-only while that campaign is ${owningCampaign.status}. Clone the campaign to change its window.`}
+                  </p>
+                </Banner>
+              ) : undefined}
+              startHelpText="Leave off to start as soon as the bundle is saved."
+              endHelpText="Leave off to run until you switch the bundle off."
+              footnote="Times are in your own timezone. The bundle goes live and comes down automatically within 5 minutes of each time."
+              lastFailureDetail="It will be retried automatically. Saving the bundle also retries it."
+            />
           </BlockStack>
 
           {/* Right rail — operation reference + real Shopify limits */}

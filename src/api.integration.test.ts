@@ -41,7 +41,16 @@ import {
   shopRow,
   type InMemoryRepositories,
 } from './db/repositories/inMemory';
-import type { ShopRow, BundleRow, BundleItemRow, DiscountRow, TemplateRow } from './db/repositories';
+import type {
+  ShopRow,
+  BundleRow,
+  BundleItemRow,
+  DiscountRow,
+  TemplateRow,
+  CampaignRow,
+  CampaignDiscountRow,
+  CampaignBundleRow,
+} from './db/repositories';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
 import { removeCartTransformMetafieldDefinitions, getMetafieldSetupStatus } from './lib/metafieldDefinitions';
@@ -60,6 +69,9 @@ function seed(rows: {
   bundleItems?: BundleItemRow[];
   discounts?: DiscountRow[];
   templates?: TemplateRow[];
+  campaigns?: CampaignRow[];
+  campaignDiscounts?: CampaignDiscountRow[];
+  campaignBundles?: CampaignBundleRow[];
 } = {}): InMemoryRepositories {
   const repos = createInMemoryRepositories(SHOP.id, {
     // Plus by default: most tests here are not about plan gating, and several
@@ -84,6 +96,8 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   operation: 'merge',
   parentVariantId: null,
   price: 2999, // minor units => $29.99
+  compareAtPrice: null,
+  preSalePrice: null,
   metafieldState: 'NotYet',
   metafieldGid: null,
   scheduleStart: null,
@@ -91,6 +105,7 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   scheduleError: null,
   status: 'Draft',
   blockOnFailure: 0,
+  campaignId: null,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-20T00:00:00.000Z',
   ...overrides,
@@ -159,6 +174,62 @@ const discountRow = (overrides: Partial<DiscountRow> = {}): DiscountRow => ({
   deletedAt: null,
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-20T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `campaign` row; override only what the test is about. */
+const campaignRow = (overrides: Partial<CampaignRow> = {}): CampaignRow => ({
+  id: 'campaign-1',
+  shopId: SHOP.id,
+  name: 'Fall Campaign',
+  description: null,
+  status: 'Draft',
+  scheduleMode: 'immediate',
+  startsAt: null,
+  endsAt: null,
+  publishedAt: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-20T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `campaign_discount` row; override only what the test is about. */
+const campaignDiscountRow = (overrides: Partial<CampaignDiscountRow> = {}): CampaignDiscountRow => ({
+  id: 'cd-1',
+  shopId: SHOP.id,
+  campaignId: 'campaign-1',
+  name: 'Volume Save',
+  type: 'tier',
+  method: 'automatic',
+  code: null,
+  configJson: JSON.stringify({
+    message: 'Buy more save more',
+    applyTo: 'price',
+    discountType: 'percentage',
+    productDiscountSelectionStrategy: 'MAXIMUM',
+    platform: 'BOTH',
+    tiers: [{
+      id: 't1', value: '20', selectorType: 'variant_id',
+      targets: JSON.stringify([{ variantId: '123' }]), min_qty: '3',
+    }],
+  }),
+  configBytes: 10,
+  shopifyGid: null,
+  publishState: 'pending',
+  publishError: null,
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:00:00.000Z',
+  ...overrides,
+});
+
+/** A complete `campaign_bundle` row; override only what the test is about. */
+const campaignBundleRow = (overrides: Partial<CampaignBundleRow> = {}): CampaignBundleRow => ({
+  id: 'cb-1',
+  shopId: SHOP.id,
+  campaignId: 'campaign-1',
+  bundleId: 'bundle-1',
+  createdAt: '2026-08-01T00:00:00.000Z',
+  updatedAt: '2026-08-01T00:00:00.000Z',
   ...overrides,
 });
 
@@ -603,6 +674,43 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     });
   });
 
+  it('stores compareAtPrice in minor units and returns it as money', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
+    // The create re-resolves the items and the parent from Shopify, then writes
+    // the composition metafield; an expand price must sit below the parent's own.
+    mockVariantResolution([
+      variantNode({ id: 'gid://shopify/ProductVariant/2', price: '15.00' }),
+      variantNode({ id: 'gid://shopify/ProductVariant/1', price: '40.00' }),
+    ]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+    });
+
+    const res = await app.request('/api/bundles', {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kit', operation: 'expand', price: 27.9, compareAtPrice: 31,
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        items: [{ variantId: 'gid://shopify/ProductVariant/2', qty: 1 }],
+      }),
+    }, env('development'));
+
+    expect(res.status).toBe(201);
+    expect(repos.bundles.rows[0]).toMatchObject({ compareAtPrice: 3100 });
+    const json = (await res.json()) as { bundle: { compareAtPrice?: { amount: string } } };
+    expect(json.bundle.compareAtPrice?.amount).toBe('31.00');
+  });
+
+  it('omits compareAtPrice when the merchant set none, rather than inventing one', async () => {
+    seed({ bundles: [bundleRow({ compareAtPrice: null })] });
+
+    const res = await app.request('/api/bundles', { headers: { 'x-shop-domain': 'mystore.myshopify.com' } }, env('development'));
+
+    const json = (await res.json()) as { bundles: Array<Record<string, unknown>> };
+    expect(json.bundles[0]).not.toHaveProperty('compareAtPrice');
+  });
+
   it('POST /api/bundles returns 400 with a JSON error when name is missing', async () => {
     seed();
 
@@ -671,6 +779,67 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.price).toEqual({ amount: '19.99', currencyCode: 'USD' });
     expect(json.bundle.updated).toBe('Just now');
     expect(repos.bundles.rows[0].price).toBe(1999); // persisted in minor units
+  });
+
+  const putBundle = (body: unknown) => app.request('/api/bundles/bundle-1', {
+    method: 'PUT',
+    headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }, env('development'));
+
+  it('PUT /api/bundles/:id clears compareAtPrice on an explicit null', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ compareAtPrice: null });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBeNull();
+    const json = (await res.json()) as { bundle: Record<string, unknown> };
+    expect(json.bundle).not.toHaveProperty('compareAtPrice');
+  });
+
+  it('PUT /api/bundles/:id leaves compareAtPrice alone when the key is absent', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ price: 19.99 });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('PUT /api/bundles/:id sets compareAtPrice in minor units', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: null })] });
+
+    const res = await putBundle({ compareAtPrice: 31 });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('PUT /api/bundles/:id rejects a negative compareAtPrice with a 400 and writes nothing', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ compareAtPrice: -1 });
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('POST /api/bundles rejects a negative compareAtPrice with a 400 and creates nothing', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
+
+    const res = await app.request('/api/bundles', {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kit', operation: 'expand', compareAtPrice: -5,
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        items: [{ variantId: 'gid://shopify/ProductVariant/2', qty: 1 }],
+      }),
+    }, env('development'));
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows).toHaveLength(0);
   });
 
   it('PUT /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
@@ -2575,6 +2744,182 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(repos.bundles.rows).toHaveLength(0);
   });
 
+  // Review Focus #5
+  describe('PUT an expand bundle against its parent price', () => {
+    const PARENT = 'gid://shopify/ProductVariant/999';
+    const putPrice = (body: unknown) => app.request('/api/bundles/bundle-1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }, env('development'));
+    const expandRow = (preSalePrice: number | null) => bundleRow({
+      id: 'bundle-1',
+      operation: 'expand',
+      parentVariantId: PARENT,
+      price: 2790,
+      preSalePrice,
+      status: 'Active',
+    });
+
+    it('allows saving while its own sale has lowered the parent price', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      // The parent's LIVE price is the sale price, because the sale set it.
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ name: 'Renamed', price: 27.9 });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('still rejects a price at or above the parent when NOT on sale', async () => {
+      seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ price: 27.9 });
+
+      expect(res.status).toBe(400);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('less than the bundle product');
+      expect(error).toContain('27.90');
+    });
+
+    // A price edit during a sale no longer reaches the price comparison at all:
+    // the sale lock below refuses it first, because the campaign owns the price
+    // for the duration of its window. The comparison against the PRE-SALE price
+    // still matters for a PUT that does NOT touch the price (the test above),
+    // where the live parent price is the sale price the cron itself wrote.
+    it('refuses a price edit during a sale before comparing it to anything', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await putPrice({ price: 31 });
+
+      expect(res.status).toBe(409);
+      // No Admin round-trip was needed to say no.
+      expect(vi.mocked(adminGraphql)).not.toHaveBeenCalled();
+    });
+
+    it('409s a parentVariantId change while a sale is in force and writes nothing', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await putPrice({ parentVariantId: 'gid://shopify/ProductVariant/1000' });
+
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('parent product cannot be changed while its sale is running');
+      expect(repos.bundles.rows[0].parentVariantId).toBe(PARENT);
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    // THE SALE LOCK. Each of these is an ordinary merchant action that, before
+    // the guard, left `pre_sale_price` holding the only copy of the real price
+    // on a row no scan would ever reach again.
+    const expectSaleLock = async (res: Response, what: RegExp) => {
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toMatch(what);
+      expect(error).toContain('Wait for the sale window to close');
+    };
+
+    it('409s deactivating to Draft while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ status: 'Draft' }), /status/);
+      expect(repos.bundles.rows[0].status).toBe('Active');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s clearing the end date while a sale is in force', async () => {
+      const repos = seed({
+        bundles: [{ ...expandRow(3100), scheduleEnd: '2026-12-01T00:00:00.000Z' }],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+
+      await expectSaleLock(await putPrice({ scheduleEnd: null }), /end date/);
+      expect(repos.bundles.rows[0].scheduleEnd).toBe('2026-12-01T00:00:00.000Z');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s changing the operation away from expand while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ operation: 'merge', price: 27.9 }), /type/);
+      expect(repos.bundles.rows[0].operation).toBe('expand');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s a price edit while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ price: 25 }), /price/);
+      expect(repos.bundles.rows[0].price).toBe(2790);
+    });
+
+    it('409s a compare-at price edit while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ compareAtPrice: 40 }), /compare-at price/);
+      expect(repos.bundles.rows[0].compareAtPrice).toBeNull();
+    });
+
+    it('refuses to DELETE a bundle while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await app.request('/api/bundles/bundle-1', {
+        method: 'DELETE',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+      }, env('development'));
+
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('cannot be deleted while its sale is running');
+      // The row — and with it the only copy of the real price — is still there.
+      expect(repos.bundles.rows).toHaveLength(1);
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('still deletes a bundle that is not on sale', async () => {
+      const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await app.request('/api/bundles/bundle-1', {
+        method: 'DELETE',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+      }, env('development'));
+
+      expect(res.status).toBe(200);
+      expect(repos.bundles.rows).toHaveLength(0);
+    });
+
+    it('allows a parentVariantId change when no sale is in force', async () => {
+      const NEW_PARENT = 'gid://shopify/ProductVariant/1000';
+      const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(NEW_PARENT), price: '31.00' }]);
+      // Naming the parent counts as a composition input, so the live bundle's
+      // composition is re-written through the Admin API.
+      vi.mocked(adminGraphql).mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+      const res = await putPrice({ parentVariantId: NEW_PARENT });
+
+      expect(res.status).toBe(200);
+      expect(repos.bundles.rows[0].parentVariantId).toBe(NEW_PARENT);
+    });
+
+    it('accepts a PUT re-sending the same parentVariantId during a sale', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+      // Naming the parent counts as a composition input, so the live bundle's
+      // composition is re-written through the Admin API.
+      vi.mocked(adminGraphql).mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+      const res = await putPrice({ parentVariantId: PARENT, name: 'Renamed' });
+
+      expect(res.status).toBe(200);
+    });
+  });
+
   // ─── merge price sanity ────────────────────────────────────────────────────
   //
   // `linesMerge` can only REDUCE a price: the Rust cart transform turns the
@@ -3617,5 +3962,980 @@ describe('POST /api/discounts', () => {
 
     expect(res.status).toBe(502);
     expect(await res.text()).toContain('Title is invalid');
+  });
+});
+
+describe('Campaign API', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const publish = (id: string) => app.request(
+    `/api/campaigns/${id}/publish`,
+    { method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+    env('development'),
+  );
+
+  /** Queues the two `adminGraphql` calls one successful discount create makes. */
+  function mockFunctionsThenCreate() {
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({
+        data: { shopifyFunctions: { nodes: [
+          { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'Volume Discount', apiType: 'discount' },
+        ] } },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { discountAutomaticAppCreate: {
+          automaticAppDiscount: { discountId: 'gid://shopify/DiscountAutomaticNode/1' },
+          userErrors: [],
+        } },
+      } as never);
+  }
+
+  it('creates each discount with the CAMPAIGN’s window and queues, not stamps, a bundle for a future window', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2099-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+    mockFunctionsThenCreate();
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    // The whole design in one assertion: the discount carries the CAMPAIGN's window.
+    expect(input.startsAt).toBe('2099-01-01T00:00:00.000Z');
+    expect(input.endsAt).toBe('2099-02-01T00:00:00.000Z');
+    // The window is in the future, so the campaign is only QUEUED: the bundle
+    // is left exactly as it was, because stamping now would overwrite whichever
+    // campaign is running it.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      scheduleStart: null, scheduleEnd: null, campaignId: null, status: 'Draft',
+    });
+    // And the merchant is TOLD so. An untouched bundle used to be reported as
+    // `{status: 'Scheduled', bundleFailures: []}`, indistinguishable from one
+    // that had been scheduled — while nothing in the cron could find the row
+    // again. The schedule pass reaches it through its campaign now
+    // (`DueBundleScanner`'s handover scan); this is the half that says so.
+    const body = (await res.json()) as { bundlesStamped: number; bundlesQueued: number };
+    expect(body.bundlesStamped).toBe(0);
+    expect(body.bundlesQueued).toBe(1);
+  });
+
+  it('stamps every bundle with the campaign’s window when that window is current', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z' })],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    // The bundle carries the same two timestamps as the discounts, so they fire
+    // together. `status: 'Scheduled'` matters too — it's exactly what
+    // `DueBundleScanner` filters on, so dropping it would leave campaign
+    // bundles permanently inert.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      scheduleStart: '2020-01-01T00:00:00.000Z',
+      scheduleEnd: '2099-02-01T00:00:00.000Z',
+      campaignId: 'c1',
+      status: 'Scheduled',
+    });
+  });
+
+  // Review Focus #2
+  it('stamps an immediate campaign with now, since Shopify requires a startsAt', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate', startsAt: null, endsAt: null })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    mockFunctionsThenCreate();
+
+    const before = Date.now();
+    await publish('c1');
+    const after = Date.now();
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(typeof input.startsAt).toBe('string');
+    expect(input.startsAt).not.toBeNull();
+    // Pinned to approximately now, not just "any string" — this is the
+    // stand-in Shopify requires when the campaign itself stores no window.
+    const stampedMs = new Date(input.startsAt as string).getTime();
+    expect(stampedMs).toBeGreaterThanOrEqual(before);
+    expect(stampedMs).toBeLessThanOrEqual(after);
+    expect(input.endsAt).toBeUndefined();
+  });
+
+  // Review Focus #1
+  it('409s a second publish, without creating a second set of discounts', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', publishState: 'created' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(409);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #1, the distinctive case: a campaign whose window has simply
+  // PASSED — stored `Scheduled`, derived `Ended` — must be refused too.
+  // Republishing is what cloning is for; a status merely being non-Draft
+  // isn't the whole story if this case never got exercised.
+  it('409s republishing an ENDED campaign whose window has simply passed', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Scheduled', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', publishState: 'created' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/ended/i);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #3
+  it('400s a window entirely in the past rather than creating expired discounts', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('400s an empty campaign', async () => {
+    seed({ campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })] });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(400);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  // Review Focus #5
+  it('records a failed discount and still publishes the rest', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [
+        campaignDiscountRow({ id: 'cd1', campaignId: 'c1' }),
+        campaignDiscountRow({ id: 'cd2', campaignId: 'c1' }),
+      ],
+    });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: null, userErrors: [{ field: ['title'], message: 'Title is invalid' }],
+      } } } as never)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: { discountId: 'gid://shopify/DiscountAutomaticNode/2' }, userErrors: [],
+      } } } as never);
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.created).toBe(1);
+    expect(body.failed).toBe(1);
+    const states = repos.campaignDiscounts.rows.map((r) => r.publishState).sort();
+    expect(states).toEqual(['created', 'failed']);
+    const failed = repos.campaignDiscounts.rows.find((r) => r.publishState === 'failed');
+    expect(failed?.publishError).toContain('Title is invalid');
+    const succeeded = repos.campaignDiscounts.rows.find((r) => r.publishState === 'created');
+    expect(succeeded?.shopifyGid).toBe('gid://shopify/DiscountAutomaticNode/2');
+    // Published despite the failure — the created one exists in Shopify and
+    // deleting it to "undo" would be destructive and unasked-for.
+    expect(repos.campaigns.rows[0].status).not.toBe('Draft');
+  });
+
+  // Fix round 2/5: a D1 write failing AFTER Shopify already confirmed the
+  // create must not reclassify the row as failed — the discount exists in
+  // Shopify either way, and miscounting it could send `created` back to 0
+  // and trip the revert-to-Draft branch with a live discount outstanding.
+  it('does not reclassify a discount as failed when the bookkeeping write throws after a real create', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    mockFunctionsThenCreate();
+    vi.spyOn(repos.campaignDiscounts, 'setPublishResult')
+      .mockRejectedValueOnce(new Error('D1 write failed'));
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.created).toBe(1);
+    expect(body.failed).toBe(0);
+    // Not reverted to Draft — a live discount already exists in Shopify, and
+    // a retry here must stay refused by the 409 gate rather than duplicate it.
+    expect(repos.campaigns.rows[0].status).not.toBe('Draft');
+  });
+
+  // A ruling on top of the brief: when NOTHING was created, there is no live
+  // discount in Shopify a retry could duplicate, so the campaign goes back to
+  // Draft rather than being stranded "published" with nothing published.
+  it('leaves the campaign in Draft when every discount fails, so retry is possible', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: null, userErrors: [{ field: ['title'], message: 'Title is invalid' }],
+      } } } as never);
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; created: number; failed: number };
+    expect(body.status).toBe('Draft');
+    expect(body.created).toBe(0);
+    expect(body.failed).toBe(1);
+    expect(repos.campaigns.rows[0].status).toBe('Draft');
+    // A retry must still be POSSIBLE — nothing was left half-published.
+    expect(repos.campaigns.rows[0].publishedAt).toBeNull();
+  });
+
+  // Review Focus #4, re-checked at the one moment it actually matters: the
+  // lock is only ever written at publish, so the same bundle can sit in two
+  // Drafts until one of them publishes. The second publish must skip it
+  // rather than steal it out from under the first.
+  // The overlap pre-check refuses a campaign that SHARES a bundle with an
+  // overlapping one before anything is claimed, so it is no longer what this
+  // path is reached by. `assertBundleAttachable` remains the last line of
+  // defence on the stamp: here the bundle's `campaignId` names a locking owner
+  // that holds no `campaign_bundle` row for it (stale ownership), which the
+  // pre-check cannot see, so the stamp branch must still refuse to steal it.
+  it('skips stamping a bundle whose recorded owner still locks it, without aborting publish', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
+        campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'live' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+    mockFunctionsThenCreate();
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string; created: number; failed: number;
+      bundleFailures: Array<{ bundleId: string; error: string }>;
+    };
+    expect(body.created).toBe(1);
+    // Not folded into the opaque discount `failed` count — a stolen bundle
+    // is a different kind of problem and is named separately so the UI can
+    // say WHICH bundle and WHY.
+    expect(body.failed).toBe(0);
+    expect(body.bundleFailures).toHaveLength(1);
+    expect(body.bundleFailures[0].bundleId).toBe('b1');
+    expect(body.bundleFailures[0].error).toMatch(/already owned/i);
+    // The bundle keeps its original owner — nothing stole it.
+    expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'live' });
+  });
+
+  // Dated 2099 deliberately. The original fixture used 2026-11/2026-12, which
+  // stopped being a future window on 2026-12-31 — after which publish answers
+  // with its closed-window 400, the overlap gate is never reached and this
+  // test fails on a date with no code change behind it.
+  it('refuses to publish a campaign whose window overlaps another holding the same bundle', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: '2099-11-30T00:00:00.000Z',
+        }),
+        campaignRow({
+          id: 'clash', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2099-11-15T00:00:00.000Z', endsAt: '2099-12-15T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1', name: 'Weekend Away Set' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'clash', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('clash');
+
+    expect(res.status).toBe(409);
+    const { error } = (await res.json()) as { error: string };
+    // Both halves named: with several campaigns a merchant cannot otherwise
+    // tell which pair to fix.
+    expect(error).toContain('Weekend Away Set');
+    expect(error).toContain('November');
+    // Refused BEFORE the claim: still a Draft, not a claimed one.
+    expect(repos.campaigns.rows.find((r) => r.id === 'clash')).toMatchObject({ status: 'Draft' });
+  });
+
+  // Rewritten: the original asserted only that the bundle was left alone, which
+  // was equally true of the bug — December was left alone FOR EVER, because a
+  // bundle publish never wrote to matched no due-scan query. The response must
+  // say the bundle was queued rather than silently nothing, and the schedule
+  // pass must be able to find it (`DueBundleScanner`'s handover scan, and
+  // `bundleSchedule.test.ts`'s takeover cases, cover that half).
+  it('publishes a campaign queued AFTER another on the same bundle, and says the bundle is queued', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', status: 'Published', scheduleMode: 'window',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: '2099-11-30T00:00:00.000Z',
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2099-12-01T00:00:00.000Z', endsAt: '2099-12-31T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'nov', scheduleEnd: '2099-11-30T00:00:00.000Z' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string; bundlesStamped: number; bundlesQueued: number; bundleFailures: unknown[];
+    };
+    // Queueing is not a failure: no spurious entry, and the campaign is
+    // Scheduled rather than reverted to Draft for having stamped nothing.
+    expect(body.bundleFailures).toEqual([]);
+    expect(body.status).toBe('Scheduled');
+    // Said out loud, so "Scheduled, 0 failures" cannot be read as "it ran".
+    expect(body.bundlesStamped).toBe(0);
+    expect(body.bundlesQueued).toBe(1);
+    // December must NOT have taken the bundle: November is still running it,
+    // and overwriting its window is the failure this whole design prevents.
+    expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'nov' });
+  });
+
+  // HALF-OPEN WINDOWS, END TO END. `windowsOverlap` pins `[start, end)` at the
+  // unit level, but contiguous windows are the path merchants will actually
+  // write — Launchpad's own guidance is to schedule events one after another —
+  // and nothing above that unit test protected them. A `<=` slipping into the
+  // comparison would refuse every back-to-back schedule in the product with
+  // the suite still green.
+  it('publishes a campaign whose window merely TOUCHES another on the same bundle', async () => {
+    const BOUNDARY = '2099-12-01T00:00:00.000Z';
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: BOUNDARY,
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: BOUNDARY, endsAt: '2099-12-31T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; bundlesQueued: number };
+    expect(body.status).toBe('Scheduled');
+    expect(body.bundlesQueued).toBe(1);
+    expect(repos.campaigns.rows.find((r) => r.id === 'dec')).toMatchObject({ status: 'Scheduled' });
+  });
+
+  // The other half of the same rule: a null end is "runs forever", not "no
+  // constraint". Reading it as no constraint would make an unbounded campaign
+  // overlap NOTHING and let a second campaign publish straight through it.
+  it('refuses a campaign queued behind a holder with NO end date', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'forever', name: 'Evergreen', status: 'Published', scheduleMode: 'window',
+          startsAt: '2099-11-01T00:00:00.000Z', endsAt: null,
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2099-12-01T00:00:00.000Z', endsAt: '2099-12-31T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({ id: 'b1', name: 'Weekend Away Set' })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'forever', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(409);
+    const { error } = (await res.json()) as { error: string };
+    expect(error).toContain('Evergreen');
+    expect(error).toContain('Weekend Away Set');
+    expect(repos.campaigns.rows.find((r) => r.id === 'dec')).toMatchObject({ status: 'Draft' });
+  });
+
+  // Review Focus #5 — an immediate campaign must not appear to do nothing.
+  it('stamps a free bundle immediately when the publishing campaign is already current', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'now', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2099-01-01T00:00:00.000Z',
+      })],
+      bundles: [bundleRow({ id: 'b1', campaignId: null })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'now', bundleId: 'b1' })],
+    });
+
+    const res = await publish('now');
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'now' });
+  });
+
+  // The cron is deliberately forbidden from handing a bundle over while the
+  // outgoing campaign's capture is still out — `pre_sale_price` is the only
+  // record of the merchant's real price, and the incoming campaign must not
+  // reprice over it. Publish writes the same column pair and so needs the same
+  // precondition: November's window ends, the cron pass that would restore it
+  // is up to five minutes away, and December publishes in the gap. Stamping
+  // here would make the cron see no handover at all (`owner.id === campaignId`),
+  // leaving the product at NOVEMBER's sale price for the whole of December.
+  it('queues rather than stamps a bundle still holding the previous campaign’s capture', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
+          startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z',
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2020-02-01T00:00:00.000Z', endsAt: '2099-01-01T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({
+        id: 'b1', campaignId: 'nov', status: 'Active', preSalePrice: 310000,
+        scheduleStart: '2020-01-01T00:00:00.000Z', scheduleEnd: '2020-02-01T00:00:00.000Z',
+      })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string; bundlesStamped: number; bundlesQueued: number;
+      bundleFailures: unknown[];
+    };
+    // Queued, not failed: December will get the bundle, one cron pass after
+    // November has handed the real price back.
+    expect(body.bundlesStamped).toBe(0);
+    expect(body.bundlesQueued).toBe(1);
+    expect(body.bundleFailures).toEqual([]);
+    expect(body.status).toBe('Published');
+    // Untouched — capture, owner and window all still November's.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      campaignId: 'nov', preSalePrice: 310000, scheduleEnd: '2020-02-01T00:00:00.000Z',
+    });
+  });
+
+  it('GET /api/campaigns returns campaigns with a DERIVED status', async () => {
+    // Stored as Scheduled, but its window opened in the past.
+    seed({ campaigns: [campaignRow({
+      status: 'Scheduled',
+      scheduleMode: 'window',
+      startsAt: '2020-01-01T00:00:00.000Z',
+      endsAt: '2099-01-01T00:00:00.000Z',
+    })] });
+
+    const res = await app.request('/api/campaigns', { headers: { 'x-shop-domain': 'mystore.myshopify.com' } }, env('development'));
+
+    const json = (await res.json()) as { campaigns: Array<{ status: string }> };
+    expect(json.campaigns[0].status).toBe('Published');
+  });
+
+  it('PUT /api/campaigns/:id 409s a published campaign', async () => {
+    seed({ campaigns: [campaignRow({ id: 'c1', status: 'Published', scheduleMode: 'immediate' })] });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed' }),
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+  });
+
+  it('DELETE /api/campaigns/:id 409s a published campaign', async () => {
+    seed({ campaigns: [campaignRow({ id: 'c1', status: 'Published', scheduleMode: 'immediate' })] });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+  });
+
+  it('lets a Draft select a bundle another campaign owns, because a Draft writes nothing to it', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
+        campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'live' })],
+      campaignBundles: [{
+        id: 'cb1', shopId: SHOP.id, campaignId: 'live', bundleId: 'b1',
+        createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const res = await app.request('/api/campaigns/draft', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ bundleIds: ['b1'] }),
+    }, env('development'));
+
+    // Planning next month's campaign while this month's runs is ordinary. The
+    // refusal belongs at publish, which is where the window is written.
+    expect(res.status).toBe(200);
+    // ...and the selection must actually have been written, not merely accepted.
+    expect(repos.campaignBundles.rows.filter((r) => r.campaignId === 'draft').map((r) => r.bundleId))
+      .toEqual(['b1']);
+  });
+
+  it('404s a PUT that lists a bundleId that does not exist, rather than failing on the foreign key', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' })],
+    });
+
+    const res = await app.request('/api/campaigns/draft', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ bundleIds: ['nope'] }),
+    }, env('development'));
+
+    expect(res.status).toBe(404);
+    expect(await res.text()).toMatch(/Bundle nope not found/);
+  });
+
+  it('PUT allows a bundle whose owning campaign has ENDED', async () => {
+    seed({
+      campaigns: [
+        campaignRow({ id: 'old', status: 'Published', scheduleMode: 'window',
+          startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' }),
+        campaignRow({ id: 'draft', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'old' })],
+    });
+
+    const res = await app.request('/api/campaigns/draft', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ bundleIds: ['b1'] }),
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+  });
+
+  // F2 — the bundle loop used to run BEFORE the fully-failed decision, so a
+  // campaign that reverted to Draft left its bundles `Scheduled` on the
+  // campaign's window. The cron would then activate a bundle the merchant
+  // never published, behind a Draft campaign that no longer locks it.
+  it('leaves member bundles untouched when every discount fails and the campaign reverts to Draft', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'window',
+        startsAt: '2099-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+      bundles: [bundleRow({ id: 'b1' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+    vi.mocked(adminGraphql)
+      .mockResolvedValueOnce({ data: { shopifyFunctions: { nodes: [
+        { id: 'gid://shopify/Function/tier', handle: 'discount-tier', title: 'V', apiType: 'discount' },
+      ] } } } as never)
+      .mockResolvedValueOnce({ data: { discountAutomaticAppCreate: {
+        automaticAppDiscount: null, userErrors: [{ field: ['title'], message: 'Title is invalid' }],
+      } } } as never);
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { status: string }).status).toBe('Draft');
+    expect(repos.campaigns.rows[0].status).toBe('Draft');
+    // The whole point: no half-published bundle left behind a Draft campaign.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      campaignId: null,
+      status: 'Draft',
+      scheduleStart: null,
+      scheduleEnd: null,
+    });
+  });
+
+  // F4 — a bundles-only campaign whose every bundle was skipped puts NOTHING
+  // live. Marking it Published would strand it: PUT, DELETE and republish all
+  // refuse a published campaign, so the only escape would be Clone.
+  it('reverts to Draft when the only members are bundles and every one is skipped', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
+        campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' }),
+      ],
+      bundles: [bundleRow({ id: 'b1', campaignId: 'live' })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+
+    const res = await publish('c1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string; created: number; bundleFailures: unknown[];
+    };
+    expect(body.created).toBe(0);
+    expect(body.bundleFailures).toHaveLength(1);
+    // The status the UI reports from must match the row that was stored.
+    expect(body.status).toBe('Draft');
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toMatchObject({
+      status: 'Draft',
+      publishedAt: null,
+    });
+  });
+
+  // F3 — the double-publish gate used to be a read-then-write with every
+  // Shopify round-trip in between, so two concurrent handlers both read
+  // `Draft` and both created the full set of discounts. The claim is now the
+  // gate: exactly one handler may proceed.
+  it('lets only ONE of two concurrent publishes through', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1' })],
+    });
+    // Enough queued responses for BOTH publishes to succeed, so a lost race
+    // shows up as two 200s rather than as an incidental mock exhaustion.
+    mockFunctionsThenCreate();
+    mockFunctionsThenCreate();
+
+    const [a, b] = await Promise.all([publish('c1'), publish('c1')]);
+
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+  });
+
+  // F1 — the bundle schedule lock was UI-only. A stale editor (the campaign
+  // published in another tab, or the form opened before it published) could
+  // save a new end date over the campaign's window while the campaign's
+  // discounts still expired on the campaign's date.
+  it('PUT /api/bundles/:id 409s a schedule change on a bundle a live campaign owns', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'live', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      bundles: [bundleRow({
+        id: 'b1',
+        campaignId: 'live',
+        parentVariantId: 'gid://shopify/ProductVariant/99',
+        scheduleStart: '2099-01-01T00:00:00.000Z',
+        scheduleEnd: '2099-02-01T00:00:00.000Z',
+        status: 'Scheduled',
+      })],
+    });
+
+    const res = await app.request('/api/bundles/b1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ scheduleEnd: '2099-03-01T00:00:00.000Z' }),
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/Spring/);
+    // Refused at the write boundary — before any Admin round-trip.
+    expect(vi.mocked(adminGraphql)).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/bundles/:id allows a schedule change once the owning campaign has ENDED', async () => {
+    seed({
+      campaigns: [campaignRow({ id: 'old', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z' })],
+      bundles: [bundleRow({
+        id: 'b1',
+        campaignId: 'old',
+        parentVariantId: 'gid://shopify/ProductVariant/99',
+        scheduleStart: '2020-01-01T00:00:00.000Z',
+        scheduleEnd: '2020-02-01T00:00:00.000Z',
+      })],
+    });
+
+    const res = await app.request('/api/bundles/b1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ scheduleEnd: '2099-03-01T00:00:00.000Z' }),
+    }, env('development'));
+
+    expect(res.status).not.toBe(409);
+  });
+
+  it('deletes an ended campaign and its discounts from Shopify', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'c1', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z',
+      })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', method: 'automatic',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+    });
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { discountAutomaticDelete: { deletedAutomaticDiscountId: 'gid://shopify/DiscountAutomaticNode/1', userErrors: [] } },
+    } as never);
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+    expect(adminGraphql).toHaveBeenCalled();
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toBeUndefined();
+  });
+
+  it('refuses to delete a LIVE campaign, so a running promotion cannot vanish on one click', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    seed({
+      campaigns: [campaignRow({
+        id: 'c1', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2099-01-01T00:00:00.000Z',
+      })],
+    });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('keeps the campaign when a Shopify delete fails, so nothing is orphaned', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'c1', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z',
+      })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', method: 'automatic',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+    });
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { discountAutomaticDelete: { deletedAutomaticDiscountId: null, userErrors: [{ field: null, message: 'nope' }] } },
+    } as never);
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(502);
+    // The row that names this discount must survive, or the discount is live
+    // in Shopify with nothing left pointing at it.
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toBeDefined();
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toBeDefined();
+  });
+
+  it('deletes a draft campaign without calling Shopify at all', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', shopifyGid: null })],
+    });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+    // Nothing was ever published, so there is nothing in Shopify to delete.
+    expect(adminGraphql).not.toHaveBeenCalled();
+    expect(repos.campaigns.rows).toHaveLength(0);
+  });
+
+  it('counts past an existing copy, so a SECOND clone does not collide', async () => {
+    // The flaw in a fixed suffix: clone twice and both copies are called
+    // "... (copy)", which fails on publish exactly when a merchant is
+    // iterating on a campaign.
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [
+        campaignDiscountRow({ id: 'cd1', campaignId: 'c1', name: 'BFCM 1' }),
+        // A previous clone already took the first free number.
+        campaignDiscountRow({ id: 'cd2', campaignId: 'other', name: 'BFCM 1 (2)' }),
+      ],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
+
+    expect(copied!.name).toBe('BFCM 1 (3)');
+  });
+
+  it('publishes a clone end to end, which is what the rename exists for', async () => {
+    // The test whose absence let this ship: the clone route and the publish
+    // route were each correct, and combining them failed every time because
+    // nothing exercised the pair.
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'window',
+        startsAt: '2099-01-01T00:00:00.000Z', endsAt: '2099-02-01T00:00:00.000Z',
+      })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', name: 'BFCM 1', publishState: 'created',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+    });
+
+    const cloneRes = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+    const { campaignId } = (await cloneRes.json()) as { campaignId: string };
+
+    mockFunctionsThenCreate();
+    const res = await publish(campaignId);
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { created: number; failed: number };
+    expect(body).toMatchObject({ created: 1, failed: 0 });
+
+    // The title Shopify was asked for is the renamed one, not the source's.
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const input = (variables as { discount: Record<string, unknown> }).discount;
+    expect(input.title).not.toBe('BFCM 1');
+
+    // And the source's own discount is untouched by any of it.
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toMatchObject({
+      name: 'BFCM 1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+    });
+  });
+
+  it('renames a cloned discount, because Shopify refuses a duplicate title', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', name: 'BFCM 1' })],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
+
+    // The source's discount is already live in Shopify under this exact title,
+    // and `discountAutomaticAppCreate` rejects a duplicate. Carrying the name
+    // over verbatim made every clone unpublishable — and clone is the only way
+    // to edit a published campaign.
+    expect(copied!.name).toBe('BFCM 1 (2)');
+    // The source keeps its own name.
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')!.name).toBe('BFCM 1');
+  });
+
+  it('renames a cloned discount CODE too, which must also be unique in Shopify', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', name: 'Spring code', method: 'code', code: 'SPRING20',
+      })],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    const copied = repos.campaignDiscounts.rows.find((r) => r.campaignId === campaignId);
+
+    expect(copied!.code).toBe('SPRING20-2');
+    // A shopper types this at checkout, so it must stay code-shaped: no
+    // spaces or parentheses, unlike the title suffix.
+    expect(copied!.code).toMatch(/^[A-Z0-9_-]+$/);
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')!.code).toBe('SPRING20');
+  });
+
+  it('clones into an independent Draft with no Shopify identities', async () => {
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', name: 'Spring', status: 'Published', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', publishState: 'created', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+      campaignBundles: [campaignBundleRow({ id: 'cb1', campaignId: 'c1', bundleId: 'b1' })],
+    });
+
+    const res = await app.request('/api/campaigns/c1/clone', {
+      method: 'POST', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+    const { campaignId } = (await res.json()) as { campaignId: string };
+    expect(campaignId).not.toBe('c1');
+
+    const clone = repos.campaigns.rows.find((r) => r.id === campaignId);
+    expect(clone).toMatchObject({ status: 'Draft', publishedAt: null });
+    // Counted, not suffixed with a word: cloning a clone used to stack
+    // "(copy) (copy)" rather than counting upwards.
+    expect(clone!.name).toBe('Spring (2)');
+
+    const copied = repos.campaignDiscounts.rows.filter((r) => r.campaignId === campaignId);
+    expect(copied).toHaveLength(1);
+    // A clone that carried the original's gid would edit a LIVE discount.
+    expect(copied[0]).toMatchObject({ publishState: 'pending', shopifyGid: null });
+
+    expect(repos.campaignBundles.rows.filter((r) => r.campaignId === campaignId)).toHaveLength(1);
+
+    // The source is untouched — that is the point of clone-to-edit.
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toMatchObject({ status: 'Published' });
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toMatchObject({
+      publishState: 'created', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+    });
   });
 });

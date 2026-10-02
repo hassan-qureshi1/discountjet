@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { gateOperation, getOp, OPERATIONS } from './ops';
+import {
+  gateOperation, getOp, OPERATIONS, SELECTABLE_OPERATIONS,
+} from './ops';
 
 // The gate behind the "Create bundle" chooser: it decides which operations a
 // merchant can pick, and supplies the reason shown on the ones they cannot.
@@ -53,5 +55,20 @@ describe('OPERATIONS', () => {
 
   it('getOp throws on an unknown id rather than returning a blank row', () => {
     expect(() => getOp('nope' as never)).toThrow(/nope/);
+  });
+});
+
+describe('SELECTABLE_OPERATIONS', () => {
+  it('does not offer update, which produced a bundle that did nothing at checkout', () => {
+    expect(SELECTABLE_OPERATIONS.map((o) => o.id)).toEqual(['merge', 'expand']);
+  });
+
+  it('still resolves update for a row that already has it', () => {
+    // The picker and the lookup are deliberately different lists. Filtering
+    // OPERATIONS itself would make `getOp` throw on an existing `update`
+    // bundle, so withdrawing the choice would crash the list page that has to
+    // render it.
+    expect(OPERATIONS.map((o) => o.id).sort()).toEqual(['expand', 'merge', 'update']);
+    expect(getOp('update').label).toBe('Update');
   });
 });

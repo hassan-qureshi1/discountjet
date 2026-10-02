@@ -32,6 +32,9 @@ export interface BundleInput {
   items: BundleItemInput[];
   parentVariantId?: string;
   price?: number;
+  /** Major units. A number sets it, an explicit `null` clears it back to "use
+   * the component sum", and an absent key leaves the stored value untouched. */
+  compareAtPrice?: number | null;
   status?: BundleStatus;
   scheduleStart?: string | null;
   scheduleEnd?: string | null;
@@ -101,10 +104,18 @@ export interface ResolvedVariant {
   productTitle?: string;
   variantTitle?: string;
   adminUrl?: string;
+  /** The product's live storefront page. Absent when the product isn't
+   * published to the Online Store, in which case there is no page to link to
+   * and the storefront link is omitted rather than rendered dead. */
+  storefrontUrl?: string;
   /** The variant's own image, falling back to the product's featured image.
    * Absent when the product has no imagery at all. */
   imageUrl?: string;
   imageAlt?: string;
+  /** Per-unit price as an exact decimal string in the shop's currency.
+   * Already sent by `GET /api/variants`, which returns the resolved
+   * variant whole; this type simply never declared it. */
+  price?: string;
 }
 
 export interface VariantsResponse {

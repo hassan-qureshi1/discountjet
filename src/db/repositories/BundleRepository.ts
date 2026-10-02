@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { bundle } from '../schema';
 import { ShopScopedRepository } from './ShopScopedRepository';
 import type { Db } from './BaseRepository';
@@ -15,6 +15,7 @@ export interface IBundleRepository extends IShopScopedRepository<BundleRow, Bund
     state: BundleRow['metafieldState'],
     metafieldGid: string | null,
   ): Promise<void>;
+  capturePreSalePrice(id: string, priceMinor: number): Promise<BundleRow | null>;
 }
 
 /**
@@ -47,5 +48,30 @@ export class BundleRepository
       .update(bundle)
       .set({ metafieldState: state, metafieldGid })
       .where(this.scope(eq(bundle.id, id)));
+  }
+
+  /**
+   * Compare-and-set: writes the pre-sale capture ONLY while the column is
+   * still null, and returns the row it won — or null when someone else had
+   * already captured.
+   *
+   * `pre_sale_price` is the entire restore guarantee, and the schema states it
+   * is written once and never while already non-null. A plain `update()` makes
+   * that a convention held up by `decideSaleAction`, which reads the row at the
+   * top of a pass: two overlapping cron passes (the trigger is every five
+   * minutes, with no overlap guard, and each live bundle now costs two Admin
+   * subrequests) can both decide `apply` from the same pre-sale read, and the
+   * second would overwrite the real price with the SALE price the first just
+   * wrote. A single conditional UPDATE is atomic in D1, so the capture IS the
+   * gate: the loser gets null and declines to apply, having touched nothing.
+   */
+  async capturePreSalePrice(id: string, priceMinor: number): Promise<BundleRow | null> {
+    const row = await this.db
+      .update(bundle)
+      .set({ preSalePrice: priceMinor, updatedAt: new Date().toISOString() })
+      .where(this.scope(and(eq(bundle.id, id), isNull(bundle.preSalePrice))))
+      .returning()
+      .get();
+    return (row as BundleRow | undefined) ?? null;
   }
 }

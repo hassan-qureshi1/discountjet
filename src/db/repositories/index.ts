@@ -6,6 +6,15 @@ import { DiscountRepository, type IDiscountRepository } from './DiscountReposito
 import { WebhookEventRepository, type IWebhookEventRepository } from './WebhookEventRepository';
 import { TemplateRepository, type ITemplateRepository } from './TemplateRepository';
 import { DueBundleScanner, type IDueBundleScanner } from './DueBundleScanner';
+import { CampaignRepository, type ICampaignRepository } from './CampaignRepository';
+import {
+  CampaignDiscountRepository,
+  type ICampaignDiscountRepository,
+} from './CampaignDiscountRepository';
+import {
+  CampaignBundleRepository,
+  type ICampaignBundleRepository,
+} from './CampaignBundleRepository';
 
 export { BaseRepository } from './BaseRepository';
 export { ShopScopedRepository } from './ShopScopedRepository';
@@ -16,6 +25,9 @@ export { DiscountRepository } from './DiscountRepository';
 export { WebhookEventRepository } from './WebhookEventRepository';
 export { TemplateRepository } from './TemplateRepository';
 export { DueBundleScanner } from './DueBundleScanner';
+export { CampaignRepository } from './CampaignRepository';
+export { CampaignDiscountRepository } from './CampaignDiscountRepository';
+export { CampaignBundleRepository } from './CampaignBundleRepository';
 export { NotFoundError } from './types';
 
 export type { IRepository, IShopScopedRepository, NewRow } from './types';
@@ -43,6 +55,17 @@ export type {
 } from './WebhookEventRepository';
 export type { ITemplateRepository, TemplateRow, TemplateSeed } from './TemplateRepository';
 export type { IDueBundleScanner, DueBundle } from './DueBundleScanner';
+export type { ICampaignRepository, CampaignRow, CampaignNew } from './CampaignRepository';
+export type {
+  ICampaignDiscountRepository,
+  CampaignDiscountRow,
+  CampaignDiscountNew,
+} from './CampaignDiscountRepository';
+export type {
+  ICampaignBundleRepository,
+  CampaignBundleRow,
+  CampaignBundleNew,
+} from './CampaignBundleRepository';
 
 /**
  * Every repository available to a request, already bound to the caller's shop.
@@ -61,6 +84,9 @@ export interface Repositories {
   discounts: IDiscountRepository;
   events: IWebhookEventRepository;
   templates: ITemplateRepository;
+  campaigns: ICampaignRepository;
+  campaignDiscounts: ICampaignDiscountRepository;
+  campaignBundles: ICampaignBundleRepository;
 }
 
 /**
@@ -106,5 +132,8 @@ export function createRepositoriesFromDb(db: Db, shopId: string): Repositories {
     discounts: new DiscountRepository(db, shopId),
     events: new WebhookEventRepository(db),
     templates: new TemplateRepository(db),
+    campaigns: new CampaignRepository(db, shopId),
+    campaignDiscounts: new CampaignDiscountRepository(db, shopId),
+    campaignBundles: new CampaignBundleRepository(db, shopId),
   };
 }

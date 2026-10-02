@@ -35,6 +35,34 @@ export function createAuthenticatedFetch(
   };
 }
 
+/**
+ * A failed API call, carrying the merchant-facing text and the developer
+ * detail in separate places.
+ *
+ * `message` is what a `Banner` shows, so it is the Worker's own merchant copy
+ * and nothing else. The route and the status code are real debugging
+ * information, but a merchant cannot act on either, and putting them in front
+ * of one is a developer reading their own plumbing out loud. They live on the
+ * instance instead, where the console and Bugsnag still report them.
+ */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly path: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+/**
+ * Shown when the Worker fails without a message of its own — a 500 with an
+ * empty body, a gateway serving HTML, a dropped connection. Deliberately says
+ * nothing about what broke, because in these cases we do not know.
+ */
+const GENERIC_FAILURE = 'Something went wrong. Please try again.';
+
 export async function apiFetch<T = unknown>(
   authenticatedFetch: AuthenticatedFetch,
   path: string,
@@ -44,10 +72,9 @@ export async function apiFetch<T = unknown>(
   const res = await authenticatedFetch(path, { ...init, headers });
   if (!res.ok) {
     // The Worker returns `{ error: "..." }` on every failure path, and that
-    // message is usually the only place the underlying cause appears (a
-    // Shopify userError behind a 502, say). Dropping it left the UI showing a
-    // bare status code with nothing to act on. The `failed: <status>` prefix
-    // is preserved — 404 detection in the detail pages matches on it.
+    // message is written for the merchant — "This campaign's window has
+    // already closed. Change the dates before publishing." It is the whole
+    // message, not a detail appended to a status line.
     const detail = await res
       .clone()
       .json()
@@ -56,9 +83,7 @@ export async function apiFetch<T = unknown>(
         : ''))
       .catch(() => '');
 
-    throw new Error(
-      `Request to ${path} failed: ${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`,
-    );
+    throw new ApiError(res.status, path, detail || GENERIC_FAILURE);
   }
   return res.json() as Promise<T>;
 }

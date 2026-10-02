@@ -13,8 +13,14 @@ export interface OperationMeta {
 }
 
 /**
- * Cart-transform operations (from shopify.dev/docs/api/functions/cart-transform)
- * Descriptions ported from the prototype.
+ * Every operation the column can hold, including ones no longer offered.
+ *
+ * This is a LOOKUP table, not a menu — `getOp` resolves whatever is on an
+ * existing row so the list and the editor can label it. Dropping an entry here
+ * would throw on any bundle still carrying it, turning a withdrawn feature
+ * into a crash. What the merchant may CHOOSE is `SELECTABLE_OPERATIONS`.
+ *
+ * (from shopify.dev/docs/api/functions/cart-transform)
  */
 export const OPERATIONS: OperationMeta[] = [
   {
@@ -33,6 +39,20 @@ export const OPERATIONS: OperationMeta[] = [
     description: 'Override a line\'s price or title in the cart.',
   },
 ];
+
+/**
+ * The operations the merchant is offered when creating or changing a bundle.
+ *
+ * `update` is withheld: it overrides a line's price or title and nothing in
+ * the app acts on either (`bundle_item.price_adjustment` and `title_override`
+ * are stored but read by no metafield), so choosing it produced a bundle that
+ * did nothing at checkout. It stays in `OPERATIONS` so an existing row still
+ * renders, and the server still accepts it — this withdraws the choice, not
+ * the operation.
+ */
+export const SELECTABLE_OPERATIONS: OperationMeta[] = OPERATIONS.filter(
+  (op) => op.id !== 'update',
+);
 
 export const getOp = (id: BundleOperation): OperationMeta => {
   const op = OPERATIONS.find((o) => o.id === id);

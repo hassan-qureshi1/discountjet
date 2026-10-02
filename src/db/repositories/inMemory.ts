@@ -48,6 +48,17 @@ import type {
 } from './WebhookEventRepository';
 import type { ITemplateRepository, TemplateRow, TemplateSeed } from './TemplateRepository';
 import type { DueBundle, IDueBundleScanner } from './DueBundleScanner';
+import type { ICampaignRepository, CampaignRow, CampaignNew } from './CampaignRepository';
+import type {
+  ICampaignDiscountRepository,
+  CampaignDiscountRow,
+  CampaignDiscountNew,
+} from './CampaignDiscountRepository';
+import type {
+  ICampaignBundleRepository,
+  CampaignBundleRow,
+  CampaignBundleNew,
+} from './CampaignBundleRepository';
 
 /**
  * The generic half of every fake, mirroring `BaseRepository`: id and timestamp
@@ -244,16 +255,29 @@ export class InMemoryBundleRepository
     return row.shopId === this.shopId;
   }
 
+  /** Conditional capture — see `BundleRepository.capturePreSalePrice`. */
+  async capturePreSalePrice(id: string, priceMinor: number): Promise<BundleRow | null> {
+    const i = this.rows.findIndex(
+      (r) => r.id === id && this.inScope(r) && r.preSalePrice === null,
+    );
+    if (i === -1) return null;
+    this.rows[i] = { ...this.rows[i], preSalePrice: priceMinor, updatedAt: new Date().toISOString() };
+    return { ...this.rows[i] };
+  }
+
   protected materialize(data: NewRow<BundleNew>, id: string, now: string): BundleRow {
     return {
       parentVariantId: null,
       price: null,
+      compareAtPrice: null,
+      preSalePrice: null,
       metafieldState: 'NotYet',
       metafieldGid: null,
       scheduleStart: null,
       scheduleEnd: null,
       scheduleError: null,
       blockOnFailure: 0,
+      campaignId: null,
       ...data,
       id,
       shopId: this.shopId,
@@ -432,6 +456,163 @@ export class InMemoryDiscountRepository
   }
 }
 
+export class InMemoryCampaignRepository
+  extends InMemoryBase<CampaignRow, CampaignNew>
+  implements ICampaignRepository
+{
+  protected readonly table = 'campaign';
+
+  constructor(
+    public readonly shopId: string,
+    rows: CampaignRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: CampaignRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(data: NewRow<CampaignNew>, id: string, now: string): CampaignRow {
+    return {
+      description: null,
+      startsAt: null,
+      endsAt: null,
+      publishedAt: null,
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as CampaignRow;
+  }
+
+  /** Newest first, and filtered by shop plus status — mirrors the real repository. */
+  async listByStatus(status?: CampaignRow['status']): Promise<CampaignRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && (status === undefined || r.status === status))
+      .map((r) => ({ ...r }))
+      .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+  }
+
+  /** Compare-and-set, mirroring the real repository's conditional UPDATE. The
+   *  find and the write happen with no `await` between them, exactly as D1's
+   *  single statement does. */
+  async claimForPublish(id: string): Promise<CampaignRow | null> {
+    const i = this.rows.findIndex((r) => r.id === id && this.inScope(r) && r.status === 'Draft');
+    if (i === -1) return null;
+    this.rows[i] = { ...this.rows[i], status: 'Scheduled', updatedAt: new Date().toISOString() };
+    return { ...this.rows[i] };
+  }
+}
+
+export class InMemoryCampaignDiscountRepository
+  extends InMemoryBase<CampaignDiscountRow, CampaignDiscountNew>
+  implements ICampaignDiscountRepository
+{
+  protected readonly table = 'campaign_discount';
+
+  constructor(
+    public readonly shopId: string,
+    rows: CampaignDiscountRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: CampaignDiscountRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(
+    data: NewRow<CampaignDiscountNew>,
+    id: string,
+    now: string,
+  ): CampaignDiscountRow {
+    return {
+      code: null,
+      shopifyGid: null,
+      publishError: null,
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as CampaignDiscountRow;
+  }
+
+  async listForCampaign(campaignId: string): Promise<CampaignDiscountRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.campaignId === campaignId)
+      .map((r) => ({ ...r }));
+  }
+
+  async setPublishResult(
+    id: string,
+    result: {
+      shopifyGid: string | null;
+      publishState: CampaignDiscountRow['publishState'];
+      publishError: string | null;
+    },
+  ): Promise<void> {
+    const i = this.rows.findIndex((r) => r.id === id && this.inScope(r));
+    if (i !== -1) {
+      this.rows[i] = { ...this.rows[i], ...result, updatedAt: new Date().toISOString() };
+    }
+  }
+
+  async deleteForCampaign(campaignId: string): Promise<void> {
+    this.rows = this.rows.filter((r) => !(this.inScope(r) && r.campaignId === campaignId));
+  }
+}
+
+export class InMemoryCampaignBundleRepository
+  extends InMemoryBase<CampaignBundleRow, CampaignBundleNew>
+  implements ICampaignBundleRepository
+{
+  protected readonly table = 'campaign_bundle';
+
+  constructor(
+    public readonly shopId: string,
+    rows: CampaignBundleRow[] = [],
+  ) {
+    super(rows);
+  }
+
+  protected override inScope(row: CampaignBundleRow): boolean {
+    return row.shopId === this.shopId;
+  }
+
+  protected materialize(
+    data: NewRow<CampaignBundleNew>,
+    id: string,
+    now: string,
+  ): CampaignBundleRow {
+    return {
+      ...data,
+      id,
+      shopId: this.shopId,
+      createdAt: now,
+      updatedAt: now,
+    } as CampaignBundleRow;
+  }
+
+  async listForCampaign(campaignId: string): Promise<CampaignBundleRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.campaignId === campaignId)
+      .map((r) => ({ ...r }));
+  }
+
+  async listCampaignIdsForBundle(bundleId: string): Promise<string[]> {
+    return this.rows
+      .filter((r) => this.inScope(r) && r.bundleId === bundleId)
+      .map((r) => r.campaignId);
+  }
+
+  async deleteForCampaign(campaignId: string): Promise<void> {
+    this.rows = this.rows.filter((r) => !(this.inScope(r) && r.campaignId === campaignId));
+  }
+}
+
 /** Outside the generic base, exactly as the real one is — see its class comment. */
 export class InMemoryWebhookEventRepository implements IWebhookEventRepository {
   constructor(public rows: WebhookEventRow[] = []) {}
@@ -514,15 +695,49 @@ export class InMemoryTemplateRepository implements ITemplateRepository {
  * Mirrors the real predicates — including that it returns ids only.
  */
 export class InMemoryDueBundleScanner implements IDueBundleScanner {
-  constructor(private readonly rows: BundleRow[]) {}
+  /**
+   * Campaigns and their bundle links are optional because most cron tests have
+   * neither — but a fake that cannot see them would be LAXER than the real
+   * scanner, which is the one way a fake is allowed not to be.
+   */
+  constructor(
+    private readonly rows: BundleRow[],
+    private readonly campaigns: CampaignRow[] = [],
+    private readonly campaignBundles: CampaignBundleRow[] = [],
+  ) {}
 
   async findDue(now: string): Promise<DueBundle[]> {
     const due: DueBundle[] = [];
+    const seen = new Set<string>();
     for (const r of this.rows) {
       if (r.status === 'Scheduled' && r.scheduleStart !== null && r.scheduleStart <= now) {
         due.push({ shopId: r.shopId, bundleId: r.id, to: 'Active' });
+        seen.add(r.id);
       } else if (r.status === 'Active' && r.scheduleEnd !== null && r.scheduleEnd <= now) {
         due.push({ shopId: r.shopId, bundleId: r.id, to: 'Ended' });
+        seen.add(r.id);
+      }
+    }
+    // The handover scan — see `DueBundleScanner.findDue`. A bundle whose
+    // holding campaign's window contains `now` while the row names someone
+    // else, which is how a campaign published for a future window (and every
+    // queue with a gap in it) ever becomes due at all.
+    for (const link of this.campaignBundles) {
+      const c = this.campaigns.find((x) => x.id === link.campaignId);
+      const row = this.rows.find((x) => x.id === link.bundleId);
+      if (!c || !row || seen.has(row.id)) continue;
+      if (c.status !== 'Scheduled' && c.status !== 'Published') continue;
+      if (c.startsAt === null || c.startsAt > now) continue;
+      if (c.endsAt !== null && c.endsAt <= now) continue;
+      if (row.campaignId === c.id) continue;
+      due.push({ shopId: row.shopId, bundleId: row.id, to: 'Active' });
+      seen.add(row.id);
+    }
+    // The safety net — see `DueBundleScanner.findDue`.
+    for (const r of this.rows) {
+      if (r.preSalePrice !== null && !seen.has(r.id)) {
+        due.push({ shopId: r.shopId, bundleId: r.id, to: 'Ended' });
+        seen.add(r.id);
       }
     }
     return due;
@@ -537,6 +752,9 @@ export interface InMemoryRepositories extends Repositories {
   discounts: InMemoryDiscountRepository;
   events: InMemoryWebhookEventRepository;
   templates: InMemoryTemplateRepository;
+  campaigns: InMemoryCampaignRepository;
+  campaignDiscounts: InMemoryCampaignDiscountRepository;
+  campaignBundles: InMemoryCampaignBundleRepository;
 }
 
 /**
@@ -552,6 +770,9 @@ export function createInMemoryRepositories(
     discounts?: DiscountRow[];
     events?: WebhookEventRow[];
     templates?: TemplateRow[];
+    campaigns?: CampaignRow[];
+    campaignDiscounts?: CampaignDiscountRow[];
+    campaignBundles?: CampaignBundleRow[];
   } = {},
 ): InMemoryRepositories {
   return {
@@ -561,5 +782,8 @@ export function createInMemoryRepositories(
     discounts: new InMemoryDiscountRepository(shopId, seed.discounts ?? []),
     events: new InMemoryWebhookEventRepository(seed.events ?? []),
     templates: new InMemoryTemplateRepository(seed.templates ?? []),
+    campaigns: new InMemoryCampaignRepository(shopId, seed.campaigns ?? []),
+    campaignDiscounts: new InMemoryCampaignDiscountRepository(shopId, seed.campaignDiscounts ?? []),
+    campaignBundles: new InMemoryCampaignBundleRepository(shopId, seed.campaignBundles ?? []),
   };
 }

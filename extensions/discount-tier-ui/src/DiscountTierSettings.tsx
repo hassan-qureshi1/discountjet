@@ -3,6 +3,7 @@ import { render } from "preact";
 import { useMemo, useState, useEffect } from "preact/hooks";
 import {
   buildTierConfig,
+  CAMPAIGN_METAFIELD_KEY,
   getMetafieldSizeBytes,
   METAFIELD_KEY,
   METAFIELD_MAX_SIZE_BYTES,
@@ -99,6 +100,16 @@ function App() {
     return parseMetafield(raw);
   }, []);
 
+  // Present only on a discount a campaign created. The campaign authored this
+  // configuration and re-authors it on every publish, so an edit made here
+  // would either be overwritten without warning or leave the two permanently
+  // disagreeing — the discount saying one thing and the campaign that owns it
+  // another. Read-only is the honest state, not a restriction.
+  const campaignId = useMemo(
+    () => shopify.data?.metafields?.find((m) => m.key === CAMPAIGN_METAFIELD_KEY)?.value ?? null,
+    [],
+  );
+
   const [formData, setFormData] = useState<TierFormData>(initial);
 
   // The tier function is PRODUCT-class; ensure the discount grants it.
@@ -159,6 +170,31 @@ function App() {
   const kb = (sizeBytes / 1024).toFixed(2);
   const overWarn = sizeBytes > METAFIELD_MAX_SIZE_BYTES * 0.8;
   const overLimit = sizeBytes > METAFIELD_MAX_SIZE_BYTES;
+
+  if (campaignId) {
+    // No `onSubmit`: without a save handler there is nothing for an edit to
+    // land in, so the discount cannot be changed from here even if a control
+    // were somehow reachable. The review summary is the same read-only view
+    // the wizard's last step shows, so a merchant still sees exactly what the
+    // discount does.
+    return (
+      <s-function-settings>
+        <s-heading>Set up your volume discount</s-heading>
+        <s-section>
+          <s-stack gap="base">
+            <s-banner tone="info" heading="Managed by a campaign">
+              <s-text>
+                This discount was created by a campaign, which controls its
+                settings and its schedule. Edit it from the campaign in the
+                DiscountJet app rather than here.
+              </s-text>
+            </s-banner>
+            <ReviewSummary formData={formData} />
+          </s-stack>
+        </s-section>
+      </s-function-settings>
+    );
+  }
 
   return (
     <s-function-settings

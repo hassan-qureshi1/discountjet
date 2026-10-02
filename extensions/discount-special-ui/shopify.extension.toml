@@ -12,3 +12,11 @@ target = "admin.discount-details.function-settings.render"
 [[extensions.metafields]]
 namespace = "$app:discount-special"
 key = "config"
+
+# Names the campaign that owns this discount, when one created it. Declared
+# here because an extension receives only the metafields it lists: without this
+# block the value exists on the discount but never reaches the UI, and the
+# fields would stay editable with nothing showing anything was wrong.
+[[extensions.metafields]]
+namespace = "$app:discount-special"
+key = "campaign"

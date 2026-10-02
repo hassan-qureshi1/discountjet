@@ -7,6 +7,7 @@ import { useDiscountQuery } from '../discounts/hooks';
 import { DISCOUNT_TYPE_LABEL } from '../types/discounts';
 import { KeyValueList } from '../components/KeyValueList';
 import { SymbolTile } from '../components/SymbolTile';
+import { ApiError } from '../api';
 
 const DESCRIPTIONS: Record<string, string> = {
   Tier: 'Once a shopper adds enough qualifying items, the discount applies automatically. Works at POS & Checkout, on every eligible item.',
@@ -20,7 +21,7 @@ export default function DiscountDetail() {
   const { data, isLoading, error } = useDiscountQuery(id);
   const discount = data?.discount;
   const campaign = data?.campaign ?? undefined;
-  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+  const isNotFound = error instanceof ApiError && error.status === 404;
 
   if (isLoading) {
     return (

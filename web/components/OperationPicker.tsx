@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ActionList, Button, Popover } from '@shopify/polaris';
-import { OPERATIONS, gateOperation } from '../bundles/ops';
+import { SELECTABLE_OPERATIONS, gateOperation } from '../bundles/ops';
 import type { BundleOperation } from '../types/bundles';
 
 /**
@@ -12,9 +12,11 @@ import type { BundleOperation } from '../types/bundles';
  * from the list page, and changing one from inside the editor. Two spellings
  * of the same choice would be free to drift apart in wording and in gating.
  *
- * `update` is shown DISABLED for non-Plus stores rather than hidden. A
- * capability that silently isn't there reads as a missing feature; a disabled
- * row with a reason reads as a plan limit, which is what it is.
+ * It renders `SELECTABLE_OPERATIONS`, which currently excludes `update` — see
+ * that constant for why. The Plus gate below still runs: it is what shows a
+ * row DISABLED with a reason rather than hidden, because a capability that
+ * silently isn't there reads as a missing feature while a disabled row with a
+ * reason reads as a plan limit.
  */
 export function OperationPicker({
   updateOpEligible,
@@ -37,7 +39,7 @@ export function OperationPicker({
 }) {
   const [open, setOpen] = useState(false);
 
-  const items = OPERATIONS.map((op) => {
+  const items = SELECTABLE_OPERATIONS.map((op) => {
     const gate = gateOperation(op.id, updateOpEligible, planName);
     return {
       content: op.label,

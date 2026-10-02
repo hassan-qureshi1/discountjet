@@ -3,7 +3,13 @@ import {
   createRepositories,
   createShopRepository,
 } from '../db/repositories';
-import type { DueBundle, IDueBundleScanner, IShopRepository, Repositories } from '../db/repositories';
+import type {
+  CampaignRow,
+  DueBundle,
+  IDueBundleScanner,
+  IShopRepository,
+  Repositories,
+} from '../db/repositories';
 import { getShopAccessToken } from '../lib/getShopAccessToken';
 import {
   applyMergeBatch,
@@ -14,7 +20,10 @@ import {
 } from '../lib/bundleMetafields';
 import type { MergeBundleConfig } from '../lib/bundleMetafields';
 import { toMoney } from '../lib/money';
+import { decideSaleAction } from '../lib/salePrice';
+import { readVariantPrice, setVariantPricing } from '../lib/variantPricing';
 import { deriveStatus, shouldBeLive } from '../lib/scheduleWindow';
+import { deriveCampaignStatus } from '../lib/campaignStatus';
 import { isPlusPlan, planGateReason } from '../lib/shopPlan';
 import type { Env } from '../types/env';
 
@@ -40,6 +49,17 @@ export interface BundleTransports {
       removeParentVariantIds: string[];
     },
   ): Promise<{ metafieldGid: string | null }>;
+  readVariantPrice(
+    env: Env,
+    shopDomain: string,
+    variantGid: string,
+  ): Promise<{ priceMinor: number; currencyCode: string } | null>;
+  setVariantPricing(
+    env: Env,
+    shopDomain: string,
+    variantGid: string,
+    values: { priceMinor: number; compareAtMinor: number; currencyCode: string },
+  ): Promise<void>;
 }
 
 export interface BundleScheduleDeps {
@@ -57,7 +77,13 @@ export function createBundleScheduleDeps(env: Env): BundleScheduleDeps {
     shops: createShopRepository(env.DB),
     reposFor: (shopId) => createRepositories(env.DB, shopId),
     getToken: (domain) => getShopAccessToken(domain, env),
-    transports: { writeComposition, clearComposition, applyMergeBatch },
+    transports: {
+      writeComposition,
+      clearComposition,
+      applyMergeBatch,
+      readVariantPrice,
+      setVariantPricing,
+    },
   };
 }
 
@@ -79,6 +105,57 @@ function toMajorNumber(minorUnits: number | null, currency: string | null): numb
     throw new Error('[bundleSchedule] the shop row has no currency; cannot convert prices');
   }
   return Number(toMoney(minorUnits, currency)!.amount);
+}
+
+/**
+ * Which campaign owns this bundle RIGHT NOW, or null when none does.
+ *
+ * Several campaigns may hold the same bundle, queued one after another, so
+ * ownership cannot be a stamp written days ahead — it is whichever of them has
+ * a window containing `now`. Everything else in this feature is derived the
+ * same way (campaign status from its window, the sale state from the capture),
+ * and deriving is what makes a queue work with nothing to go stale.
+ *
+ * Null is the ordinary answer between campaigns, and it means "leave
+ * `bundle.campaign_id` alone": the restore sweep is driven by the capture, not
+ * by ownership, so a bundle whose campaign ended — or was deleted — still hands
+ * the merchant's price back.
+ */
+async function resolveCurrentOwner(
+  repos: Repositories,
+  bundleId: string,
+  incumbentId: string | null,
+  now: string,
+): Promise<CampaignRow | null> {
+  const campaignIds = await repos.campaignBundles.listCampaignIdsForBundle(bundleId);
+  if (campaignIds.length === 0) return null;
+
+  const current: CampaignRow[] = [];
+  for (const campaignId of campaignIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const campaign = await repos.campaigns.findById(campaignId);
+    // A link row outliving its campaign is not possible through the FK, but a
+    // miss is a legitimately-absent row rather than corrupt state, so it is
+    // skipped rather than thrown over.
+    if (campaign === null) continue;
+    const status = deriveCampaignStatus(campaign.status, campaign.startsAt, campaign.endsAt, now);
+    if (status === 'Published') current.push(campaign);
+  }
+
+  if (current.length === 0) return null;
+  if (current.length === 1) return current[0]!;
+
+  // Publish refuses overlapping windows on a shared bundle, so two current
+  // owners means that gate was bypassed or the dates were edited underneath it.
+  // The incumbent keeps the bundle — passing it back and forth every five
+  // minutes would be far worse than picking wrong once — and failing that the
+  // tie breaks on id, so at least the choice is the same on every pass.
+  console.error(
+    `[bundleSchedule] bundle ${bundleId} is claimed by ${current.length} campaigns whose windows all contain now: ${current.map((c) => c.id).join(', ')}`,
+  );
+  const incumbent = current.find((c) => c.id === incumbentId);
+  if (incumbent) return incumbent;
+  return [...current].sort((a, b) => a.id.localeCompare(b.id))[0]!;
 }
 
 function groupByShop(due: DueBundle[]): Map<string, DueBundle[]> {
@@ -150,32 +227,186 @@ export async function runBundleSchedule(
       const row = await repos.bundles.findById(bundleId);
       if (!row) continue;
 
-      // Draft is the merchant's manual off-switch — never scheduled over.
-      if (row.status === 'Draft') continue;
+      // OWNERSHIP, RESOLVED RATHER THAN READ.
+      //
+      // Before the window is looked at, work out which campaign's window
+      // contains `now`. When it is not the one stamped on the row, the bundle
+      // changes hands — but ONLY ONCE THE OUTGOING OWNER'S CAPTURE IS BACK.
+      //
+      // That ordering is the whole safety of a queue, and it is a HARD
+      // precondition, not a preference. `pre_sale_price` non-null means the
+      // merchant's real price is still on loan, and the row is the only record
+      // of it. Re-stamping first would move the bundle onto the incoming
+      // campaign's open window before the restore was attempted; if that
+      // restore then threw — the timeout-after-a-committed-write case this
+      // whole design is built around — the next pass would see a current
+      // window, `saleLive` true and `owesRestore` false, write `Active`, clear
+      // the error message and never retry. The merchant's product would sit at
+      // the OLD sale price for the whole of the new campaign with nothing to
+      // show for it.
+      //
+      // So a pass that finds a capture outstanding restores it under the OLD
+      // window and hands over on the next pass. Nothing is written here in
+      // that case, so a failed restore leaves the row exactly where it was:
+      // still due, still carrying its capture, still showing its error.
+      //
+      // With the capture already back, the re-stamp is unconditional and the
+      // rest of the iteration proceeds normally — `Scheduled` on the new
+      // owner's window derives `Active`, so the bundle activates and takes the
+      // new sale in this same pass. Capturing is safe precisely because
+      // `pre_sale_price` is null: the variant is at the merchant's own price.
+      //
+      // `Draft` is the merchant's manual off-switch, so a handover is never
+      // forced onto a bundle a campaign ALREADY OWNS: switching it off
+      // mid-queue must not be undone by the next campaign in line.
+      //
+      // An UNOWNED `Draft` row is a different thing entirely, and is the
+      // ordinary shape of a bundle a campaign published for a future window:
+      // publish writes nothing to it, so it keeps whatever status the merchant
+      // had it in — usually `Draft`, since a campaign bundle is scheduled by
+      // its campaign rather than by hand. Refusing that one would mean a
+      // future campaign never ran its bundles at all, and it is not an
+      // off-switch being overridden: before ownership became derived, publish
+      // stamped exactly this row unconditionally. `resolveCurrentOwner`
+      // returns null when no campaign holds it, so a genuinely standalone
+      // Draft bundle is still never touched.
+      //
+      // `row` is a copy, so updating it in step with the write keeps the rest
+      // of this iteration reading what was persisted.
+      //
+      // The whole block is guarded like the body below: a bundle whose
+      // ownership cannot be resolved records the reason and is skipped, rather
+      // than taking the rest of the shop's bundles down with it.
+      let restoreBeforeHandover = false;
+      try {
+        const draftOffSwitch = row.status === 'Draft' && row.campaignId !== null;
+        if (!draftOffSwitch) {
+          // eslint-disable-next-line no-await-in-loop
+          const owner = await resolveCurrentOwner(repos, bundleId, row.campaignId, now);
+          if (owner !== null && owner.id !== row.campaignId) {
+            if (row.preSalePrice !== null) {
+              restoreBeforeHandover = true;
+            } else {
+              // Publish refuses a campaign with no start, so this is not
+              // reachable today — and it is checked anyway rather than trusted,
+              // because a `Scheduled` row with a null `scheduleStart` is
+              // matched by NEITHER due-scan query and would be stranded
+              // silently and permanently.
+              if (owner.startsAt === null) {
+                throw new Error(
+                  `[bundleSchedule] campaign ${owner.id} is current but has no start date; refusing to stamp it onto bundle ${bundleId}`,
+                );
+              }
+              // eslint-disable-next-line no-await-in-loop
+              await repos.bundles.update(bundleId, {
+                campaignId: owner.id,
+                scheduleStart: owner.startsAt,
+                scheduleEnd: owner.endsAt,
+                status: 'Scheduled',
+              });
+              row.campaignId = owner.id;
+              row.scheduleStart = owner.startsAt;
+              row.scheduleEnd = owner.endsAt;
+              row.status = 'Scheduled';
+            }
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[bundleSchedule] bundle ${bundleId} (${domain}) failed to resolve its owner:`, err);
+        // eslint-disable-next-line no-await-in-loop
+        await repos.bundles.update(bundleId, { scheduleError: message });
+        continue;
+      }
 
       // The scanner's `to` was advisory. This is the decision: a window
       // entirely in the past derives `Ended` even though the activation scan
       // found it, so it never spends a pass live.
-      const target = deriveStatus(row.scheduleStart, row.scheduleEnd, now);
-      if (target === row.status) continue;
+      //
+      // `Draft` is the merchant's manual off-switch and is never scheduled
+      // over, so it has no transition at all — but its SALE state is still
+      // `Ended`, which is what the restore below reads.
+      const target =
+        row.status === 'Draft'
+          ? ('Ended' as const)
+          : deriveStatus(row.scheduleStart, row.scheduleEnd, now);
+      // A pass that owes the outgoing owner a restore does not TRANSITION
+      // either. The old window has closed, so `target` is `Ended`, and writing
+      // it would drop the row out of the due-scan altogether — neither
+      // `Scheduled` with a past start nor `Active` with a past end — and the
+      // handover queued behind the restore would never happen. Leaving the
+      // status alone keeps the row due next pass, which is the same reason the
+      // restore path has always left it alone on failure.
+      const transitions = !restoreBeforeHandover && row.status !== 'Draft' && target !== row.status;
+
+      // WHETHER THIS BUNDLE SHOULD BE PRICED ON SALE RIGHT NOW.
+      //
+      // Narrower than `shouldBeLive(target)` on two counts, both of which are
+      // about not borrowing a price we cannot give back or were never asked to
+      // borrow:
+      //
+      //  - `scheduleEnd !== null` — we only overwrite a merchant's price when
+      //    we know when to hand it back. A sale with no end is not a sale, it
+      //    is a permanent repricing, and that is the merchant's change to make
+      //    rather than ours to make irreversibly on their behalf. (An
+      //    `immediate` campaign stamps a null end onto its bundles, and that
+      //    is the DEFAULT publish path.) The bundle still activates normally;
+      //    only the price overwrite is skipped.
+      //  - `campaignId !== null` — sale pricing is a campaign feature. A
+      //    standalone scheduled expand bundle has no campaign lock, no banner
+      //    and no warning in the editor, so repricing its product would be a
+      //    surprise. It keeps composition-metafield-only behaviour.
+      //  - `!restoreBeforeHandover` — the outgoing owner's capture comes back
+      //    before the incoming campaign is allowed to borrow anything. This is
+      //    the one that stops B repricing over A's capture on the pass where
+      //    the bundle changes hands, and it is NOT belt and braces: the flag is
+      //    only set when a DIFFERENT campaign is current, so it says nothing
+      //    about a bundle carrying a stale open window under its existing
+      //    owner. That case is handled where it arises — `decideSaleAction`
+      //    returns `none` while a capture is outstanding, so nothing is
+      //    re-borrowed, and publish refuses to stamp over an outstanding
+      //    capture so the cron is never asked to.
+      const saleLive =
+        !restoreBeforeHandover
+        && row.operation === 'expand'
+        && row.status !== 'Draft'
+        && shouldBeLive(target)
+        && row.campaignId !== null
+        && row.scheduleEnd !== null;
+
+      // A row still holding a capture is looked at EVEN IF nothing about its
+      // window is due. That is what the scanner's third query feeds: the
+      // capture is the merchant's real price, and a row that should no longer
+      // be on sale must be restored no matter which edit took it out of the
+      // window.
+      const owesRestore = row.preSalePrice !== null && !saleLive;
+      if (!transitions && !owesRestore) continue;
+
+      // Fetched at most ONCE per bundle: the composition write and the sale
+      // decision both need the components.
+      let itemsCache: Awaited<ReturnType<typeof repos.bundleItems.listForBundle>> | null = null;
+      const loadItems = async () => {
+        if (itemsCache === null) itemsCache = await repos.bundleItems.listForBundle(bundleId);
+        return itemsCache;
+      };
 
       try {
         // The same plan gate the route applies. Leaving it `Scheduled` with a
         // reason is the honest outcome: neither silently live, nor silently
         // ended.
-        if (row.operation === 'update' && target === 'Active' && !isPlusPlan(plan)) {
+        if (transitions && row.operation === 'update' && target === 'Active' && !isPlusPlan(plan)) {
           await repos.bundles.update(bundleId, {
             scheduleError: `Update bundles are not available on this plan. ${planGateReason(plan)}`,
           });
           continue;
         }
 
-        if (row.operation === 'merge') {
+        if (row.operation === 'merge' && transitions) {
           if (!row.parentVariantId) {
             throw new Error(`[bundleSchedule] merge bundle ${bundleId} has no parent variant`);
           }
           if (shouldBeLive(target)) {
-            const items = await repos.bundleItems.listForBundle(bundleId);
+            const items = await loadItems();
             mergeUpserts.push(
               mergeConfigEntry({
                 parentVariantId: row.parentVariantId,
@@ -196,20 +427,33 @@ export async function runBundleSchedule(
             mergeRemovals.push(toVariantGid(row.parentVariantId));
           }
           // Planned, not applied: the batch below decides its fate, so nothing
-          // is persisted for it here.
+          // is persisted for it here. A merge row that somehow still holds a
+          // capture keeps it for now; it no longer transitions after this
+          // pass, so the safety-net scan hands it back and the restore below
+          // runs then.
           mergePending.push({ bundleId, target });
           continue;
         }
 
         let metafieldState: 'Written' | 'Cleared' | null = null;
         let metafieldGid: string | null = null;
+        // Set only by a `restore`, to null, and persisted in the SAME update
+        // as the status once Shopify has accepted the restore. An `apply`
+        // persists its capture earlier, in its own conditional write, before
+        // the Shopify write. `undefined` leaves the column alone.
+        let preSalePrice: number | null | undefined;
+        // A note to leave on an otherwise successful pass. The status write below
+        // clears `scheduleError` by default, because reaching the target IS the
+        // success; this carries the one case that succeeds and still has something
+        // the merchant needs told.
+        let restoreNote: string | null = null;
 
-        if (row.operation === 'expand') {
+        if (row.operation === 'expand' && transitions) {
           if (!row.parentVariantId) {
             throw new Error(`[bundleSchedule] expand bundle ${bundleId} has no parent variant`);
           }
           if (shouldBeLive(target)) {
-            const items = await repos.bundleItems.listForBundle(bundleId);
+            const items = await loadItems();
             const written = await deps.transports.writeComposition(
               env,
               domain,
@@ -229,6 +473,116 @@ export async function runBundleSchedule(
           }
         }
 
+        // Sale pricing: the one place this app overwrites merchant data (the
+        // parent variant's own price). Runs after the metafield work and
+        // before the status write, so a failure here leaves the status
+        // untouched and the whole step is retried next pass.
+        //
+        // Deliberately NOT nested inside the operation branch or inside
+        // `transitions`: a row holding a capture must be restorable whatever
+        // its operation now says and whether or not its window is doing
+        // anything today. `saleLive` is the only thing that decides an APPLY,
+        // and it is expand-only.
+        //
+        // Expand-only on the apply side, deliberately: an expand parent is the
+        // product a shopper browses, so its page price is what they see. A
+        // merge parent is a representative line for a cart assembled from
+        // components and is never browsed, so repricing it would write to a
+        // product nobody looks at; update bundles are likewise left alone.
+        if (saleLive || row.preSalePrice !== null) {
+          if (!row.parentVariantId) {
+            throw new Error(`[bundleSchedule] bundle ${bundleId} has no parent variant to price`);
+          }
+          const items = await loadItems();
+          const action = decideSaleAction(
+            {
+              price: row.price,
+              compareAtPrice: row.compareAtPrice,
+              preSalePrice: row.preSalePrice,
+              componentSumMinor: items.reduce((sum, i) => sum + i.price * i.qty, 0),
+            },
+            saleLive,
+          );
+          // compareAtPrice is overwritten on the variant with NO capture, on
+          // purpose. The spec defines it as a standing property of the bundle
+          // (the component sum, before, during and after the sale), so it is
+          // not merchant state we borrow and must give back, unlike `price`.
+          // Capturing it would contradict the spec's three-state table.
+          if (action.kind === 'apply') {
+            const live = await deps.transports.readVariantPrice(env, domain, row.parentVariantId);
+            if (live === null) {
+              throw new Error(
+                `[bundleSchedule] variant ${row.parentVariantId} no longer exists in Shopify; cannot put bundle ${bundleId} on sale`,
+              );
+            }
+            // Capture BEFORE the Shopify write, and CONDITIONALLY. No
+            // transaction spans D1 and Shopify, so the only safe order is the
+            // one whose every crash window loses a sale at worst, never the
+            // merchant's price: captured-but-not-applied is harmless (the pass
+            // sees "on sale" and will not re-capture; the restore writes the
+            // same price back), whereas applied-but-not-captured would let the
+            // next pass record the SALE price as the original.
+            //
+            // The write is conditional on the column still being null because
+            // `decideSaleAction` read the row at the top of this iteration:
+            // two overlapping passes can both decide `apply`, and the second
+            // would otherwise read the now-live SALE price and overwrite the
+            // capture with it. Losing the race means the other pass owns this
+            // sale — nothing has been written here, so simply do not apply.
+            const captured = await repos.bundles.capturePreSalePrice(bundleId, live.priceMinor);
+            if (captured === null) {
+              console.warn(
+                `[bundleSchedule] bundle ${bundleId} (${domain}) was captured by a concurrent pass; leaving its sale to that pass`,
+              );
+            } else {
+              // The capture is deliberately KEPT if this throws. A throw does
+              // not mean Shopify rejected the write: a timeout, 502 or dropped
+              // connection can surface after Shopify has committed the sale
+              // price. Clearing the capture would then erase the only record
+              // of the real price, and the next pass would read the SALE price
+              // as "live" and capture that as the original. Keeping it is safe
+              // either way: if the write landed, the restore puts the real
+              // price back; if not, the restore rewrites a price that is
+              // already live. The cost of keeping is at worst a missed sale.
+              await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+                priceMinor: action.priceMinor,
+                compareAtMinor: action.compareAtMinor,
+                currencyCode: live.currencyCode,
+              });
+            }
+          } else if (action.kind === 'restore') {
+            // Currency comes from Shopify exactly as `apply` gets it, never
+            // from the cached shop column: the captured amount is in minor
+            // units of the currency it was read in, and re-expanding it with
+            // a different exponent would restore a price wrong by 100x.
+            const live = await deps.transports.readVariantPrice(env, domain, row.parentVariantId);
+            if (live === null) {
+              // The variant was deleted in Shopify while the sale was live.
+              // Everywhere else a failed restore KEEPS the capture, because
+              // the price can still be put back on a later pass. Here it
+              // cannot: there is no variant left to put it back on. Holding it
+              // would re-fail every five minutes forever and — since DELETE
+              // refuses a bundle that still holds a capture — leave the bundle
+              // permanently undeletable. So the capture is released and the
+              // reason recorded, rather than guarding a price with nowhere to
+              // go. This is the ONE case where clearing without a confirmed
+              // write is right, and it is right because the thing being
+              // guarded no longer exists.
+              restoreNote = `The parent variant no longer exists in Shopify, so its pre-sale price of ${row.preSalePrice} could not be restored.`;
+              preSalePrice = null;
+            } else {
+              await deps.transports.setVariantPricing(env, domain, row.parentVariantId, {
+                priceMinor: action.priceMinor,
+                compareAtMinor: action.compareAtMinor,
+                currencyCode: live.currencyCode,
+              });
+              // Only now that Shopify has agreed. Before this point a failure
+              // throws past here and the captured price survives for the retry.
+              preSalePrice = null;
+            }
+          }
+        }
+
         // Shopify has agreed, so record the transport bookkeeping BEFORE the
         // status, and the status LAST. Between the two writes a concurrent
         // read sees the old status with the new `metafieldState`, which is the
@@ -239,7 +593,14 @@ export async function runBundleSchedule(
         if (metafieldState !== null) {
           await repos.bundles.setMetafieldState(bundleId, metafieldState, metafieldGid);
         }
-        await repos.bundles.update(bundleId, { status: target, scheduleError: null });
+        // `status` only when there is a transition to record: a row swept in
+        // purely to be restored (a Draft one above all) keeps the status its
+        // merchant chose.
+        await repos.bundles.update(bundleId, {
+          ...(transitions ? { status: target } : {}),
+          scheduleError: restoreNote,
+          ...(preSalePrice !== undefined ? { preSalePrice } : {}),
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[bundleSchedule] bundle ${bundleId} (${domain}) failed to reach ${target}:`, err);

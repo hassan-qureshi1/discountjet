@@ -3,7 +3,13 @@ import {
   createRepositories,
   createShopRepository,
 } from '../db/repositories';
-import type { DueBundle, IDueBundleScanner, IShopRepository, Repositories } from '../db/repositories';
+import type {
+  CampaignRow,
+  DueBundle,
+  IDueBundleScanner,
+  IShopRepository,
+  Repositories,
+} from '../db/repositories';
 import { getShopAccessToken } from '../lib/getShopAccessToken';
 import {
   applyMergeBatch,
@@ -17,6 +23,7 @@ import { toMoney } from '../lib/money';
 import { decideSaleAction } from '../lib/salePrice';
 import { readVariantPrice, setVariantPricing } from '../lib/variantPricing';
 import { deriveStatus, shouldBeLive } from '../lib/scheduleWindow';
+import { deriveCampaignStatus } from '../lib/campaignStatus';
 import { isPlusPlan, planGateReason } from '../lib/shopPlan';
 import type { Env } from '../types/env';
 
@@ -100,6 +107,57 @@ function toMajorNumber(minorUnits: number | null, currency: string | null): numb
   return Number(toMoney(minorUnits, currency)!.amount);
 }
 
+/**
+ * Which campaign owns this bundle RIGHT NOW, or null when none does.
+ *
+ * Several campaigns may hold the same bundle, queued one after another, so
+ * ownership cannot be a stamp written days ahead — it is whichever of them has
+ * a window containing `now`. Everything else in this feature is derived the
+ * same way (campaign status from its window, the sale state from the capture),
+ * and deriving is what makes a queue work with nothing to go stale.
+ *
+ * Null is the ordinary answer between campaigns, and it means "leave
+ * `bundle.campaign_id` alone": the restore sweep is driven by the capture, not
+ * by ownership, so a bundle whose campaign ended — or was deleted — still hands
+ * the merchant's price back.
+ */
+async function resolveCurrentOwner(
+  repos: Repositories,
+  bundleId: string,
+  incumbentId: string | null,
+  now: string,
+): Promise<CampaignRow | null> {
+  const campaignIds = await repos.campaignBundles.listCampaignIdsForBundle(bundleId);
+  if (campaignIds.length === 0) return null;
+
+  const current: CampaignRow[] = [];
+  for (const campaignId of campaignIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const campaign = await repos.campaigns.findById(campaignId);
+    // A link row outliving its campaign is not possible through the FK, but a
+    // miss is a legitimately-absent row rather than corrupt state, so it is
+    // skipped rather than thrown over.
+    if (campaign === null) continue;
+    const status = deriveCampaignStatus(campaign.status, campaign.startsAt, campaign.endsAt, now);
+    if (status === 'Published') current.push(campaign);
+  }
+
+  if (current.length === 0) return null;
+  if (current.length === 1) return current[0]!;
+
+  // Publish refuses overlapping windows on a shared bundle, so two current
+  // owners means that gate was bypassed or the dates were edited underneath it.
+  // The incumbent keeps the bundle — passing it back and forth every five
+  // minutes would be far worse than picking wrong once — and failing that the
+  // tie breaks on id, so at least the choice is the same on every pass.
+  console.error(
+    `[bundleSchedule] bundle ${bundleId} is claimed by ${current.length} campaigns whose windows all contain now: ${current.map((c) => c.id).join(', ')}`,
+  );
+  const incumbent = current.find((c) => c.id === incumbentId);
+  if (incumbent) return incumbent;
+  return [...current].sort((a, b) => a.id.localeCompare(b.id))[0]!;
+}
+
 function groupByShop(due: DueBundle[]): Map<string, DueBundle[]> {
   const groups = new Map<string, DueBundle[]>();
   for (const row of due) {
@@ -169,6 +227,38 @@ export async function runBundleSchedule(
       const row = await repos.bundles.findById(bundleId);
       if (!row) continue;
 
+      // OWNERSHIP, RESOLVED RATHER THAN READ.
+      //
+      // Before the window is looked at, work out which campaign's window
+      // contains `now` and, if it is not the one stamped on the row, hand the
+      // bundle over: `campaignId` and the window come from the new owner, and
+      // the status goes back to `Scheduled` so the NEXT pass activates it
+      // through the ordinary path.
+      //
+      // `Draft` is the merchant's manual off-switch, so a handover is never
+      // forced onto one. `row` is a copy, so updating it in step with the
+      // write below just keeps the rest of this iteration reading what was
+      // persisted.
+      let handover = false;
+      if (row.status !== 'Draft') {
+        // eslint-disable-next-line no-await-in-loop
+        const owner = await resolveCurrentOwner(repos, bundleId, row.campaignId, now);
+        if (owner !== null && owner.id !== row.campaignId) {
+          // eslint-disable-next-line no-await-in-loop
+          await repos.bundles.update(bundleId, {
+            campaignId: owner.id,
+            scheduleStart: owner.startsAt,
+            scheduleEnd: owner.endsAt,
+            status: 'Scheduled',
+          });
+          row.campaignId = owner.id;
+          row.scheduleStart = owner.startsAt;
+          row.scheduleEnd = owner.endsAt;
+          row.status = 'Scheduled';
+          handover = true;
+        }
+      }
+
       // The scanner's `to` was advisory. This is the decision: a window
       // entirely in the past derives `Ended` even though the activation scan
       // found it, so it never spends a pass live.
@@ -180,7 +270,24 @@ export async function runBundleSchedule(
         row.status === 'Draft'
           ? ('Ended' as const)
           : deriveStatus(row.scheduleStart, row.scheduleEnd, now);
-      const transitions = row.status !== 'Draft' && target !== row.status;
+      // A HANDOVER PASS NEITHER ACTIVATES NOR APPLIES. It only re-stamps (done
+      // above) and restores (below), and the incoming campaign's sale starts on
+      // the NEXT pass.
+      //
+      // That is not a missing optimisation, it is the whole safety of a queue.
+      // The outgoing campaign's capture is the merchant's real price, and it is
+      // still outstanding at the instant the boundary is crossed. If this pass
+      // also applied, `decideSaleAction` would see `onSale` and return `none` —
+      // so the new sale would never be applied at all, and worse, a later pass
+      // that did apply would read the OLD sale price as live and record THAT as
+      // the original. Restoring first and applying next pass costs one cron
+      // interval and loses nothing.
+      //
+      // Skipping the transition as well is what makes that second pass happen:
+      // `Scheduled` with a start already past is exactly what the due-scan
+      // looks for, whereas writing `Active` here would leave a bundle that is
+      // live, not on sale, and no longer due.
+      const transitions = !handover && row.status !== 'Draft' && target !== row.status;
 
       // WHETHER THIS BUNDLE SHOULD BE PRICED ON SALE RIGHT NOW.
       //
@@ -199,8 +306,12 @@ export async function runBundleSchedule(
       //    standalone scheduled expand bundle has no campaign lock, no banner
       //    and no warning in the editor, so repricing its product would be a
       //    surprise. It keeps composition-metafield-only behaviour.
+      //  - `!handover` — see the note on `transitions` above: on the pass that
+      //    changes hands, the previous owner's capture is restored and the new
+      //    owner's sale waits for the next one.
       const saleLive =
-        row.operation === 'expand'
+        !handover
+        && row.operation === 'expand'
         && row.status !== 'Draft'
         && shouldBeLive(target)
         && row.campaignId !== null

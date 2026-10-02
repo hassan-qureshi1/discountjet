@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runBundleSchedule, type BundleScheduleDeps, type BundleTransports } from './bundleSchedule';
 import { createInMemoryRepositories, InMemoryDueBundleScanner } from '../db/repositories/inMemory';
-import type { BundleRow, ShopRow } from '../db/repositories';
+import type { BundleRow, CampaignBundleRow, CampaignRow, ShopRow } from '../db/repositories';
 import type { Env } from '../types/env';
 
 const NOW = '2026-10-03T12:00:00.000Z';
@@ -55,12 +55,63 @@ function noopTransports(): BundleTransports {
   };
 }
 
-function harness(rows: BundleRow[], shops: ShopRow[], transports = noopTransports()) {
+/**
+ * A campaign and the bundles it holds, for the ownership cases.
+ *
+ * Seeded through `harness` rather than written in after the fact: the fakes are
+ * built once, from a seed, and a post-hoc mutator would have to reach past
+ * `ICampaignRepository` and `ICampaignBundleRepository` into two stores at
+ * once. Deliberately minimal — it exists for the handover tests, not as a
+ * general fixture API.
+ */
+interface CampaignSeed {
+  campaign: Partial<CampaignRow> & { id: string };
+  bundleIds: string[];
+}
+
+function harness(
+  rows: BundleRow[],
+  shops: ShopRow[],
+  transports = noopTransports(),
+  campaignSeeds: CampaignSeed[] = [],
+) {
+  // Campaigns belong to the first shop unless a seed says otherwise — every
+  // ownership case here is single-shop, and the cron reads them through
+  // shop-scoped repositories, so the tenant has to be a real one.
+  const defaultShopId = shops[0]?.id ?? 'shop-a';
+  const campaigns: CampaignRow[] = campaignSeeds.map(({ campaign }) => ({
+    shopId: defaultShopId,
+    name: `campaign ${campaign.id}`,
+    description: null,
+    scheduleMode: 'window',
+    startsAt: null,
+    endsAt: null,
+    publishedAt: null,
+    createdAt: PAST,
+    updatedAt: PAST,
+    ...campaign,
+  }) as CampaignRow);
+  const campaignBundles: CampaignBundleRow[] = campaignSeeds.flatMap(({ campaign, bundleIds }) =>
+    bundleIds.map((bundleId) => ({
+      id: `${campaign.id}:${bundleId}`,
+      shopId: defaultShopId,
+      campaignId: campaign.id,
+      bundleId,
+      createdAt: PAST,
+      updatedAt: PAST,
+    }) as CampaignBundleRow),
+  );
+
   // One repository set per shop, over ONE shared row array, so a cross-tenant
   // write would be visible to the other shop's repositories.
   const byShop = new Map<string, ReturnType<typeof createInMemoryRepositories>>();
   for (const s of shops) {
-    byShop.set(s.id, createInMemoryRepositories(s.id, { shops, bundles: rows }));
+    byShop.set(s.id, createInMemoryRepositories(s.id, {
+      shops,
+      bundles: rows,
+      campaigns,
+      campaignBundles,
+    }));
   }
   const deps: BundleScheduleDeps = {
     scanner: new InMemoryDueBundleScanner(rows),
@@ -741,4 +792,75 @@ it('restores in the currency Shopify reports, not the shop row currency', async 
     ENV, 'shop-a.myshopify.com', PARENT,
     expect.objectContaining({ priceMinor: 310000, currencyCode: 'JPY' }),
   );
+});
+
+// ─── ownership resolved from campaign windows ───────────────────────────────
+
+// Review Focus #3 — a campaign deleted mid-queue must not strand its bundles.
+it('hands a bundle to the next queued campaign when its owner is gone', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, campaignId: null, status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+    // A campaign whose window is current and which holds this bundle.
+    [{ campaign: { id: 'next', status: 'Published', startsAt: PAST, endsAt: FUTURE }, bundleIds: ['b1'] }],
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const row = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(row.campaignId).toBe('next');
+  expect(row.scheduleEnd).toBe(FUTURE);
+});
+
+// Review Focus #4 — the handover must never let B capture A's sale price.
+it('does not let the next campaign capture while the previous capture is outstanding', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: 'nov', status: 'Active',
+      scheduleStart: PAST, scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+    [{ campaign: { id: 'dec', status: 'Published', startsAt: PAST, endsAt: FUTURE }, bundleIds: ['b1'] }],
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  // The capture is November's real price. December must not record the SALE
+  // price as the original, so this pass restores and the next one applies.
+  expect(t.setVariantPricing).toHaveBeenCalledWith(
+    ENV, 'shop-a.myshopify.com', PARENT,
+    expect.objectContaining({ priceMinor: 310000 }),
+  );
+  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.preSalePrice).toBeNull();
+});
+
+it('leaves a bundle alone while its current owner is still running', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, campaignId: 'nov', status: 'Active',
+      scheduleStart: PAST, scheduleEnd: FUTURE,
+    })],
+    [shop('shop-a')],
+    t,
+    [
+      { campaign: { id: 'nov', status: 'Published', startsAt: PAST, endsAt: FUTURE }, bundleIds: ['b1'] },
+      { campaign: { id: 'dec', status: 'Scheduled', startsAt: FUTURE, endsAt: null }, bundleIds: ['b1'] },
+    ],
+  );
+
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  // December is queued, not owed anything yet.
+  expect((await h.reposFor('shop-a').bundles.findById('b1'))!.campaignId).toBe('nov');
 });

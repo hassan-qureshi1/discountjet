@@ -86,6 +86,16 @@ export interface PublishCampaignResponse {
   status: CampaignStatus;
   created: number;
   failed: number;
+  /** Bundles put on this campaign's window now, because its window is current. */
+  bundlesStamped: number;
+  /**
+   * Bundles the schedule pass will take over later — either because the
+   * campaign's window has not arrived, or because the bundle still holds the
+   * previous campaign's pre-sale price and must hand it back first. Reported
+   * apart from `bundlesStamped` so a publish that scheduled nothing today does
+   * not read as one that scheduled everything.
+   */
+  bundlesQueued: number;
   bundleFailures: CampaignBundleFailure[];
 }
 

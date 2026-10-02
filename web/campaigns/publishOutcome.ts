@@ -44,18 +44,27 @@ export interface PublishOutcome {
  */
 export function describePublishOutcome(result: PublishCampaignResponse): PublishOutcome {
   const counts = `${result.created} discount${result.created === 1 ? '' : 's'} created, ${result.failed} failed.`;
+  // Named only when there are bundles to talk about, so a discounts-only
+  // campaign's banner is not padded with two zeroes. Queued is stated plainly
+  // rather than folded into "scheduled": the merchant's product does not
+  // change today, and a bundle waiting on the previous campaign's restore can
+  // be up to one schedule pass late.
+  const bundles = result.bundlesStamped + result.bundlesQueued === 0
+    ? ''
+    : ` ${result.bundlesStamped} bundle${result.bundlesStamped === 1 ? '' : 's'} scheduled now,`
+      + ` ${result.bundlesQueued} queued for when the window opens.`;
 
   if (result.status === 'Draft') {
     return {
       tone: 'critical',
       title: 'Nothing was published',
-      summary: `${counts} The campaign stays a Draft — nothing went live, so it is safe to fix and try again.`,
+      summary: `${counts}${bundles} The campaign stays a Draft — nothing went live, so it is safe to fix and try again.`,
     };
   }
 
   return {
     tone: 'warning',
     title: 'This campaign published partially',
-    summary: `${counts} The campaign is now ${result.status} and can no longer be edited — clone it into a new Draft to fix what failed.`,
+    summary: `${counts}${bundles} The campaign is now ${result.status} and can no longer be edited — clone it into a new Draft to fix what failed.`,
   };
 }

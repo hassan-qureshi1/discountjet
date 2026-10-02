@@ -4330,6 +4330,55 @@ describe('Campaign API', () => {
     expect(repos.bundles.rows[0]).toMatchObject({ campaignId: 'now' });
   });
 
+  // The cron is deliberately forbidden from handing a bundle over while the
+  // outgoing campaign's capture is still out — `pre_sale_price` is the only
+  // record of the merchant's real price, and the incoming campaign must not
+  // reprice over it. Publish writes the same column pair and so needs the same
+  // precondition: November's window ends, the cron pass that would restore it
+  // is up to five minutes away, and December publishes in the gap. Stamping
+  // here would make the cron see no handover at all (`owner.id === campaignId`),
+  // leaving the product at NOVEMBER's sale price for the whole of December.
+  it('queues rather than stamps a bundle still holding the previous campaign’s capture', async () => {
+    const repos = seed({
+      campaigns: [
+        campaignRow({
+          id: 'nov', name: 'November', status: 'Published', scheduleMode: 'window',
+          startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z',
+        }),
+        campaignRow({
+          id: 'dec', status: 'Draft', scheduleMode: 'window',
+          startsAt: '2020-02-01T00:00:00.000Z', endsAt: '2099-01-01T00:00:00.000Z',
+        }),
+      ],
+      bundles: [bundleRow({
+        id: 'b1', campaignId: 'nov', status: 'Active', preSalePrice: 310000,
+        scheduleStart: '2020-01-01T00:00:00.000Z', scheduleEnd: '2020-02-01T00:00:00.000Z',
+      })],
+      campaignBundles: [
+        campaignBundleRow({ id: 'cb1', campaignId: 'nov', bundleId: 'b1' }),
+        campaignBundleRow({ id: 'cb2', campaignId: 'dec', bundleId: 'b1' }),
+      ],
+    });
+
+    const res = await publish('dec');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string; bundlesStamped: number; bundlesQueued: number;
+      bundleFailures: unknown[];
+    };
+    // Queued, not failed: December will get the bundle, one cron pass after
+    // November has handed the real price back.
+    expect(body.bundlesStamped).toBe(0);
+    expect(body.bundlesQueued).toBe(1);
+    expect(body.bundleFailures).toEqual([]);
+    expect(body.status).toBe('Published');
+    // Untouched — capture, owner and window all still November's.
+    expect(repos.bundles.rows[0]).toMatchObject({
+      campaignId: 'nov', preSalePrice: 310000, scheduleEnd: '2020-02-01T00:00:00.000Z',
+    });
+  });
+
   it('GET /api/campaigns returns campaigns with a DERIVED status', async () => {
     // Stored as Scheduled, but its window opened in the past.
     seed({ campaigns: [campaignRow({

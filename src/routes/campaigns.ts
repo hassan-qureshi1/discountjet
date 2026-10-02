@@ -650,12 +650,34 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
     // (bundle deleted meanwhile) is handled the same way. Either way this
     // must not abort the loop or the campaign's status write below.
     try {
-      if (!takesBundlesNow) {
-        // Queued: the cron takes the bundle over at the boundary. Stamping now
-        // would overwrite whichever campaign is running it. Existence is still
-        // checked so a deleted bundle is reported rather than silently queued.
-        // eslint-disable-next-line no-await-in-loop
-        await repos.bundles.getById(cb.bundleId);
+      // Read once, up front: both queue conditions below are about the row as
+      // it stands, and `getById` throws `NotFoundError` for a bundle deleted
+      // meanwhile — which is reported as a failure rather than silently queued.
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await repos.bundles.getById(cb.bundleId);
+
+      // QUEUED, for either of two reasons:
+      //
+      //  - this campaign's window has not arrived, so stamping now would
+      //    overwrite whichever campaign is running the bundle today; or
+      //  - the bundle still holds the OUTGOING campaign's capture. That is the
+      //    merchant's real price and the row is the only record of it, so
+      //    nothing may take the bundle over until it has been handed back —
+      //    the same hard precondition the cron enforces (`bundleSchedule.ts`,
+      //    "OWNERSHIP, RESOLVED RATHER THAN READ"). Publish writes the same two
+      //    columns and so needs the same gate: a campaign whose window ends at
+      //    T is restored by a pass up to five minutes later, and a campaign
+      //    publishing at T+30s onto a window starting at T would otherwise
+      //    stamp straight over it. The cron would then see no handover at all
+      //    (`owner.id === row.campaignId`), `decideSaleAction` would return
+      //    `none` with the capture outstanding, and the product would sit at
+      //    the PREVIOUS campaign's sale price for the whole of this one's
+      //    window. Queueing it instead costs one cron pass, which is the trade
+      //    this design already makes everywhere else.
+      //
+      // Either way the cron takes the bundle over at the boundary.
+      const owesOutgoingRestore = existing.preSalePrice !== null && existing.campaignId !== id;
+      if (!takesBundlesNow || owesOutgoingRestore) {
         bundlesQueued += 1;
         continue;
       }
@@ -698,7 +720,15 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
       : { status: published, publishedAt: now, startsAt, endsAt },
   );
 
-  return c.json({ status: published, created, failed, bundleFailures });
+  // `bundlesStamped` and `bundlesQueued` are reported separately because they
+  // are different promises to the merchant: stamped bundles are on this
+  // campaign's window NOW, queued ones are waiting for the schedule pass that
+  // takes them over when the window arrives (or when the previous campaign has
+  // handed its price back). Collapsing them would leave a publish that
+  // scheduled nothing today looking identical to one that scheduled everything.
+  return c.json({
+    status: published, created, failed, bundlesStamped, bundlesQueued, bundleFailures,
+  });
 });
 
 // POST /api/campaigns/:id/clone — the only edit path for a non-Draft

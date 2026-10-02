@@ -21,6 +21,8 @@ const result = (overrides: Partial<PublishCampaignResponse> = {}): PublishCampai
   status: 'Published',
   created: 0,
   failed: 0,
+  bundlesStamped: 0,
+  bundlesQueued: 0,
   bundleFailures: [],
   ...overrides,
 });
@@ -85,5 +87,25 @@ describe('describePublishOutcome', () => {
 
     expect(outcome.tone).toBe('warning');
     expect(outcome.summary).toMatch(/2 discounts created, 1 failed/);
+  });
+});
+
+// A bundles-only campaign published for a future window creates no discounts
+// and stamps nothing today. The banner must still say what it DID do, or the
+// merchant reads "0 discounts created" as "nothing happened".
+describe('describePublishOutcome — bundles', () => {
+  it('names queued bundles apart from scheduled ones', () => {
+    const outcome = describePublishOutcome(result({
+      status: 'Scheduled', created: 0, bundlesStamped: 0, bundlesQueued: 2,
+    }));
+
+    expect(outcome.summary).toContain('0 bundles scheduled now');
+    expect(outcome.summary).toContain('2 queued');
+  });
+
+  it('says nothing about bundles for a campaign that has none', () => {
+    const outcome = describePublishOutcome(result({ created: 1, failed: 1 }));
+
+    expect(outcome.summary).not.toMatch(/bundle/i);
   });
 });

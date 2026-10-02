@@ -1072,3 +1072,40 @@ it('never switches a Draft bundle another campaign already owns back on', async 
   expect(row.status).toBe('Draft');
   expect(t.setVariantPricing).not.toHaveBeenCalled();
 });
+
+// A restore pass deliberately writes no status, so a row that is BOTH `Ended`
+// and still holding a capture used to clear that capture and then match no
+// due-scan query at all — the handover queued behind it never happened. The
+// handover scan reaches it through its campaign, so the second pass completes
+// what the first could only start.
+it('completes a handover from an Ended row that was still holding a capture', async () => {
+  const t = pricingTransports();
+  const h = harness(
+    [bundleRow({
+      id: 'b1', shopId: 'shop-a', operation: 'expand', parentVariantId: PARENT,
+      price: 279000, preSalePrice: 310000, campaignId: 'nov', status: 'Ended',
+      scheduleStart: '2026-09-01T00:00:00.000Z', scheduleEnd: PAST,
+    })],
+    [shop('shop-a')],
+    t,
+    [{ campaign: { id: 'dec', status: 'Published', startsAt: PAST, endsAt: FUTURE }, bundleIds: ['b1'] }],
+  );
+
+  // PASS 1 — restore only, under November's window. Nothing changes hands
+  // while the merchant's real price is still on loan.
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const afterFirst = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(afterFirst.preSalePrice).toBeNull();
+  expect(afterFirst.campaignId).toBe('nov');
+
+  // PASS 2 — the capture is back, so December takes the bundle and captures
+  // the price pass 1 put back, not the sale price it replaced.
+  await runBundleSchedule(ENV, NOW, h.deps);
+
+  const afterSecond = (await h.reposFor('shop-a').bundles.findById('b1'))!;
+  expect(afterSecond.campaignId).toBe('dec');
+  expect(afterSecond.scheduleEnd).toBe(FUTURE);
+  expect(afterSecond.status).toBe('Active');
+  expect(afterSecond.preSalePrice).toBe(310000);
+});

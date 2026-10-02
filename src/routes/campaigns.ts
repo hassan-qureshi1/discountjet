@@ -3,6 +3,7 @@ import type { AppEnv } from '../types/env.d';
 import type { CampaignRow, CampaignBundleRow, CampaignDiscountRow, Repositories } from '../db/repositories';
 import { deriveCampaignStatus, type CampaignStatus } from '../lib/campaignStatus';
 import { uniqueCode, uniqueName } from '../lib/uniqueName';
+import { deleteDiscountInShopify } from '../lib/deleteDiscount';
 import { findLockingCampaign } from '../lib/bundleOwnership';
 import { assertWindowOrder, normalizeUtc } from '../lib/scheduleWindow';
 import { getAdapter, type DiscountEngineType } from '../lib/discountEngines/adapters';
@@ -402,16 +403,50 @@ campaignRoutes.delete('/api/campaigns/:id', async (c) => {
   const existing = await repos.campaigns.findById(id);
   if (!existing) return c.json({ error: 'Campaign not found' }, 404);
 
-  try {
-    await assertEditable(repos, existing, now);
-  } catch (err) {
-    if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
-    throw err;
+  // Draft or Ended only. A Scheduled or Published campaign is refused because
+  // deleting it would delete discounts out of Shopify permanently — and for a
+  // running one, stop promotions shoppers are receiving right now, as the
+  // result of a single click. Ending the campaign first is a deliberate act
+  // that leaves a trail; this would not be.
+  const status = deriveCampaignStatus(existing.status, existing.startsAt, existing.endsAt, now);
+  if (status !== 'Draft' && status !== 'Ended') {
+    return c.json({
+      error: `A ${status.toLowerCase()} campaign cannot be deleted. Wait for its window to close, or change its schedule first.`,
+    }, 409);
+  }
+
+  // Shopify BEFORE D1, and the order is the point. These rows hold the only
+  // record of which discounts belong to this campaign: delete them first and
+  // a failed Shopify call would leave those discounts live in the merchant's
+  // store with nothing left pointing at them. This way a failure leaves the
+  // campaign exactly as it was, and the delete can simply be retried.
+  const discounts = await repos.campaignDiscounts.listForCampaign(id);
+  const published = discounts.filter((d) => d.shopifyGid !== null);
+  if (published.length > 0) {
+    const shopDomain = requireShopDomain(c);
+    for (const cd of published) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await deleteDiscountInShopify(c.env, shopDomain, cd.shopifyGid as string, cd.method);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Stop on the first failure rather than pressing on: every discount
+        // still in Shopify keeps a campaign row pointing at it, so nothing is
+        // orphaned and the whole delete can be retried. Those already deleted
+        // are gone, which is why the message names where it stopped.
+        return c.json({
+          error: `Deleted ${published.indexOf(cd)} of ${published.length} discounts, then failed on "${cd.name}": ${message}`,
+        }, 502);
+      }
+    }
   }
 
   // Explicit cleanup of the join tables rather than relying solely on the
   // cascading FK — see the class comment on the repositories for why each
-  // exists as its own method.
+  // exists as its own method. `bundle.campaign_id` is ON DELETE SET NULL, so
+  // member bundles are freed rather than deleted; one still mid-sale keeps its
+  // `pre_sale_price`, and the schedule sweep restores its real price on the
+  // next pass precisely because its campaign is gone.
   await repos.campaignDiscounts.deleteForCampaign(id);
   await repos.campaignBundles.deleteForCampaign(id);
   await repos.campaigns.delete(id);

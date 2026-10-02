@@ -4438,6 +4438,104 @@ describe('Campaign API', () => {
     expect(res.status).not.toBe(409);
   });
 
+  it('deletes an ended campaign and its discounts from Shopify', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'c1', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z',
+      })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', method: 'automatic',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+    });
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { discountAutomaticDelete: { deletedAutomaticDiscountId: 'gid://shopify/DiscountAutomaticNode/1', userErrors: [] } },
+    } as never);
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+    expect(adminGraphql).toHaveBeenCalled();
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toBeUndefined();
+  });
+
+  it('refuses to delete a LIVE campaign, so a running promotion cannot vanish on one click', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    seed({
+      campaigns: [campaignRow({
+        id: 'c1', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2099-01-01T00:00:00.000Z',
+      })],
+    });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(409);
+    expect(adminGraphql).not.toHaveBeenCalled();
+  });
+
+  it('keeps the campaign when a Shopify delete fails, so nothing is orphaned', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    const repos = seed({
+      campaigns: [campaignRow({
+        id: 'c1', status: 'Published', scheduleMode: 'window',
+        startsAt: '2020-01-01T00:00:00.000Z', endsAt: '2020-02-01T00:00:00.000Z',
+      })],
+      campaignDiscounts: [campaignDiscountRow({
+        id: 'cd1', campaignId: 'c1', method: 'automatic',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
+      })],
+    });
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { discountAutomaticDelete: { deletedAutomaticDiscountId: null, userErrors: [{ field: null, message: 'nope' }] } },
+    } as never);
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(502);
+    // The row that names this discount must survive, or the discount is live
+    // in Shopify with nothing left pointing at it.
+    expect(repos.campaigns.rows.find((r) => r.id === 'c1')).toBeDefined();
+    expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toBeDefined();
+  });
+
+  it('deletes a draft campaign without calling Shopify at all', async () => {
+    // `clearAllMocks` does not drain queued `mockResolvedValueOnce` values, so
+    // a value an earlier test queued and never consumed would be handed to the
+    // first call here and this test would assert against someone else's payload.
+    vi.mocked(adminGraphql).mockReset();
+    const repos = seed({
+      campaigns: [campaignRow({ id: 'c1', status: 'Draft', scheduleMode: 'immediate' })],
+      campaignDiscounts: [campaignDiscountRow({ id: 'cd1', campaignId: 'c1', shopifyGid: null })],
+    });
+
+    const res = await app.request('/api/campaigns/c1', {
+      method: 'DELETE', headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+    }, env('development'));
+
+    expect(res.status).toBe(200);
+    // Nothing was ever published, so there is nothing in Shopify to delete.
+    expect(adminGraphql).not.toHaveBeenCalled();
+    expect(repos.campaigns.rows).toHaveLength(0);
+  });
+
   it('counts past an existing copy, so a SECOND clone does not collide', async () => {
     // The flaw in a fixed suffix: clone twice and both copies are called
     // "... (copy)", which fails on publish exactly when a merchant is

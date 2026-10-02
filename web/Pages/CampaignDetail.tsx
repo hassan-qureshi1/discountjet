@@ -13,9 +13,9 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Banner, BlockStack, Card, InlineStack, Link, List, Page, Spinner, Text,
+  Banner, BlockStack, Card, InlineStack, Link, List, Modal, Page, Spinner, Text,
 } from '@shopify/polaris';
-import { useCampaign, useCloneCampaign } from '../campaigns/hooks';
+import { useCampaign, useCloneCampaign, useDeleteCampaign } from '../campaigns/hooks';
 import type { CampaignDiscountPublishState } from '../campaigns/api';
 import { useBundlesQuery } from '../bundles/hooks';
 import { StatusBadge } from '../components/StatusBadge';
@@ -38,6 +38,26 @@ export default function CampaignDetail() {
   const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
 
   const cloneMutation = useCloneCampaign();
+  const deleteMutation = useDeleteCampaign();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Draft or Ended only, matching the server. A scheduled or running campaign
+  // is not offered the action at all rather than shown one that 409s: an
+  // action a merchant cannot use teaches them nothing about why.
+  const deletable = campaign?.status === 'Draft' || campaign?.status === 'Ended';
+  const publishedDiscounts = campaign?.discounts.filter((d) => d.shopifyGid !== null) ?? [];
+
+  const handleDelete = async () => {
+    setDeleteError(null);
+    try {
+      await deleteMutation.mutateAsync(campaign!.id);
+      navigate('/campaigns');
+    } catch (err) {
+      setConfirmOpen(false);
+      setDeleteError(err instanceof Error ? err.message : 'Could not delete the campaign.');
+    }
+  };
   const [cloneError, setCloneError] = useState<string | null>(null);
 
   // Bundle names for `campaign.bundleIds` — the campaign DTO carries only
@@ -103,9 +123,52 @@ export default function CampaignDetail() {
         onAction: handleClone,
         loading: cloneMutation.isPending,
       }}
+      secondaryActions={deletable ? [{
+        content: 'Delete campaign',
+        destructive: true,
+        onAction: () => setConfirmOpen(true),
+      }] : []}
     >
       <BlockStack gap="400">
         {cloneError && <Banner tone="critical" onDismiss={() => setCloneError(null)}>{cloneError}</Banner>}
+        {deleteError && (
+          <Banner tone="critical" onDismiss={() => setDeleteError(null)}>{deleteError}</Banner>
+        )}
+
+        <Modal
+          open={confirmOpen}
+          onClose={() => setConfirmOpen(false)}
+          title="Delete this campaign?"
+          primaryAction={{
+            content: 'Delete campaign',
+            destructive: true,
+            onAction: handleDelete,
+            loading: deleteMutation.isPending,
+          }}
+          secondaryActions={[{ content: 'Cancel', onAction: () => setConfirmOpen(false) }]}
+        >
+          <Modal.Section>
+            <BlockStack gap="200">
+              <Text as="p">
+                {publishedDiscounts.length > 0
+                  ? `This permanently deletes ${publishedDiscounts.length} discount${publishedDiscounts.length === 1 ? '' : 's'} from Shopify. That cannot be undone.`
+                  : 'This campaign never published, so no discounts will be deleted from Shopify.'}
+              </Text>
+              {publishedDiscounts.length > 0 && (
+                <Text as="p" tone="subdued">
+                  {publishedDiscounts.map((d) => d.name).join(', ')}
+                </Text>
+              )}
+              {/* Bundles are freed, not deleted, and one still mid-sale has its
+                  real price written back by the next schedule pass. Saying so
+                  stops a merchant assuming their bundles go with it. */}
+              <Text as="p" tone="subdued">
+                Bundles in this campaign are kept. Any still on sale will have their
+                original price restored automatically.
+              </Text>
+            </BlockStack>
+          </Modal.Section>
+        </Modal>
 
         <Banner tone="info" title="This campaign is read-only">
           <p>

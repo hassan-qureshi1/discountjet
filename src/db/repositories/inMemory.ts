@@ -407,6 +407,15 @@ export class InMemoryDiscountRepository
 {
   protected readonly table = 'discount';
 
+  async namesByGids(shopifyGids: string[]): Promise<Map<string, string>> {
+    const wanted = new Set(shopifyGids);
+    return new Map(
+      this.rows
+        .filter((r) => this.inScope(r) && wanted.has(r.shopifyGid))
+        .map((r) => [r.shopifyGid, r.name]),
+    );
+  }
+
   async overviewCounts(): Promise<DiscountOverviewCounts> {
     const counts: DiscountOverviewCounts = {
       active: 0,

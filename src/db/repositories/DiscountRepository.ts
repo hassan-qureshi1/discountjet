@@ -1,4 +1,6 @@
-import { and, count, eq, isNull } from 'drizzle-orm';
+import {
+  and, count, eq, inArray, isNull,
+} from 'drizzle-orm';
 import { discount } from '../schema';
 import { ShopScopedRepository } from './ShopScopedRepository';
 import type { Db } from './BaseRepository';
@@ -18,6 +20,7 @@ export interface IDiscountRepository extends IShopScopedRepository<DiscountRow, 
   listLiveGids(): Promise<string[]>;
   countUnknownType(): Promise<number>;
   overviewCounts(): Promise<DiscountOverviewCounts>;
+  namesByGids(shopifyGids: string[]): Promise<Map<string, string>>;
 }
 
 /**
@@ -162,5 +165,24 @@ export class DiscountRepository
     });
 
     return counts;
+  }
+
+  /**
+   * Names for a set of Shopify GIDs, for anything that has an id and needs a
+   * label — the dashboard's activity feed, which otherwise shows a merchant
+   * `gid://shopify/DiscountAutomaticNode/1583510651050`.
+   *
+   * Tombstoned rows are INCLUDED on purpose. `tombstoneByGid` sets `deletedAt`
+   * and keeps the row, so a deleted discount still has its name here — and a
+   * delete is the event a merchant most wants named.
+   */
+  async namesByGids(shopifyGids: string[]): Promise<Map<string, string>> {
+    if (shopifyGids.length === 0) return new Map();
+    const rows = await this.db
+      .select({ shopifyGid: discount.shopifyGid, name: discount.name })
+      .from(discount)
+      .where(this.scope(inArray(discount.shopifyGid, shopifyGids)))
+      .all();
+    return new Map(rows.map((r) => [r.shopifyGid, r.name]));
   }
 }

@@ -136,6 +136,13 @@ overviewRoutes.get('/api/overview', async (c) => {
     repos.bundles.listRecentlyScheduled(SCHEDULE_LIMIT),
   ]);
 
+  // One scoped IN lookup turns the ledger's GIDs into names. The feed is the
+  // only place a merchant meets a raw `gid://shopify/DiscountAutomaticNode/…`,
+  // and it told them nothing.
+  const names = await repos.discounts.namesByGids(
+    [...new Set(events.map((e) => e.shopifyGid).filter((gid): gid is string => gid !== null))],
+  );
+
   // The breakdown counts ACTIVE discounts only, so it sums to the number above
   // it. `unknown` is shown only when it is non-zero — a discount this app did
   // not create has no type, and naming that bucket on every shop would read as
@@ -177,11 +184,11 @@ overviewRoutes.get('/api/overview', async (c) => {
 
   const recentActivity: ActivityItem[] = events.map((event) => ({
     id: event.id,
-    // The event ledger stores no title, so the topic is the honest label. A
-    // join back to `discount` would name it, but only while the row still
-    // exists — and a delete event, the one a merchant most wants named, is
-    // exactly when it does not.
-    title: event.shopifyGid ?? event.topic,
+    // The mirror tombstones rather than deletes, so a deleted discount still
+    // has its name — which is why a delete event can be named at all. The
+    // fallback is for an event about a discount this app never mirrored: say
+    // that plainly instead of printing a GID nobody can read.
+    title: (event.shopifyGid ? names.get(event.shopifyGid) : null) ?? 'A discount outside this app',
     action: actionOf(event.topic),
     meta: event.topic,
     at: event.receivedAt,

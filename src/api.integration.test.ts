@@ -5011,6 +5011,43 @@ describe('GET /api/overview', () => {
     expect(body.stats.find((s) => s.label === 'Webhook sync')!.value).toBe('No events yet');
   });
 
+  it('names each activity row from the discount mirror, not the raw GID', async () => {
+    seed({
+      discounts: [discountRow({ id: 'd1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/9', name: 'BFCM 2027' })],
+      events: [eventRow({ id: 'e1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/9' })],
+    });
+
+    const body = (await (await get()).json()) as { recentActivity: Array<{ title: string }> };
+    expect(body.recentActivity[0].title).toBe('BFCM 2027');
+  });
+
+  it('still names a DELETED discount, which is the event most worth naming', async () => {
+    // `tombstoneByGid` sets `deletedAt` and keeps the row, so the name
+    // survives the delete. An earlier version assumed the opposite and
+    // printed a raw gid:// for every row in the feed.
+    seed({
+      discounts: [discountRow({
+        id: 'd1',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/9',
+        name: 'Clearance / RRP markdown',
+        deletedAt: '2026-10-02T09:44:52.000Z',
+      })],
+      events: [eventRow({ id: 'e1', topic: 'discounts/delete', shopifyGid: 'gid://shopify/DiscountAutomaticNode/9' })],
+    });
+
+    const body = (await (await get()).json()) as { recentActivity: Array<{ title: string; action: string }> };
+    expect(body.recentActivity[0].title).toBe('Clearance / RRP markdown');
+    expect(body.recentActivity[0].action).toBe('deleted');
+  });
+
+  it('says so plainly for an event about a discount this app never mirrored', async () => {
+    seed({ events: [eventRow({ id: 'e1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/404' })] });
+
+    const body = (await (await get()).json()) as { recentActivity: Array<{ title: string }> };
+    expect(body.recentActivity[0].title).toBe('A discount outside this app');
+    expect(body.recentActivity[0].title).not.toMatch(/gid:\/\//);
+  });
+
   it('returns the bundle schedule with a readable window', async () => {
     seed({
       bundles: [

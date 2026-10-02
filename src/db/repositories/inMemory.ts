@@ -33,14 +33,16 @@ import type {
   ShopProfileDto,
 } from './ShopRepository';
 import type { ShopInsert } from './ShopRepository';
-import type { IBundleRepository, BundleRow, BundleNew } from './BundleRepository';
+import type { BundleOverviewCounts, IBundleRepository, BundleRow, BundleNew } from './BundleRepository';
 import type {
   IBundleItemRepository,
   BundleItemRow,
   BundleItemNew,
   BundleItemDraft,
 } from './BundleItemRepository';
-import type { IDiscountRepository, DiscountRow, DiscountNew } from './DiscountRepository';
+import type {
+  DiscountOverviewCounts, IDiscountRepository, DiscountRow, DiscountNew,
+} from './DiscountRepository';
 import type {
   IWebhookEventRepository,
   WebhookEventRow,
@@ -243,6 +245,30 @@ export class InMemoryBundleRepository
 {
   protected readonly table = 'bundle';
 
+  async overviewCounts(): Promise<BundleOverviewCounts> {
+    const counts: BundleOverviewCounts = {
+      total: 0,
+      byStatus: {
+        Draft: 0, Scheduled: 0, Active: 0, Ended: 0,
+      },
+      byOperation: { merge: 0, expand: 0, update: 0 },
+    };
+    this.rows.filter((r) => this.inScope(r)).forEach((r) => {
+      counts.total += 1;
+      counts.byStatus[r.status] += 1;
+      counts.byOperation[r.operation] += 1;
+    });
+    return counts;
+  }
+
+  async listRecentlyScheduled(limit: number): Promise<BundleRow[]> {
+    return this.rows
+      .filter((r) => this.inScope(r))
+      .slice()
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+      .slice(0, limit);
+  }
+
   constructor(
     public readonly shopId: string,
     rows: BundleRow[] = [],
@@ -380,6 +406,27 @@ export class InMemoryDiscountRepository
   implements IDiscountRepository
 {
   protected readonly table = 'discount';
+
+  async overviewCounts(): Promise<DiscountOverviewCounts> {
+    const counts: DiscountOverviewCounts = {
+      active: 0,
+      inactive: 0,
+      byType: {
+        tier: 0, bundle: 0, special: 0, unknown: 0,
+      },
+    };
+    this.rows
+      .filter((r) => this.inScope(r) && r.deletedAt === null)
+      .forEach((r) => {
+        if (r.status === 'active') {
+          counts.active += 1;
+          counts.byType[r.type ?? 'unknown'] += 1;
+        } else {
+          counts.inactive += 1;
+        }
+      });
+    return counts;
+  }
 
   constructor(
     public readonly shopId: string,
@@ -613,9 +660,16 @@ export class InMemoryCampaignBundleRepository
   }
 }
 
-/** Outside the generic base, exactly as the real one is — see its class comment. */
 export class InMemoryWebhookEventRepository implements IWebhookEventRepository {
   constructor(public rows: WebhookEventRow[] = []) {}
+
+  async listRecent(shopId: string, limit: number): Promise<WebhookEventRow[]> {
+    return this.rows
+      .filter((r) => r.shopId === shopId)
+      .slice()
+      .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1))
+      .slice(0, limit);
+  }
 
   async deliverySeen(deliveryId: string): Promise<boolean> {
     return this.rows.some((r) => r.id === deliveryId);

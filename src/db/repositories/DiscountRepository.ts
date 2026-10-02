@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import { discount } from '../schema';
 import { ShopScopedRepository } from './ShopScopedRepository';
 import type { Db } from './BaseRepository';
@@ -17,6 +17,22 @@ export interface IDiscountRepository extends IShopScopedRepository<DiscountRow, 
   tombstoneByGid(shopifyGid: string, deletedAt: string): Promise<void>;
   listLiveGids(): Promise<string[]>;
   countUnknownType(): Promise<number>;
+  overviewCounts(): Promise<DiscountOverviewCounts>;
+}
+
+/**
+ * The discount half of the Overview dashboard, as ONE grouped query.
+ *
+ * `byType` counts only ACTIVE rows, because the card's detail line sits under
+ * the active total and a breakdown that summed to a different number than the
+ * figure above it would read as a bug. `unknown` is its own bucket rather than
+ * folded into a type: `discount.type` is nullable for a discount this app did
+ * not create, and silently counting those as `tier` would misreport the shop.
+ */
+export interface DiscountOverviewCounts {
+  active: number;
+  inactive: number;
+  byType: { tier: number; bundle: number; special: number; unknown: number };
 }
 
 /**
@@ -111,5 +127,40 @@ export class DiscountRepository
       .where(this.scope(and(isNull(discount.deletedAt), isNull(discount.type))))
       .all();
     return rows.length;
+  }
+
+  /**
+   * Active/inactive totals plus the active per-type breakdown, in one pass.
+   *
+   * Tombstoned rows are excluded: a deleted discount is gone from Shopify, and
+   * counting it would tell the merchant something is live when nothing is.
+   */
+  async overviewCounts(): Promise<DiscountOverviewCounts> {
+    const rows = await this.db
+      .select({ type: discount.type, status: discount.status, n: count() })
+      .from(discount)
+      .where(this.scope(isNull(discount.deletedAt)))
+      .groupBy(discount.type, discount.status)
+      .all();
+
+    const counts: DiscountOverviewCounts = {
+      active: 0,
+      inactive: 0,
+      byType: { tier: 0, bundle: 0, special: 0, unknown: 0 },
+    };
+
+    rows.forEach((row) => {
+      const n = Number(row.n);
+      if (row.status === 'active') {
+        counts.active += n;
+        const key = row.type ?? 'unknown';
+        counts.byType[key] += n;
+      } else {
+        // A null status is Shopify telling us nothing, which is not active.
+        counts.inactive += n;
+      }
+    });
+
+    return counts;
   }
 }

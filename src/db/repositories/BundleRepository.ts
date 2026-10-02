@@ -1,4 +1,6 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import {
+  and, count, desc, eq, isNull,
+} from 'drizzle-orm';
 import { bundle } from '../schema';
 import { ShopScopedRepository } from './ShopScopedRepository';
 import type { Db } from './BaseRepository';
@@ -16,6 +18,22 @@ export interface IBundleRepository extends IShopScopedRepository<BundleRow, Bund
     metafieldGid: string | null,
   ): Promise<void>;
   capturePreSalePrice(id: string, priceMinor: number): Promise<BundleRow | null>;
+  overviewCounts(): Promise<BundleOverviewCounts>;
+  listRecentlyScheduled(limit: number): Promise<BundleRow[]>;
+}
+
+/**
+ * The bundle half of the Overview dashboard.
+ *
+ * `byOperation` carries `update` even though the picker no longer offers it
+ * (`web/bundles/ops.ts`): existing rows may still hold it, and a dashboard that
+ * counted six bundles while its breakdown summed to five would be wrong in the
+ * one place a merchant goes to be told what is true.
+ */
+export interface BundleOverviewCounts {
+  total: number;
+  byStatus: { Draft: number; Scheduled: number; Active: number; Ended: number };
+  byOperation: { merge: number; expand: number; update: number };
 }
 
 /**
@@ -73,5 +91,50 @@ export class BundleRepository
       .returning()
       .get();
     return (row as BundleRow | undefined) ?? null;
+  }
+
+  /** Status and operation totals for the dashboard, in one grouped query. */
+  async overviewCounts(): Promise<BundleOverviewCounts> {
+    const rows = await this.db
+      .select({ status: bundle.status, operation: bundle.operation, n: count() })
+      .from(bundle)
+      .where(this.scope())
+      .groupBy(bundle.status, bundle.operation)
+      .all();
+
+    const counts: BundleOverviewCounts = {
+      total: 0,
+      byStatus: {
+        Draft: 0, Scheduled: 0, Active: 0, Ended: 0,
+      },
+      byOperation: { merge: 0, expand: 0, update: 0 },
+    };
+
+    rows.forEach((row) => {
+      const n = Number(row.n);
+      counts.total += n;
+      counts.byStatus[row.status] += n;
+      counts.byOperation[row.operation] += n;
+    });
+
+    return counts;
+  }
+
+  /**
+   * The schedule widget's rows: most recently touched first.
+   *
+   * Ordered by `updatedAt` rather than by window, because a bundle with no
+   * window at all is still something the merchant scheduled nothing for and
+   * wants to see — ordering by `scheduleStart` would drop every one of them to
+   * the bottom behind nulls.
+   */
+  async listRecentlyScheduled(limit: number): Promise<BundleRow[]> {
+    return this.db
+      .select()
+      .from(bundle)
+      .where(this.scope())
+      .orderBy(desc(bundle.updatedAt))
+      .limit(limit)
+      .all();
   }
 }

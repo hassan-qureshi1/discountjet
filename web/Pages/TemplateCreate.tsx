@@ -16,6 +16,7 @@ import { TierFields } from '../templates/forms/TierFields';
 import { getMetafieldSizeBytes, type TierFormData } from '../../src/lib/discountEngines/tier';
 import { ScheduleCard } from '../components/ScheduleCard';
 import { toUtcIso } from '../lib/schedule';
+import { ApiError } from '../api';
 
 const MAX_CONFIG_BYTES = 10 * 1024;
 
@@ -34,7 +35,7 @@ export default function TemplateCreate() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useTemplate(slug);
   const template = data?.template;
-  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+  const isNotFound = error instanceof ApiError && error.status === 404;
 
   const [title, setTitle] = useState('');
   // How the discount is triggered. The template decides the ENGINE; this only

@@ -16,6 +16,7 @@ import { DiscountsStep } from '../campaigns/steps/DiscountsStep';
 import { BundlesStep } from '../campaigns/steps/BundlesStep';
 import { ScheduleStep } from '../campaigns/steps/ScheduleStep';
 import { SummaryStep } from '../campaigns/steps/SummaryStep';
+import { ApiError } from '../api';
 
 const STEPS = ['Discounts', 'Bundles', 'Schedule', 'Summary'] as const;
 
@@ -24,7 +25,7 @@ export default function CampaignBuilder() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useCampaign(id);
   const campaign = data?.campaign;
-  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+  const isNotFound = error instanceof ApiError && error.status === 404;
 
   const updateMutation = useUpdateCampaign();
   const [stepIndex, setStepIndex] = useState(0);

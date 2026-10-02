@@ -57,6 +57,7 @@ import { sumItemPrices } from '../bundles/preview';
 import {
   fromUtcIso, toUtcIso,
 } from '../lib/schedule';
+import { ApiError } from '../api';
 
 /** What the editor holds while the merchant is picking. NOT the wire shape:
  *  `price` is a plain number for the live preview only — the server re-resolves
@@ -116,7 +117,7 @@ export default function BundleEditor() {
 
   const { data, isLoading, error } = useBundleQuery(id);
   const bundle = data?.bundle;
-  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+  const isNotFound = error instanceof ApiError && error.status === 404;
 
   // CORRECTED gating: no app-tier concept, only `update` is Plus-gated.
   // Defaults to false while the plan is loading (fail closed).

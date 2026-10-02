@@ -23,6 +23,7 @@ import { CAMPAIGN_STATUS_TONE } from '../campaigns/statusTone';
 import { STATUS_TONE as BUNDLE_STATUS_TONE } from '../bundles/statusTone';
 import { formatWindowLabel } from '../lib/schedule';
 import type { Tone } from '../types/discounts';
+import { ApiError } from '../api';
 
 const PUBLISH_STATE_TONE: Record<CampaignDiscountPublishState, Tone> = {
   pending: 'info',
@@ -35,7 +36,7 @@ export default function CampaignDetail() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useCampaign(id);
   const campaign = data?.campaign;
-  const isNotFound = error ? /failed: 404\b/.test(error.message) : false;
+  const isNotFound = error instanceof ApiError && error.status === 404;
 
   const cloneMutation = useCloneCampaign();
   const deleteMutation = useDeleteCampaign();

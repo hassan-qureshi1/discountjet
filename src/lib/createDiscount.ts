@@ -1,5 +1,6 @@
 import { adminGraphql } from './graphqlAdmin';
 import { getAdapter } from './discountEngines/adapters';
+import { CAMPAIGN_METAFIELD_KEY } from './discountEngines/campaignLock';
 import type { DiscountEngineType } from './discountEngines/adapters';
 import { resolveDiscountFunctionId } from './discountFunctions';
 import type { Env } from '../types/env';
@@ -44,6 +45,21 @@ export interface CreateDiscountRequest {
   startsAt: string;
   endsAt?: string;
   combinesWith?: { orderDiscounts?: boolean; productDiscounts?: boolean; shippingDiscounts?: boolean };
+  /**
+   * The campaign that created this discount, when one did.
+   *
+   * Written as a SEPARATE metafield rather than a field inside the engine
+   * config: that config is deserialised by the deployed Rust functions on
+   * every cart and carries a 10 KB cap, so a key added there risks a function
+   * that prices real carts. A key here cannot — no function reads it.
+   *
+   * Its only consumer is the discount's settings extension in Shopify admin,
+   * which disables its fields when the value is present. A campaign owns its
+   * discounts' configuration for the same reason it owns its bundles'
+   * schedule: editing one half behind the other's back desynchronises them
+   * with nothing in either place saying so.
+   */
+  campaignId?: string;
 }
 
 export type CreateDiscountOutcome =
@@ -131,7 +147,21 @@ export async function createDiscountInShopify(
     startsAt: req.startsAt,
     ...(req.endsAt ? { endsAt: req.endsAt } : {}),
     ...(req.combinesWith ? { combinesWith: req.combinesWith } : {}),
-    metafields: [{ namespace: adapter.namespace, key: adapter.key, type: 'json', value }],
+    metafields: [
+      { namespace: adapter.namespace, key: adapter.key, type: 'json', value },
+      // Same namespace as the engine's own config, so it travels with it and
+      // needs no second reserved prefix; a distinct key so the two never
+      // collide. A bare id, so the honest type is text rather than json —
+      // nothing reading this has to parse to know the discount is owned.
+      ...(req.campaignId
+        ? [{
+          namespace: adapter.namespace,
+          key: CAMPAIGN_METAFIELD_KEY,
+          type: 'single_line_text_field',
+          value: req.campaignId,
+        }]
+        : []),
+    ],
   };
 
   const res = req.method === 'code'

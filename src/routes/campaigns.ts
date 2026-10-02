@@ -497,6 +497,11 @@ campaignRoutes.post('/api/campaigns/:id/publish', async (c) => {
         code: cd.code ?? undefined,
         startsAt,
         ...(endsAt ? { endsAt } : {}),
+        // Stamped onto the discount itself so its settings extension in
+        // Shopify admin can tell it is campaign-owned and lock its fields.
+        // Editing it there would desynchronise the discount from the campaign
+        // that authored it, with nothing in either place saying so.
+        campaignId: id,
       });
 
       if (outcome.ok) {

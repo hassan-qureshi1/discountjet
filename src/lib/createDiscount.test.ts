@@ -70,6 +70,40 @@ describe('createDiscountInShopify', () => {
     expect(input.discountClasses).toEqual(['PRODUCT']);
   });
 
+  it('stamps the owning campaign onto the discount as its own metafield', async () => {
+    mockFunctionsThenCreate('discountAutomaticAppCreate');
+
+    await createDiscountInShopify(ENV, SHOP, {
+      engineType: 'tier', form: TIER_FORM, method: 'automatic',
+      title: 'Spring sale', startsAt: '2026-10-01T00:00:00.000Z',
+      campaignId: 'camp-1',
+    });
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const { metafields } = (variables as { discount: { metafields: Array<Record<string, string>> } }).discount;
+    const campaign = metafields.find((m) => m.key === 'campaign');
+
+    // A SEPARATE metafield, never a key inside the engine config: that config
+    // is read by the deployed Rust functions on every cart.
+    expect(campaign).toMatchObject({ value: 'camp-1', type: 'single_line_text_field' });
+    const config = metafields.find((m) => m.key === 'config');
+    expect(JSON.parse(config!.value)).not.toHaveProperty('campaignId');
+  });
+
+  it('writes no campaign metafield when no campaign created the discount', async () => {
+    mockFunctionsThenCreate('discountAutomaticAppCreate');
+
+    await createDiscountInShopify(ENV, SHOP, {
+      engineType: 'tier', form: TIER_FORM, method: 'automatic',
+      title: 'Spring sale', startsAt: '2026-10-01T00:00:00.000Z',
+    });
+
+    const [, , , variables] = vi.mocked(adminGraphql).mock.calls[1];
+    const { metafields } = (variables as { discount: { metafields: Array<Record<string, string>> } }).discount;
+    // A discount made from the templates page is nobody's to lock.
+    expect(metafields.map((m) => m.key)).toEqual(['config']);
+  });
+
   it('returns a 400 outcome for an invalid form, without calling Shopify', async () => {
     const out = await createDiscountInShopify(ENV, SHOP, {
       engineType: 'tier', form: { ...TIER_FORM, tiers: [] }, method: 'automatic',

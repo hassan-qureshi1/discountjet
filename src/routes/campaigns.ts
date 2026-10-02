@@ -347,9 +347,12 @@ campaignRoutes.put('/api/campaigns/:id', async (c) => {
       if (!Array.isArray(body.bundleIds)) {
         throw new HttpError(400, 'bundleIds must be an array');
       }
-      for (const bundleId of body.bundleIds) {
-        await assertBundleAttachable(repos, bundleId, id, now);
-      }
+      // Selection is deliberately free: a Draft that merely lists a bundle
+      // writes nothing to it, so a bundle another campaign holds cannot be
+      // conflicted with here (a merchant plans next month's sale while this
+      // month's runs). The real refusal lives at publish, where
+      // `assertBundleAttachable` still runs for every bundle, because publish
+      // is the one path that writes the window to the bundle.
     }
   } catch (err) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);

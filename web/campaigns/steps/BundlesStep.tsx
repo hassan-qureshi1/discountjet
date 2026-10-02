@@ -30,7 +30,6 @@ import { useBundlesQuery, useShopPlanQuery, useUpdateBundle } from '../../bundle
 import type { Bundle, BundleInput } from '../../bundles/api';
 import { currencySymbol } from '../../lib/money';
 import { gateOperation, OP_TONE } from '../../bundles/ops';
-import { CAMPAIGN_STATUS_TONE } from '../statusTone';
 import { isCampaignLocking } from '../../../src/lib/campaignStatus';
 import { StatusBadge } from '../../components/StatusBadge';
 
@@ -236,7 +235,11 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
               // every row, so a merchant selecting several bundles in a row had
               // all but the first click swallowed. Each toggle sends the whole
               // set, so a later write simply supersedes an earlier one.
-              const disabled = !canVerifyLocks || ownerLocks || !planGate.enabled;
+              // `ownerLocks` is absent on purpose: ticking a row only lists the
+              // bundle in this Draft and writes nothing to it, so another
+              // campaign holding it is information, not a block. The server
+              // refuses at publish, where the window is actually written.
+              const disabled = !canVerifyLocks || !planGate.enabled;
 
               return (
                 <InlineStack key={bundle.id} align="space-between" blockAlign="center" gap="300">
@@ -264,7 +267,7 @@ export function BundlesStep({ campaign }: { campaign: Campaign }) {
                     {ownerLocks && owner && (
                       <StatusBadge
                         label={`Owned by "${owner.name}" (${owner.status})`}
-                        tone={CAMPAIGN_STATUS_TONE[owner.status]}
+                        tone="info"
                       />
                     )}
                     {!ownerLocks && !planGate.enabled && (

@@ -4261,9 +4261,7 @@ describe('Campaign API', () => {
     expect(res.status).toBe(409);
   });
 
-  // Review Focus #4 — two campaigns authoring one bundle's window means the
-  // last publish silently wins.
-  it('PUT /api/campaigns/:id refuses a bundle a live campaign already owns', async () => {
+  it('lets a Draft select a bundle another campaign owns, because a Draft writes nothing to it', async () => {
     seed({
       campaigns: [
         campaignRow({ id: 'live', status: 'Published', scheduleMode: 'immediate' }),
@@ -4282,8 +4280,9 @@ describe('Campaign API', () => {
       body: JSON.stringify({ bundleIds: ['b1'] }),
     }, env('development'));
 
-    expect(res.status).toBe(409);
-    expect(await res.text()).toMatch(/campaign/i);
+    // Planning next month's campaign while this month's runs is ordinary. The
+    // refusal belongs at publish, which is where the window is written.
+    expect(res.status).toBe(200);
   });
 
   it('PUT allows a bundle whose owning campaign has ENDED', async () => {

@@ -162,6 +162,9 @@ export default function BundleEditor() {
   // bundle product's price alone" — defaulting to 0 would send a real zero and
   // price the bundle free. Merge rejects a blank price with its own message.
   const [priceStr, setPriceStr] = useState('');
+  // Blank means "no stored compare-at" (use the component sum) and is sent as
+  // an explicit null — never coerced to 0, which would strike through £0.00.
+  const [compareAtStr, setCompareAtStr] = useState('');
   const [parentVariantId, setParentVariantId] = useState<string | undefined>(undefined);
   const [parentTitle, setParentTitle] = useState<string | undefined>(undefined);
   const [items, setItems] = useState<DraftItem[]>([]);
@@ -194,6 +197,8 @@ export default function BundleEditor() {
     }
     const bundlePrice = moneyAmount(bundle.price);
     setPriceStr(bundlePrice != null ? String(bundlePrice) : '');
+    const bundleCompareAt = moneyAmount(bundle.compareAtPrice ?? null);
+    setCompareAtStr(bundleCompareAt != null ? String(bundleCompareAt) : '');
     setParentVariantId(bundle.parentVariantId);
     setItems(bundle.items.map((it) => ({
       variantId: it.variantId,
@@ -492,8 +497,22 @@ export default function BundleEditor() {
     return 'Active';
   })();
 
+  /**
+   * What `compareAtPrice` to put on the wire (expand only): a number sets it,
+   * blank sends an explicit null to clear it, and a locked field sends nothing
+   * so the stored value is left untouched while a campaign owns the pricing.
+   */
+  const compareAtSent = (): number | null | undefined => {
+    if (operation !== 'expand' || scheduleLocked) return undefined;
+    const trimmed = compareAtStr.trim();
+    if (trimmed === '') return null;
+    const parsed = parseFloat(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
   const buildInput = (nextStatus: BundleStatus): BundleInput => {
     const trimmedName = name.trim();
+    const compareAt = compareAtSent();
     if (operation === 'update') {
       const overrideItem: BundleItemInput | undefined = parentVariantId
         ? {
@@ -531,6 +550,7 @@ export default function BundleEditor() {
       // "leave the line at whatever the bundle product costs" — so an empty
       // field sends nothing rather than a zero, which would read as free.
       price: priceSentForOperation(operation, priceStr, priceNum),
+      ...(compareAt !== undefined ? { compareAtPrice: compareAt } : {}),
       status: nextStatus,
       scheduleStart,
       scheduleEnd,
@@ -900,6 +920,32 @@ export default function BundleEditor() {
                   helpText="Must be below the bundle product's own price."
                   comparison={showMoney(sumOfItems)}
                   saving={hasExpandPrice && save != null && save > 0 ? showMoney(save) : null}
+                  disabled={scheduleLocked}
+                  footer={(
+                    <>
+                      {scheduleLocked && owningCampaign && (
+                        <Banner tone="info" title="This bundle's pricing is controlled by a campaign">
+                          <p>
+                            {'The campaign '}
+                            <Link url={`/campaigns/${owningCampaign.id}`}>{owningCampaign.name}</Link>
+                            {` sets the price and compare-at price for its window, so both are read-only while that campaign is ${owningCampaign.status}.`}
+                          </p>
+                        </Banner>
+                      )}
+                      <TextField
+                        label="Compare-at price"
+                        type="number"
+                        prefix={moneyPrefix}
+                        value={compareAtStr}
+                        onChange={setCompareAtStr}
+                        autoComplete="off"
+                        min={0}
+                        disabled={scheduleLocked}
+                        placeholder={sumOfItems != null ? sumOfItems.toFixed(2) : undefined}
+                        helpText="What the components cost separately. Shown struck through on the product page. Leave blank to use the sum of the components."
+                      />
+                    </>
+                  )}
                 />
                 <VariantSelectCard
                   title="Parent product"

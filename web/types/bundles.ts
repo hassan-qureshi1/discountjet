@@ -26,6 +26,9 @@ export interface Bundle {
   items: BundleItem[];
   parentVariantId?: string;
   price: MoneyV2 | null;
+  /** Absent when none is stored — null means "use the component sum", and a
+   * zero would read as "compare-at is free". */
+  compareAtPrice?: MoneyV2;
   sumOfItems: MoneyV2 | null;
   status: BundleStatus;
   scheduleStart: string | null;

@@ -96,6 +96,8 @@ const bundleRow = (overrides: Partial<BundleRow> = {}): BundleRow => ({
   operation: 'merge',
   parentVariantId: null,
   price: 2999, // minor units => $29.99
+  compareAtPrice: null,
+  preSalePrice: null,
   metafieldState: 'NotYet',
   metafieldGid: null,
   scheduleStart: null,
@@ -672,6 +674,43 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     });
   });
 
+  it('stores compareAtPrice in minor units and returns it as money', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
+    // The create re-resolves the items and the parent from Shopify, then writes
+    // the composition metafield; an expand price must sit below the parent's own.
+    mockVariantResolution([
+      variantNode({ id: 'gid://shopify/ProductVariant/2', price: '15.00' }),
+      variantNode({ id: 'gid://shopify/ProductVariant/1', price: '40.00' }),
+    ]);
+    vi.mocked(adminGraphql).mockResolvedValueOnce({
+      data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/1' }], userErrors: [] } },
+    });
+
+    const res = await app.request('/api/bundles', {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kit', operation: 'expand', price: 27.9, compareAtPrice: 31,
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        items: [{ variantId: 'gid://shopify/ProductVariant/2', qty: 1 }],
+      }),
+    }, env('development'));
+
+    expect(res.status).toBe(201);
+    expect(repos.bundles.rows[0]).toMatchObject({ compareAtPrice: 3100 });
+    const json = (await res.json()) as { bundle: { compareAtPrice?: { amount: string } } };
+    expect(json.bundle.compareAtPrice?.amount).toBe('31.00');
+  });
+
+  it('omits compareAtPrice when the merchant set none, rather than inventing one', async () => {
+    seed({ bundles: [bundleRow({ compareAtPrice: null })] });
+
+    const res = await app.request('/api/bundles', { headers: { 'x-shop-domain': 'mystore.myshopify.com' } }, env('development'));
+
+    const json = (await res.json()) as { bundles: Array<Record<string, unknown>> };
+    expect(json.bundles[0]).not.toHaveProperty('compareAtPrice');
+  });
+
   it('POST /api/bundles returns 400 with a JSON error when name is missing', async () => {
     seed();
 
@@ -740,6 +779,67 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     expect(json.bundle.price).toEqual({ amount: '19.99', currencyCode: 'USD' });
     expect(json.bundle.updated).toBe('Just now');
     expect(repos.bundles.rows[0].price).toBe(1999); // persisted in minor units
+  });
+
+  const putBundle = (body: unknown) => app.request('/api/bundles/bundle-1', {
+    method: 'PUT',
+    headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }, env('development'));
+
+  it('PUT /api/bundles/:id clears compareAtPrice on an explicit null', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ compareAtPrice: null });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBeNull();
+    const json = (await res.json()) as { bundle: Record<string, unknown> };
+    expect(json.bundle).not.toHaveProperty('compareAtPrice');
+  });
+
+  it('PUT /api/bundles/:id leaves compareAtPrice alone when the key is absent', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ price: 19.99 });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('PUT /api/bundles/:id sets compareAtPrice in minor units', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: null })] });
+
+    const res = await putBundle({ compareAtPrice: 31 });
+
+    expect(res.status).toBe(200);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('PUT /api/bundles/:id rejects a negative compareAtPrice with a 400 and writes nothing', async () => {
+    const repos = seed({ bundles: [bundleRow({ operation: 'update', compareAtPrice: 3100 })] });
+
+    const res = await putBundle({ compareAtPrice: -1 });
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows[0].compareAtPrice).toBe(3100);
+  });
+
+  it('POST /api/bundles rejects a negative compareAtPrice with a 400 and creates nothing', async () => {
+    const repos = seed({ shops: [shopRow({ ...SHOP })] });
+
+    const res = await app.request('/api/bundles', {
+      method: 'POST',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Kit', operation: 'expand', compareAtPrice: -5,
+        parentVariantId: 'gid://shopify/ProductVariant/1',
+        items: [{ variantId: 'gid://shopify/ProductVariant/2', qty: 1 }],
+      }),
+    }, env('development'));
+
+    expect(res.status).toBe(400);
+    expect(repos.bundles.rows).toHaveLength(0);
   });
 
   it('PUT /api/bundles/:id returns 404 for missing/other-shop bundle', async () => {
@@ -2642,6 +2742,182 @@ describe('Bundle CRUD API (protected by requireShop)', () => {
     const { error } = (await res.json()) as { error: string };
     expect(error).toContain('15.00');
     expect(repos.bundles.rows).toHaveLength(0);
+  });
+
+  // Review Focus #5
+  describe('PUT an expand bundle against its parent price', () => {
+    const PARENT = 'gid://shopify/ProductVariant/999';
+    const putPrice = (body: unknown) => app.request('/api/bundles/bundle-1', {
+      method: 'PUT',
+      headers: { 'x-shop-domain': 'mystore.myshopify.com', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }, env('development'));
+    const expandRow = (preSalePrice: number | null) => bundleRow({
+      id: 'bundle-1',
+      operation: 'expand',
+      parentVariantId: PARENT,
+      price: 2790,
+      preSalePrice,
+      status: 'Active',
+    });
+
+    it('allows saving while its own sale has lowered the parent price', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      // The parent's LIVE price is the sale price, because the sale set it.
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ name: 'Renamed', price: 27.9 });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('still rejects a price at or above the parent when NOT on sale', async () => {
+      seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+
+      const res = await putPrice({ price: 27.9 });
+
+      expect(res.status).toBe(400);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('less than the bundle product');
+      expect(error).toContain('27.90');
+    });
+
+    // A price edit during a sale no longer reaches the price comparison at all:
+    // the sale lock below refuses it first, because the campaign owns the price
+    // for the duration of its window. The comparison against the PRE-SALE price
+    // still matters for a PUT that does NOT touch the price (the test above),
+    // where the live parent price is the sale price the cron itself wrote.
+    it('refuses a price edit during a sale before comparing it to anything', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await putPrice({ price: 31 });
+
+      expect(res.status).toBe(409);
+      // No Admin round-trip was needed to say no.
+      expect(vi.mocked(adminGraphql)).not.toHaveBeenCalled();
+    });
+
+    it('409s a parentVariantId change while a sale is in force and writes nothing', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await putPrice({ parentVariantId: 'gid://shopify/ProductVariant/1000' });
+
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('parent product cannot be changed while its sale is running');
+      expect(repos.bundles.rows[0].parentVariantId).toBe(PARENT);
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    // THE SALE LOCK. Each of these is an ordinary merchant action that, before
+    // the guard, left `pre_sale_price` holding the only copy of the real price
+    // on a row no scan would ever reach again.
+    const expectSaleLock = async (res: Response, what: RegExp) => {
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toMatch(what);
+      expect(error).toContain('Wait for the sale window to close');
+    };
+
+    it('409s deactivating to Draft while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ status: 'Draft' }), /status/);
+      expect(repos.bundles.rows[0].status).toBe('Active');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s clearing the end date while a sale is in force', async () => {
+      const repos = seed({
+        bundles: [{ ...expandRow(3100), scheduleEnd: '2026-12-01T00:00:00.000Z' }],
+        bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })],
+      });
+
+      await expectSaleLock(await putPrice({ scheduleEnd: null }), /end date/);
+      expect(repos.bundles.rows[0].scheduleEnd).toBe('2026-12-01T00:00:00.000Z');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s changing the operation away from expand while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ operation: 'merge', price: 27.9 }), /type/);
+      expect(repos.bundles.rows[0].operation).toBe('expand');
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('409s a price edit while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ price: 25 }), /price/);
+      expect(repos.bundles.rows[0].price).toBe(2790);
+    });
+
+    it('409s a compare-at price edit while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      await expectSaleLock(await putPrice({ compareAtPrice: 40 }), /compare-at price/);
+      expect(repos.bundles.rows[0].compareAtPrice).toBeNull();
+    });
+
+    it('refuses to DELETE a bundle while a sale is in force', async () => {
+      const repos = seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await app.request('/api/bundles/bundle-1', {
+        method: 'DELETE',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+      }, env('development'));
+
+      expect(res.status).toBe(409);
+      const { error } = (await res.json()) as { error: string };
+      expect(error).toContain('cannot be deleted while its sale is running');
+      // The row — and with it the only copy of the real price — is still there.
+      expect(repos.bundles.rows).toHaveLength(1);
+      expect(repos.bundles.rows[0].preSalePrice).toBe(3100);
+    });
+
+    it('still deletes a bundle that is not on sale', async () => {
+      const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+
+      const res = await app.request('/api/bundles/bundle-1', {
+        method: 'DELETE',
+        headers: { 'x-shop-domain': 'mystore.myshopify.com' },
+      }, env('development'));
+
+      expect(res.status).toBe(200);
+      expect(repos.bundles.rows).toHaveLength(0);
+    });
+
+    it('allows a parentVariantId change when no sale is in force', async () => {
+      const NEW_PARENT = 'gid://shopify/ProductVariant/1000';
+      const repos = seed({ bundles: [expandRow(null)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(NEW_PARENT), price: '31.00' }]);
+      // Naming the parent counts as a composition input, so the live bundle's
+      // composition is re-written through the Admin API.
+      vi.mocked(adminGraphql).mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+      const res = await putPrice({ parentVariantId: NEW_PARENT });
+
+      expect(res.status).toBe(200);
+      expect(repos.bundles.rows[0].parentVariantId).toBe(NEW_PARENT);
+    });
+
+    it('accepts a PUT re-sending the same parentVariantId during a sale', async () => {
+      seed({ bundles: [expandRow(3100)], bundleItems: [bundleItemRow({ bundleId: 'bundle-1' })] });
+      mockVariantResolution([{ ...parentNode(PARENT), price: '27.90' }]);
+      // Naming the parent counts as a composition input, so the live bundle's
+      // composition is re-written through the Admin API.
+      vi.mocked(adminGraphql).mockResolvedValueOnce({
+        data: { metafieldsSet: { metafields: [{ id: 'gid://shopify/Metafield/2' }], userErrors: [] } },
+      });
+
+      const res = await putPrice({ parentVariantId: PARENT, name: 'Renamed' });
+
+      expect(res.status).toBe(200);
+    });
   });
 
   // ─── merge price sanity ────────────────────────────────────────────────────

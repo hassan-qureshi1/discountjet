@@ -53,6 +53,8 @@ interface BundleInput {
   items: BundleItemInput[];
   parentVariantId?: string;
   price?: number; // dollars (major units)
+  /** Dollars (major units), like `price`. On PUT, `null` clears it; an absent key leaves it. */
+  compareAtPrice?: number | null;
   status?: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   /** UTC ISO-8601, or null for "no bound". Normalized server-side. */
   scheduleStart?: string | null;
@@ -75,6 +77,8 @@ interface BundleDto {
   items: BundleItemDto[];
   parentVariantId?: string;
   price: MoneyV2 | null;
+  /** Absent when unset: the component sum is the fallback, so a 0 would read as free. */
+  compareAtPrice?: MoneyV2;
   sumOfItems: MoneyV2 | null;
   status: 'Active' | 'Scheduled' | 'Ended' | 'Draft';
   scheduleStart: string | null;
@@ -218,6 +222,9 @@ function toDto(
     items: items.map((item) => toItemDto(item, currency)),
     ...(row.parentVariantId ? { parentVariantId: row.parentVariantId } : {}),
     price: toMoney(row.price, currency),
+    ...(row.compareAtPrice !== null
+      ? { compareAtPrice: toMoney(row.compareAtPrice, currency)! }
+      : {}),
     sumOfItems: toMoney(sumOfItems, currency),
     status: row.status,
     scheduleStart: row.scheduleStart,
@@ -228,6 +235,19 @@ function toDto(
     updated: relativeTime(row.updatedAt),
     ...(row.campaignId ? { campaignId: row.campaignId } : {}),
   };
+}
+
+/**
+ * Boundary check for `compareAtPrice`: absent or null is fine (component sum),
+ * anything else must be a finite, non-negative number. Deliberately NOT
+ * compared against `price` — Shopify enforces its own constraints.
+ */
+function compareAtPriceError(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return 'compareAtPrice must be a non-negative number.';
+  }
+  return null;
 }
 
 /** Lets `verifyItems` fail with a status without every caller re-checking. */
@@ -341,14 +361,27 @@ function assertExpandPriceBelowParent(
   priceMinor: number,
   parent: ResolvedVariant | undefined,
   currency: string,
+  preSalePrice: number | null,
 ): void {
-  // No live parent price to compare against: the target variant check has
-  // already run, so this is a resolve that returned no price rather than a
-  // deleted variant. Let the save through rather than block on a comparison
-  // we cannot make.
-  if (parent?.price === undefined) return;
-
-  const parentMinor = toMinorUnits(parent.price, currency);
+  // Which parent price is the honest basis depends on whether a sale is in
+  // force. `preSalePrice` is non-null exactly while the schedule pass has
+  // lowered the parent's live price to this bundle's price. Compared against
+  // that live price the bundle would always be "equal to its parent" and every
+  // save would be refused because of our own sale. The pre-sale price is what
+  // the parent costs normally and what it costs again when the window closes,
+  // so it is the price the bundle actually has to undercut. With no sale in
+  // force the live price IS the normal price, and the check is unchanged.
+  let parentMinor: number;
+  if (preSalePrice !== null) {
+    parentMinor = preSalePrice;
+  } else {
+    // No live parent price to compare against: the target variant check has
+    // already run, so this is a resolve that returned no price rather than a
+    // deleted variant. Let the save through rather than block on a comparison
+    // we cannot make.
+    if (parent?.price === undefined) return;
+    parentMinor = toMinorUnits(parent.price, currency);
+  }
   if (priceMinor < parentMinor) return;
 
   const asked = toMoney(priceMinor, currency)!.amount;
@@ -702,6 +735,9 @@ bundleRoutes.post('/api/bundles', async (c) => {
     return c.json({ error: 'Bundle items must be an array.' }, 400);
   }
 
+  const compareAtError = compareAtPriceError(body.compareAtPrice);
+  if (compareAtError) return c.json({ error: compareAtError }, 400);
+
   // An expand bundle with zero items would write `bundle.composition_v2 =
   // "[]"` below — the Rust cart-transform function treats an empty
   // composition as a hard error and aborts the whole cart-transform
@@ -777,7 +813,7 @@ bundleRoutes.post('/api/bundles', async (c) => {
       if (body.operation === 'merge') {
         assertPriceBelowComponents(priceMinor, drafts, currency);
       } else if (body.operation === 'expand' && parentVariantId !== undefined) {
-        assertExpandPriceBelowParent(priceMinor, verified.resolved.get(parentVariantId), currency);
+        assertExpandPriceBelowParent(priceMinor, verified.resolved.get(parentVariantId), currency, null);
       }
     }
   } catch (err) {
@@ -800,6 +836,9 @@ bundleRoutes.post('/api/bundles', async (c) => {
     operation: body.operation,
     parentVariantId: body.parentVariantId ?? null,
     price: body.price === undefined ? null : toMinorUnits(body.price, currency),
+    compareAtPrice: body.compareAtPrice == null
+      ? null
+      : toMinorUnits(body.compareAtPrice, currency),
     metafieldState: 'NotYet',
     metafieldGid: null,
     scheduleStart: schedule.scheduleStart,
@@ -890,6 +929,35 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     );
   }
 
+  // THE SALE LOCK, in one sentence: while a sale is in force, nothing that
+  // would take the bundle out of the restore path is allowed.
+  //
+  // `preSalePrice` non-null means the cron has overwritten this variant's real
+  // price and is holding the original. That original is given back by exactly
+  // one mechanism — the cron seeing the bundle and deciding `restore` — so any
+  // edit that changes what the restore would target, or what it would write,
+  // is refused with a 409 until the sale is over. The guards below are each an
+  // instance of that one rule; only an actual CHANGE is refused, so a PUT that
+  // re-sends what is already stored is a no-op.
+  //
+  // The parent: `preSalePrice` is the CURRENT parent's real price. Letting the
+  // parent change would strand the old variant on its sale price (the restore
+  // no longer targets it) and write its price onto the new one, overwriting an
+  // unrelated product.
+  if (
+    existing.preSalePrice !== null
+    && body.parentVariantId !== undefined
+    && body.parentVariantId !== existing.parentVariantId
+  ) {
+    return c.json(
+      {
+        error: 'This bundle\'s parent product cannot be changed while its sale is running. '
+          + 'Wait for the sale window to close, or end the campaign, and then change it.',
+      },
+      409,
+    );
+  }
+
   // ONE predicate for "this PUT replaces the components", used by the fallback
   // below AND by the re-resolution gate further down. They used to be spelled
   // differently (`body.items ?? …` vs `body.items !== undefined`), and
@@ -907,8 +975,58 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
     return c.json({ error: 'Bundle items must be an array. Omit `items` to leave them unchanged.' }, 400);
   }
 
+  const compareAtError = compareAtPriceError(body.compareAtPrice);
+  if (compareAtError) return c.json({ error: compareAtError }, 400);
+
   const currency = await shopCurrency(c);
   const existingItems = await bundleItems.listForBundle(id);
+
+  // The rest of the sale lock (see the parent guard above for the rule).
+  if (existing.preSalePrice !== null) {
+    const saleLockError = (what: string) =>
+      c.json(
+        {
+          error: `This bundle's ${what} cannot be changed while its sale is running. `
+            + 'Wait for the sale window to close, or end the campaign, and then change it.',
+        },
+        409,
+      );
+
+    // Deactivating. A `Draft` row is the merchant's manual off-switch, which
+    // the cron never schedules over — the sale price would simply stay on the
+    // product with the original held in a row nothing looks at again.
+    if (body.status === 'Draft' && existing.status !== 'Draft') {
+      return saleLockError('status');
+    }
+
+    // Clearing the end date. "No end" is what the cron refuses to start a sale
+    // on in the first place, because there is then no moment at which it hands
+    // the price back.
+    if (body.scheduleEnd === null && existing.scheduleEnd !== null) {
+      return saleLockError('end date');
+    }
+
+    // Leaving `expand`. Sale pricing is expand-only — an `update` or `merge`
+    // bundle is never considered for it — so this is the same stranding by
+    // another door.
+    if (body.operation !== undefined && body.operation !== existing.operation) {
+      return saleLockError('type');
+    }
+
+    // The prices themselves. The campaign owns both for the duration of the
+    // window: `price` is what is live on the variant right now, and
+    // `compareAtPrice` is the strikethrough beside it, so an edit here would
+    // be overwritten by the next pass at best and silently fight the restore
+    // at worst. The editor shows both as read-only for this reason; this is
+    // the same rule at the authority.
+    if (body.price !== undefined && toMinorUnits(body.price, currency) !== existing.price) {
+      return saleLockError('price');
+    }
+    if (body.compareAtPrice !== undefined) {
+      const next = body.compareAtPrice === null ? null : toMinorUnits(body.compareAtPrice, currency);
+      if (next !== existing.compareAtPrice) return saleLockError('compare-at price');
+    }
+  }
 
   // Effective operation/items after this PUT is applied — reject before any
   // write if the result would be an expand bundle with zero items (see the
@@ -987,8 +1105,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   // `findLockingCampaign` is shared with `src/routes/campaigns.ts` rather than
   // re-implemented, and `isCampaignLocking` stays the one predicate behind it.
   //
-  // Only a CHANGE to a bound is refused: a rename or a price edit on an owned
-  // bundle is none of the campaign's business.
+  // Only a CHANGE to a bound is refused: a rename on an owned bundle is none
+  // of the campaign's business. A PRICE edit is, but only while the campaign's
+  // sale is actually in force — that is the sale lock above, which keys off
+  // `preSalePrice` (the live overwrite) rather than off ownership, so an owned
+  // bundle that is not currently on sale can still be repriced.
   if (
     schedule.scheduleStart !== existing.scheduleStart
     || schedule.scheduleEnd !== existing.scheduleEnd
@@ -1017,6 +1138,11 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
   if (body.operation !== undefined) patch.operation = body.operation;
   if (body.parentVariantId !== undefined) patch.parentVariantId = body.parentVariantId;
   if (body.price !== undefined) patch.price = toMinorUnits(body.price, currency);
+  // `null` clears the override (back to the component sum); an absent key is
+  // a different intent and leaves the column alone.
+  if (body.compareAtPrice !== undefined) {
+    patch.compareAtPrice = body.compareAtPrice === null ? null : toMinorUnits(body.compareAtPrice, currency);
+  }
   patch.status = schedule.status;
   patch.scheduleStart = schedule.scheduleStart;
   patch.scheduleEnd = schedule.scheduleEnd;
@@ -1093,7 +1219,7 @@ bundleRoutes.put('/api/bundles/:id', async (c) => {
       if (effectiveOperation === 'merge') {
         assertPriceBelowComponents(effectivePriceMinor, drafts ?? existingItems, currency);
       } else if (effectiveOperation === 'expand') {
-        assertExpandPriceBelowParent(effectivePriceMinor, resolvedParent, currency);
+        assertExpandPriceBelowParent(effectivePriceMinor, resolvedParent, currency, existing.preSalePrice);
       }
     }
   } catch (err) {
@@ -1310,6 +1436,23 @@ bundleRoutes.delete('/api/bundles/:id', async (c) => {
 
   const existing = await bundleRepo.findById(id);
   if (!existing) return c.json({ error: 'Bundle not found' }, 404);
+
+  // The sale lock, same rule as the PUT guards: `preSalePrice` is the only
+  // copy of this variant's real price, and deleting the row destroys it — the
+  // product would stay at its sale price forever with nothing left to restore
+  // from. Refused until the sale is over, not deferred: restoring from here
+  // would mean an Admin write on the way out of a handler whose whole job is
+  // to remove state, and a failure would leave neither the row nor the price.
+  if (existing.preSalePrice !== null) {
+    return c.json(
+      {
+        error: 'This bundle cannot be deleted while its sale is running, because it is holding '
+          + 'the product\'s original price. Wait for the sale window to close, or end the '
+          + 'campaign, and then delete it.',
+      },
+      409,
+    );
+  }
 
   // Best-effort: clearing the metafield is not fatal to the delete — the
   // row is going away regardless, and a stale composition_v2/merge_bundles

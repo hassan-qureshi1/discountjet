@@ -11,10 +11,43 @@ function scanner(rowsFor: Parameters<typeof createFakeD1>[0] = () => []) {
 }
 
 describe('DueBundleScanner', () => {
-  it('issues one activation scan and one deactivation scan', async () => {
+  it('issues an activation scan, a deactivation scan and the capture sweep', async () => {
     const { fake, scanner: s } = scanner();
     await s.findDue(NOW);
-    expect(fake.queries).toHaveLength(2);
+    expect(fake.queries).toHaveLength(3);
+  });
+
+  // The safety net. A guard stops the next stranding; this is what reaches a
+  // row that is already stranded, or stranded by a path nobody thought of.
+  it('selects every row still holding a pre-sale capture, whatever its window', async () => {
+    const { fake, scanner: s } = scanner();
+    await s.findDue(NOW);
+
+    const sweep = fake.queries[2];
+    expect(sweep.sql).toMatch(/"pre_sale_price" is not null/i);
+    // No status, no window: that is the whole point of this one.
+    expect(sweep.sql).not.toMatch(/"status"/i);
+    expect(sweep.params).toEqual([]);
+  });
+
+  it('hands a capture-holding row to the cron, advisory `to` and all', async () => {
+    const { scanner: s } = scanner((q) =>
+      (q.params.length === 0 ? [{ shop_id: 'shop-a', id: 'stranded' }] : []));
+
+    await expect(s.findDue(NOW)).resolves.toEqual([
+      { shopId: 'shop-a', bundleId: 'stranded', to: 'Ended' },
+    ]);
+  });
+
+  it('never returns the same bundle twice when both a window scan and the sweep find it', async () => {
+    const { scanner: s } = scanner((q) =>
+      (q.params[0] === 'Scheduled' ? [{ shop_id: 'shop-a', id: 'b1' }] : []).concat(
+        q.params.length === 0 ? [{ shop_id: 'shop-a', id: 'b1' }] : [],
+      ));
+
+    await expect(s.findDue(NOW)).resolves.toEqual([
+      { shopId: 'shop-a', bundleId: 'b1', to: 'Active' },
+    ]);
   });
 
   it('selects Scheduled rows whose start has arrived', async () => {

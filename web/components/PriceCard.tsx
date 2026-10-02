@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import {
   Badge, BlockStack, Card, InlineGrid, InlineStack, Text, TextField,
 } from '@shopify/polaris';
@@ -31,6 +32,11 @@ export interface PriceCardProps {
    * has no saving to claim — so the caller decides and this card only renders.
    */
   saving?: string | null;
+
+  /** Disables the price input. */
+  disabled?: boolean;
+  /** Extra content rendered under the price row, inside the same card. */
+  footer?: ReactNode;
 }
 
 /**
@@ -51,6 +57,8 @@ export function PriceCard({
   comparison,
   comparisonLabel = 'Sum of items',
   saving = null,
+  disabled,
+  footer,
 }: PriceCardProps) {
   return (
     <Card>
@@ -71,6 +79,7 @@ export function PriceCard({
             min={0}
             placeholder={placeholder}
             helpText={helpText}
+            disabled={disabled}
           />
           <BlockStack gap="100">
             <Text as="span" variant="bodyMd">{comparisonLabel}</Text>
@@ -82,6 +91,7 @@ export function PriceCard({
             </InlineStack>
           </BlockStack>
         </InlineGrid>
+        {footer}
       </BlockStack>
     </Card>
   );

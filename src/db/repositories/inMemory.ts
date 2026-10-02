@@ -255,10 +255,22 @@ export class InMemoryBundleRepository
     return row.shopId === this.shopId;
   }
 
+  /** Conditional capture — see `BundleRepository.capturePreSalePrice`. */
+  async capturePreSalePrice(id: string, priceMinor: number): Promise<BundleRow | null> {
+    const i = this.rows.findIndex(
+      (r) => r.id === id && this.inScope(r) && r.preSalePrice === null,
+    );
+    if (i === -1) return null;
+    this.rows[i] = { ...this.rows[i], preSalePrice: priceMinor, updatedAt: new Date().toISOString() };
+    return { ...this.rows[i] };
+  }
+
   protected materialize(data: NewRow<BundleNew>, id: string, now: string): BundleRow {
     return {
       parentVariantId: null,
       price: null,
+      compareAtPrice: null,
+      preSalePrice: null,
       metafieldState: 'NotYet',
       metafieldGid: null,
       scheduleStart: null,
@@ -681,11 +693,21 @@ export class InMemoryDueBundleScanner implements IDueBundleScanner {
 
   async findDue(now: string): Promise<DueBundle[]> {
     const due: DueBundle[] = [];
+    const seen = new Set<string>();
     for (const r of this.rows) {
       if (r.status === 'Scheduled' && r.scheduleStart !== null && r.scheduleStart <= now) {
         due.push({ shopId: r.shopId, bundleId: r.id, to: 'Active' });
+        seen.add(r.id);
       } else if (r.status === 'Active' && r.scheduleEnd !== null && r.scheduleEnd <= now) {
         due.push({ shopId: r.shopId, bundleId: r.id, to: 'Ended' });
+        seen.add(r.id);
+      }
+    }
+    // The safety net — see `DueBundleScanner.findDue`.
+    for (const r of this.rows) {
+      if (r.preSalePrice !== null && !seen.has(r.id)) {
+        due.push({ shopId: r.shopId, bundleId: r.id, to: 'Ended' });
+        seen.add(r.id);
       }
     }
     return due;

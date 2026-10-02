@@ -108,6 +108,31 @@ export const bundle = sqliteTable(
 
     parentVariantId: text('parent_variant_id'),
     price: integer('price'), // minor units
+    /**
+     * What to publish as the parent variant's `compareAtPrice`, in minor
+     * units. Null means "use the sum of the components", so an existing
+     * bundle needs no backfill and a merchant who never touches this field
+     * still gets an honest strikethrough.
+     */
+    compareAtPrice: integer('compare_at_price'),
+    /**
+     * The parent variant's own price, captured immediately BEFORE the first
+     * sale write, in minor units. This column is the entire restore
+     * guarantee, and the only place in this app that holds merchant data we
+     * are about to overwrite:
+     *
+     *  - written ONCE, immediately before the sale price is applied, and
+     *    never while already non-null — otherwise a second activation pass
+     *    would capture the SALE price as if it were the original and the real
+     *    price would be gone. This is ENFORCED, not merely intended: the only
+     *    writer is `BundleRepository.capturePreSalePrice`, a conditional
+     *    UPDATE whose `where` includes `pre_sale_price is null`;
+     *  - cleared ONLY after Shopify confirms the restore, so a rejected
+     *    restore leaves the row visibly mid-sale for the next pass to retry;
+     *  - the signal for "this bundle is on sale", independent of campaign
+     *    status, so a bundle restores even if its campaign was deleted.
+     */
+    preSalePrice: integer('pre_sale_price'),
 
     metafieldState: text('metafield_state', { enum: ['NotYet', 'Written', 'Cleared'] })
       .notNull()

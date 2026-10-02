@@ -50,6 +50,7 @@ import type {
   CampaignRow,
   CampaignDiscountRow,
   CampaignBundleRow,
+  WebhookEventRow,
 } from './db/repositories';
 import { adminGraphql } from './lib/graphqlAdmin';
 import { ensureCartTransform } from './lib/cartTransformRegistration';
@@ -72,6 +73,7 @@ function seed(rows: {
   campaigns?: CampaignRow[];
   campaignDiscounts?: CampaignDiscountRow[];
   campaignBundles?: CampaignBundleRow[];
+  events?: WebhookEventRow[];
 } = {}): InMemoryRepositories {
   const repos = createInMemoryRepositories(SHOP.id, {
     // Plus by default: most tests here are not about plan gating, and several
@@ -4937,5 +4939,136 @@ describe('Campaign API', () => {
     expect(repos.campaignDiscounts.rows.find((r) => r.id === 'cd1')).toMatchObject({
       publishState: 'created', shopifyGid: 'gid://shopify/DiscountAutomaticNode/1',
     });
+  });
+});
+
+describe('GET /api/overview', () => {
+  const eventRow = (over: Partial<WebhookEventRow> = {}): WebhookEventRow => ({
+    id: 'evt-1',
+    topic: 'discounts/update',
+    shopId: SHOP.id,
+    shopifyGid: 'gid://shopify/DiscountNode/1',
+    receivedAt: '2026-10-02T12:00:00.000Z',
+    ...over,
+  });
+
+  const get = () => app.request(
+    '/api/overview',
+    { headers: { 'x-shop-domain': 'mystore.myshopify.com' } },
+    env('development'),
+  );
+
+  it('counts only ACTIVE discounts in the breakdown, so it sums to the number above it', async () => {
+    seed({
+      discounts: [
+        discountRow({ id: 'd1', status: 'active', type: 'tier' }),
+        discountRow({ id: 'd2', status: 'active', type: 'bundle' }),
+        discountRow({ id: 'd3', status: 'inactive', type: 'tier' }),
+      ],
+    });
+
+    const res = await get();
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { stats: Array<{ label: string; value: string; detail: string; badges: Array<{ label: string }> }> };
+    const card = body.stats.find((s) => s.label === 'Active discounts')!;
+
+    expect(card.value).toBe('2');
+    // 1 + 1 + 0 = 2, the figure above it. Counting the inactive tier here
+    // would make the detail line contradict the headline.
+    expect(card.detail).toBe('1 tier · 1 bundle · 0 special');
+    expect(card.badges[0].label).toBe('1 inactive');
+  });
+
+  it('excludes tombstoned discounts, which no longer exist in Shopify', async () => {
+    seed({
+      discounts: [
+        discountRow({ id: 'd1', status: 'active' }),
+        discountRow({ id: 'd2', status: 'active', deletedAt: '2026-10-01T00:00:00.000Z' }),
+      ],
+    });
+
+    const body = (await (await get()).json()) as { stats: Array<{ label: string; value: string }> };
+    expect(body.stats.find((s) => s.label === 'Active discounts')!.value).toBe('1');
+  });
+
+  it('reports last contact rather than inventing a health verdict', async () => {
+    // `webhook_event` has no processed flag and no error column, so "Healthy"
+    // could only be guessed from recency — and these webhooks only fire when a
+    // discount changes, so a quiet shop is not a broken one.
+    seed({ events: [eventRow({ receivedAt: new Date().toISOString() })] });
+
+    const body = (await (await get()).json()) as { stats: Array<{ label: string; value: string; detail: string }> };
+    const card = body.stats.find((s) => s.label === 'Webhook sync')!;
+
+    expect(card.value).toBe('Connected');
+    expect(card.detail).toMatch(/last event/);
+  });
+
+  it('says so plainly when no webhook has ever arrived', async () => {
+    seed({});
+
+    const body = (await (await get()).json()) as { stats: Array<{ label: string; value: string }> };
+    expect(body.stats.find((s) => s.label === 'Webhook sync')!.value).toBe('No events yet');
+  });
+
+  it('names each activity row from the discount mirror, not the raw GID', async () => {
+    seed({
+      discounts: [discountRow({ id: 'd1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/9', name: 'BFCM 2027' })],
+      events: [eventRow({ id: 'e1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/9' })],
+    });
+
+    const body = (await (await get()).json()) as { recentActivity: Array<{ title: string }> };
+    expect(body.recentActivity[0].title).toBe('BFCM 2027');
+  });
+
+  it('still names a DELETED discount, which is the event most worth naming', async () => {
+    // `tombstoneByGid` sets `deletedAt` and keeps the row, so the name
+    // survives the delete. An earlier version assumed the opposite and
+    // printed a raw gid:// for every row in the feed.
+    seed({
+      discounts: [discountRow({
+        id: 'd1',
+        shopifyGid: 'gid://shopify/DiscountAutomaticNode/9',
+        name: 'Clearance / RRP markdown',
+        deletedAt: '2026-10-02T09:44:52.000Z',
+      })],
+      events: [eventRow({ id: 'e1', topic: 'discounts/delete', shopifyGid: 'gid://shopify/DiscountAutomaticNode/9' })],
+    });
+
+    const body = (await (await get()).json()) as { recentActivity: Array<{ title: string; action: string }> };
+    expect(body.recentActivity[0].title).toBe('Clearance / RRP markdown');
+    expect(body.recentActivity[0].action).toBe('deleted');
+  });
+
+  it('says so plainly for an event about a discount this app never mirrored', async () => {
+    seed({ events: [eventRow({ id: 'e1', shopifyGid: 'gid://shopify/DiscountAutomaticNode/404' })] });
+
+    const body = (await (await get()).json()) as { recentActivity: Array<{ title: string }> };
+    expect(body.recentActivity[0].title).toBe('A discount outside this app');
+    expect(body.recentActivity[0].title).not.toMatch(/gid:\/\//);
+  });
+
+  it('returns the bundle schedule with a readable window', async () => {
+    seed({
+      bundles: [
+        bundleRow({ id: 'b1', name: 'Glow Ritual Set', status: 'Active', operation: 'expand' }),
+        bundleRow({
+          id: 'b2', name: 'Trailhead Day Kit', status: 'Draft', operation: 'merge',
+          scheduleStart: null, scheduleEnd: null,
+        }),
+      ],
+    });
+
+    const body = (await (await get()).json()) as { bundleSchedule: Array<{ name: string; window: string | null }> };
+    expect(body.bundleSchedule).toHaveLength(2);
+    // A bundle with no window is still shown — it is something the merchant
+    // has scheduled nothing for, which is exactly what they came to see.
+    expect(body.bundleSchedule.find((b) => b.name === 'Trailhead Day Kit')!.window).toBeNull();
+  });
+
+  it('is behind requireShop like every other /api route', async () => {
+    seed({});
+    const res = await app.request('/api/overview', {}, env('production'));
+    expect(res.status).toBe(401);
   });
 });

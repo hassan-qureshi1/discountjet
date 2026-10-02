@@ -8,6 +8,7 @@ import { shopRoutes } from './routes/shop';
 import { previewRoutes } from './routes/preview';
 import { templateRoutes } from './routes/templates';
 import { campaignRoutes } from './routes/campaigns';
+import { overviewRoutes } from './routes/overview';
 import { webhookRoutes } from './lifecycle/webhooks';
 import { createBundleScheduleDeps, runBundleSchedule } from './lifecycle/bundleSchedule';
 import type { Env } from './types/env';
@@ -48,6 +49,7 @@ app.route('/', bundleRoutes);
 app.route('/', variantRoutes);
 app.route('/', shopRoutes);
 app.route('/', campaignRoutes);
+app.route('/', overviewRoutes);
 
 // Public template preview page (no auth) — see routes/preview.ts.
 app.route('/', previewRoutes);

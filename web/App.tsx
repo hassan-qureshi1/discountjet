@@ -4,6 +4,7 @@ import {
 } from 'react-router-dom';
 import BugSnagBoundary from './bugsnag';
 import Home from './Pages/Home';
+import Overview from './Pages/Overview';
 import Discounts from './Pages/Discounts';
 import DiscountDetail from './Pages/DiscountDetail';
 import Bundles from './Pages/Bundles';
@@ -54,7 +55,7 @@ export default function App() {
   return (
     <BugSnagBoundary>
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<Overview />} />
         <Route path="/discounts" element={<Discounts />} />
         <Route path="/discounts/:id" element={<DiscountDetail />} />
         <Route path="/bundles" element={<Bundles />} />
@@ -69,10 +70,11 @@ export default function App() {
         <Route path="/campaigns" element={<Campaigns />} />
         <Route path="/campaigns/:id/edit" element={<CampaignBuilderRoute />} />
         <Route path="/campaigns/:id" element={<CampaignDetailRoute />} />
-        <Route path="*" element={<Home />} />
+        <Route path="/about" element={<Home />} />
+        <Route path="*" element={<Overview />} />
       </Routes>
       <NavMenu>
-        <Link to="/">Home</Link>
+        <Link to="/">Overview</Link>
         <Link to="/discounts">Discounts</Link>
         <Link to="/bundles">Bundles</Link>
         <Link to="/templates">Templates</Link>

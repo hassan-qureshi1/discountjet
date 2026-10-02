@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import type { Db } from './BaseRepository';
 import { webhookEvent } from '../schema';
 
@@ -10,6 +10,7 @@ export interface IWebhookEventRepository {
   deliverySeen(deliveryId: string): Promise<boolean>;
   record(row: WebhookEventInsert): Promise<void>;
   list(shopId: string): Promise<Array<Pick<WebhookEventRow, 'topic' | 'receivedAt'>>>;
+  listRecent(shopId: string, limit: number): Promise<WebhookEventRow[]>;
 }
 
 /**
@@ -52,6 +53,22 @@ export class WebhookEventRepository implements IWebhookEventRepository {
       .select({ topic: webhookEvent.topic, receivedAt: webhookEvent.receivedAt })
       .from(webhookEvent)
       .where(eq(webhookEvent.shopId, shopId))
+      .all();
+  }
+
+  /**
+   * The newest events for a shop, for the dashboard's activity feed.
+   *
+   * Returns whole rows because the feed needs `shopifyGid` to name the
+   * discount an event was about, which `list()` deliberately does not carry.
+   */
+  async listRecent(shopId: string, limit: number): Promise<WebhookEventRow[]> {
+    return this.db
+      .select()
+      .from(webhookEvent)
+      .where(eq(webhookEvent.shopId, shopId))
+      .orderBy(desc(webhookEvent.receivedAt))
+      .limit(limit)
       .all();
   }
 }
